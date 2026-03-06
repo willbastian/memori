@@ -22,6 +22,13 @@ import (
 const DBSchemaVersion = 1
 const DefaultIssueKeyPrefix = "mem"
 
+const (
+	entityTypeIssue      = "issue"
+	eventTypeIssueCreate = "issue.created"
+	eventTypeIssueUpdate = "issue.updated"
+	eventTypeIssueLink   = "issue.linked"
+)
+
 type Store struct {
 	db *sql.DB
 }
@@ -189,10 +196,10 @@ func (s *Store) Initialize(ctx context.Context, p InitializeParams) error {
 		`CREATE TABLE IF NOT EXISTS events (
 			event_id TEXT PRIMARY KEY,
 			event_order INTEGER NOT NULL CHECK(event_order > 0),
-			entity_type TEXT NOT NULL,
+			entity_type TEXT NOT NULL CHECK(entity_type IN ('issue')),
 			entity_id TEXT NOT NULL,
 			entity_seq INTEGER NOT NULL CHECK(entity_seq > 0),
-			event_type TEXT NOT NULL,
+			event_type TEXT NOT NULL CHECK(event_type IN ('issue.created','issue.updated','issue.linked')),
 			payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
 			actor TEXT NOT NULL,
 			command_id TEXT NOT NULL CHECK(length(command_id) > 0),
@@ -222,7 +229,7 @@ func (s *Store) Initialize(ctx context.Context, p InitializeParams) error {
 			END;`,
 		`CREATE TABLE IF NOT EXISTS work_items (
 			id TEXT PRIMARY KEY,
-			type TEXT NOT NULL,
+			type TEXT NOT NULL CHECK(type IN ('Epic','Story','Task','Bug')),
 			title TEXT NOT NULL,
 			parent_id TEXT,
 			status TEXT NOT NULL CHECK(status IN ('Todo','InProgress','Blocked','Done')),
@@ -328,8 +335,8 @@ func (s *Store) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Ev
 	if p.Actor == "" {
 		p.Actor = defaultActor()
 	}
-	if p.CommandID == "" {
-		p.CommandID = newID("cmd")
+	if strings.TrimSpace(p.CommandID) == "" {
+		return Issue{}, Event{}, false, errors.New("--command-id is required")
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -392,9 +399,9 @@ func (s *Store) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Ev
 	}
 
 	appendRes, err := s.appendEventTx(ctx, tx, appendEventRequest{
-		EntityType:          "issue",
+		EntityType:          entityTypeIssue,
 		EntityID:            p.IssueID,
-		EventType:           "issue.created",
+		EventType:           eventTypeIssueCreate,
 		PayloadJSON:         string(payloadBytes),
 		Actor:               p.Actor,
 		CommandID:           p.CommandID,
@@ -403,7 +410,7 @@ func (s *Store) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Ev
 	if err != nil {
 		return Issue{}, Event{}, false, err
 	}
-	if appendRes.Event.EventType != "issue.created" {
+	if appendRes.Event.EventType != eventTypeIssueCreate {
 		return Issue{}, Event{}, false, fmt.Errorf("command id already used by %q", appendRes.Event.EventType)
 	}
 	if !appendRes.AlreadyExists && appendRes.Event.EntitySeq != 1 {
@@ -441,8 +448,8 @@ func (s *Store) UpdateIssueStatus(ctx context.Context, p UpdateIssueStatusParams
 	if p.Actor == "" {
 		p.Actor = defaultActor()
 	}
-	if p.CommandID == "" {
-		p.CommandID = newID("cmd")
+	if strings.TrimSpace(p.CommandID) == "" {
+		return Issue{}, Event{}, false, errors.New("--command-id is required")
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -454,7 +461,7 @@ func (s *Store) UpdateIssueStatus(ctx context.Context, p UpdateIssueStatusParams
 	if existingEvent, found, err := findEventByActorCommandTx(ctx, tx, p.Actor, p.CommandID); err != nil {
 		return Issue{}, Event{}, false, err
 	} else if found {
-		if existingEvent.EventType != "issue.updated" {
+		if existingEvent.EventType != eventTypeIssueUpdate {
 			return Issue{}, Event{}, false, fmt.Errorf("command id already used by %q", existingEvent.EventType)
 		}
 		issue, err := getIssueTx(ctx, tx, existingEvent.EntityID)
@@ -497,9 +504,9 @@ func (s *Store) UpdateIssueStatus(ctx context.Context, p UpdateIssueStatusParams
 	}
 
 	appendRes, err := s.appendEventTx(ctx, tx, appendEventRequest{
-		EntityType:          "issue",
+		EntityType:          entityTypeIssue,
 		EntityID:            issueID,
-		EventType:           "issue.updated",
+		EventType:           eventTypeIssueUpdate,
 		PayloadJSON:         string(payloadBytes),
 		Actor:               p.Actor,
 		CommandID:           p.CommandID,
@@ -508,7 +515,7 @@ func (s *Store) UpdateIssueStatus(ctx context.Context, p UpdateIssueStatusParams
 	if err != nil {
 		return Issue{}, Event{}, false, err
 	}
-	if appendRes.Event.EventType != "issue.updated" {
+	if appendRes.Event.EventType != eventTypeIssueUpdate {
 		return Issue{}, Event{}, false, fmt.Errorf("command id already used by %q", appendRes.Event.EventType)
 	}
 
@@ -542,8 +549,8 @@ func (s *Store) LinkIssue(ctx context.Context, p LinkIssueParams) (Issue, Event,
 	if p.Actor == "" {
 		p.Actor = defaultActor()
 	}
-	if p.CommandID == "" {
-		p.CommandID = newID("cmd")
+	if strings.TrimSpace(p.CommandID) == "" {
+		return Issue{}, Event{}, false, errors.New("--command-id is required")
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -555,7 +562,7 @@ func (s *Store) LinkIssue(ctx context.Context, p LinkIssueParams) (Issue, Event,
 	if existingEvent, found, err := findEventByActorCommandTx(ctx, tx, p.Actor, p.CommandID); err != nil {
 		return Issue{}, Event{}, false, err
 	} else if found {
-		if existingEvent.EventType != "issue.linked" {
+		if existingEvent.EventType != eventTypeIssueLink {
 			return Issue{}, Event{}, false, fmt.Errorf("command id already used by %q", existingEvent.EventType)
 		}
 		issue, err := getIssueTx(ctx, tx, existingEvent.EntityID)
@@ -593,9 +600,9 @@ func (s *Store) LinkIssue(ctx context.Context, p LinkIssueParams) (Issue, Event,
 	}
 
 	appendRes, err := s.appendEventTx(ctx, tx, appendEventRequest{
-		EntityType:          "issue",
+		EntityType:          entityTypeIssue,
 		EntityID:            childIssue.ID,
-		EventType:           "issue.linked",
+		EventType:           eventTypeIssueLink,
 		PayloadJSON:         string(payloadBytes),
 		Actor:               p.Actor,
 		CommandID:           p.CommandID,
@@ -604,7 +611,7 @@ func (s *Store) LinkIssue(ctx context.Context, p LinkIssueParams) (Issue, Event,
 	if err != nil {
 		return Issue{}, Event{}, false, err
 	}
-	if appendRes.Event.EventType != "issue.linked" {
+	if appendRes.Event.EventType != eventTypeIssueLink {
 		return Issue{}, Event{}, false, fmt.Errorf("command id already used by %q", appendRes.Event.EventType)
 	}
 
@@ -788,11 +795,11 @@ func (s *Store) ReplayProjections(ctx context.Context) (ReplayResult, error) {
 
 func applyEventProjectionTx(ctx context.Context, tx *sql.Tx, event Event) error {
 	switch event.EventType {
-	case "issue.created":
+	case eventTypeIssueCreate:
 		return applyIssueCreatedProjectionTx(ctx, tx, event)
-	case "issue.updated":
+	case eventTypeIssueUpdate:
 		return applyIssueUpdatedProjectionTx(ctx, tx, event)
-	case "issue.linked":
+	case eventTypeIssueLink:
 		return applyIssueLinkedProjectionTx(ctx, tx, event)
 	default:
 		return nil

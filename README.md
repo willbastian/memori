@@ -21,16 +21,16 @@ This repo now contains the first implementation slice for a local event-ledger-b
 memori init --issue-prefix mem
 
 # create an issue
-memori issue create --type task --title "First ticket"
+memori issue create --type task --title "First ticket" --command-id "cli-create-01"
 
 # show issue
 memori issue show --key <issue-key>
 
 # move issue to in-progress
-memori issue update --key <issue-key> --status inprogress
+memori issue update --key <issue-key> --status inprogress --command-id "cli-update-01"
 
 # re-link child to parent
-memori issue link --child <child-key> --parent <parent-key>
+memori issue link --child <child-key> --parent <parent-key> --command-id "cli-link-01"
 
 # inspect event ledger for the issue
 memori event log --entity <issue-key>
@@ -40,6 +40,8 @@ memori db replay
 ```
 
 `--json` is supported on read/list commands in this slice and on `init`/`issue create`/`issue update` for structured automation.
+
+Mutating issue commands (`issue create`, `issue update`, `issue link`) require `--command-id` for idempotency tracking.
 
 Issue key format:
 

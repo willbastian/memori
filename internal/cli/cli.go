@@ -54,9 +54,9 @@ func runHelp(args []string, out io.Writer) error {
 		commands := []string{
 			"memori help [--json]",
 			"memori init [--db <path>] [--issue-prefix <prefix>] [--json]",
-			"memori issue create --type epic|story|task|bug --title <title> [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] [--command-id <id>] [--json]",
-			"memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] [--command-id <id>] [--json]",
-			"memori issue update --key <prefix-shortSHA> --status todo|inprogress|blocked|done [--actor <actor>] [--command-id <id>] [--json]",
+			"memori issue create --type epic|story|task|bug --title <title> [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] --command-id <id> [--json]",
+			"memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] --command-id <id> [--json]",
+			"memori issue update --key <prefix-shortSHA> --status todo|inprogress|blocked|done [--actor <actor>] --command-id <id> [--json]",
 			"memori issue show --key <prefix-shortSHA> [--json]",
 			"memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]",
 			"memori event log --entity <entityType:id|id> [--json]",
@@ -158,6 +158,9 @@ func runIssueCreate(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if strings.TrimSpace(*commandID) == "" {
+		return errors.New("--command-id is required")
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -227,6 +230,9 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	if strings.TrimSpace(*status) == "" {
 		return errors.New("--status is required")
 	}
+	if strings.TrimSpace(*commandID) == "" {
+		return errors.New("--command-id is required")
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -286,6 +292,9 @@ func runIssueLink(args []string, out io.Writer) error {
 	}
 	if strings.TrimSpace(*parent) == "" {
 		return errors.New("--parent is required")
+	}
+	if strings.TrimSpace(*commandID) == "" {
+		return errors.New("--command-id is required")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -579,7 +588,12 @@ func parseEntityRef(raw string) (entityType, entityID string, err error) {
 	if strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
 		return "", "", fmt.Errorf("invalid entity reference %q", raw)
 	}
-	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), nil
+	entityType = strings.ToLower(strings.TrimSpace(parts[0]))
+	entityID = strings.TrimSpace(parts[1])
+	if entityType != "issue" {
+		return "", "", fmt.Errorf("invalid entity type %q (expected issue)", parts[0])
+	}
+	return entityType, entityID, nil
 }
 
 type jsonEnvelope struct {
@@ -784,9 +798,9 @@ func printHelp(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "Commands:")
 	_, _ = fmt.Fprintln(out, "  memori help [--json]")
 	_, _ = fmt.Fprintln(out, "  memori init [--db <path>] [--issue-prefix <prefix>] [--json]")
-	_, _ = fmt.Fprintln(out, "  memori issue create --type epic|story|task|bug --title <title> [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] [--command-id <id>] [--json]")
-	_, _ = fmt.Fprintln(out, "  memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] [--command-id <id>] [--json]")
-	_, _ = fmt.Fprintln(out, "  memori issue update --key <prefix-shortSHA> --status todo|inprogress|blocked|done [--actor <actor>] [--command-id <id>] [--json]")
+	_, _ = fmt.Fprintln(out, "  memori issue create --type epic|story|task|bug --title <title> [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] --command-id <id> [--json]")
+	_, _ = fmt.Fprintln(out, "  memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] --command-id <id> [--json]")
+	_, _ = fmt.Fprintln(out, "  memori issue update --key <prefix-shortSHA> --status todo|inprogress|blocked|done [--actor <actor>] --command-id <id> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori issue show --key <prefix-shortSHA> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori event log --entity <entityType:id|id> [--json]")
