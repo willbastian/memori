@@ -32,6 +32,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return runInit(args[1:], stdout)
 	case "issue":
 		return runIssue(args[1:], stdout)
+	case "gate":
+		return runGate(args[1:], stdout)
 	case "backlog":
 		return runBacklog(args[1:], stdout)
 	case "event":
@@ -59,6 +61,8 @@ func runHelp(args []string, out io.Writer) error {
 			"memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] --command-id <id> [--json]",
 			"memori issue update --key <prefix-shortSHA> [--status todo|inprogress|blocked|done] [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--actor <actor>] --command-id <id> [--json]",
 			"memori issue show --key <prefix-shortSHA> [--json]",
+			"memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] --command-id <id> [--json]",
+			"memori gate status --issue <prefix-shortSHA> [--json]",
 			"memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]",
 			"memori event log --entity <entityType:id|id> [--json]",
 			"memori db status [--json]",
@@ -490,6 +494,154 @@ func runBacklog(args []string, out io.Writer) error {
 	return nil
 }
 
+func runGate(args []string, out io.Writer) error {
+	if len(args) == 0 {
+		return errors.New("gate subcommand required: evaluate|status")
+	}
+	switch args[0] {
+	case "evaluate":
+		return runGateEvaluate(args[1:], out)
+	case "status":
+		return runGateStatus(args[1:], out)
+	default:
+		return fmt.Errorf("unknown gate subcommand %q", args[0])
+	}
+}
+
+func runGateEvaluate(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("gate evaluate", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	issue := fs.String("issue", "", "issue key")
+	gate := fs.String("gate", "", "gate id")
+	result := fs.String("result", "", "evaluation result: PASS|FAIL|BLOCKED")
+	var evidence stringSliceFlag
+	fs.Var(&evidence, "evidence", "evidence reference (repeatable)")
+	actor := fs.String("actor", "", "actor id")
+	commandID := fs.String("command-id", "", "idempotency command id")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*issue) == "" {
+		return errors.New("--issue is required")
+	}
+	if strings.TrimSpace(*gate) == "" {
+		return errors.New("--gate is required")
+	}
+	if strings.TrimSpace(*result) == "" {
+		return errors.New("--result is required")
+	}
+	if strings.TrimSpace(*commandID) == "" {
+		return errors.New("--command-id is required")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	evaluation, event, idempotent, err := s.EvaluateGate(ctx, store.EvaluateGateParams{
+		IssueID:      *issue,
+		GateID:       *gate,
+		Result:       *result,
+		EvidenceRefs: evidence,
+		Actor:        *actor,
+		CommandID:    *commandID,
+	})
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "gate evaluate",
+			Data: gateEvaluateData{
+				Evaluation: evaluation,
+				Event:      event,
+				Idempotent: idempotent,
+			},
+		})
+	}
+
+	if idempotent {
+		_, _ = fmt.Fprintf(out, "Gate evaluation already recorded for issue %s gate %s.\n", evaluation.IssueID, evaluation.GateID)
+	} else {
+		_, _ = fmt.Fprintf(out, "Recorded gate evaluation for issue %s gate %s: %s\n", evaluation.IssueID, evaluation.GateID, evaluation.Result)
+	}
+	_, _ = fmt.Fprintf(out, "Gate Set: %s\n", evaluation.GateSetID)
+	_, _ = fmt.Fprintf(out, "Evaluated At: %s\n", evaluation.EvaluatedAt)
+	_, _ = fmt.Fprintf(out, "Event: %s (%s #%d)\n", event.EventID, event.EventType, event.EventOrder)
+	return nil
+}
+
+func runGateStatus(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("gate status", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	issue := fs.String("issue", "", "issue key")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*issue) == "" {
+		return errors.New("--issue is required")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	status, err := s.GetGateStatus(ctx, *issue)
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "gate status",
+			Data: gateStatusData{
+				Status: status,
+			},
+		})
+	}
+
+	_, _ = fmt.Fprintf(out, "Gate status for %s\n", status.IssueID)
+	_, _ = fmt.Fprintf(out, "Gate Set: %s (cycle %d)\n", status.GateSetID, status.CycleNo)
+	if strings.TrimSpace(status.LockedAt) != "" {
+		_, _ = fmt.Fprintf(out, "Locked At: %s\n", status.LockedAt)
+	}
+	for _, gate := range status.Gates {
+		required := "optional"
+		if gate.Required {
+			required = "required"
+		}
+		resultValue := colorize(shouldUseColor(out), colorForGateResult(gate.Result), gate.Result)
+		_, _ = fmt.Fprintf(out, "- %s [%s/%s] %s", gate.GateID, required, gate.Kind, resultValue)
+		if gate.EvaluatedAt != "" {
+			_, _ = fmt.Fprintf(out, " at %s", gate.EvaluatedAt)
+		}
+		if len(gate.EvidenceRefs) > 0 {
+			_, _ = fmt.Fprintf(out, " evidence=%s", strings.Join(gate.EvidenceRefs, ","))
+		}
+		_, _ = fmt.Fprintln(out)
+	}
+	return nil
+}
+
 func runEvent(args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("event subcommand required: log")
@@ -870,6 +1022,16 @@ type issueShowData struct {
 	Issue store.Issue `json:"issue"`
 }
 
+type gateEvaluateData struct {
+	Evaluation store.GateEvaluation `json:"evaluation"`
+	Event      store.Event          `json:"event"`
+	Idempotent bool                 `json:"idempotent"`
+}
+
+type gateStatusData struct {
+	Status store.GateStatus `json:"status"`
+}
+
 type eventLogData struct {
 	EntityType string        `json:"entity_type"`
 	EntityID   string        `json:"entity_id"`
@@ -1038,6 +1200,21 @@ func colorForStatus(status string) string {
 	}
 }
 
+func colorForGateResult(result string) string {
+	switch result {
+	case "PASS":
+		return "32" // green
+	case "FAIL":
+		return "31" // red
+	case "BLOCKED":
+		return "33" // yellow
+	case "MISSING":
+		return "90" // gray
+	default:
+		return "37" // white
+	}
+}
+
 func colorize(enabled bool, colorCode, value string) string {
 	if !enabled {
 		return value
@@ -1061,6 +1238,8 @@ func printHelp(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "  memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] --command-id <id> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori issue update --key <prefix-shortSHA> [--status todo|inprogress|blocked|done] [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--actor <actor>] --command-id <id> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori issue show --key <prefix-shortSHA> [--json]")
+	_, _ = fmt.Fprintln(out, "  memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] --command-id <id> [--json]")
+	_, _ = fmt.Fprintln(out, "  memori gate status --issue <prefix-shortSHA> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori event log --entity <entityType:id|id> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori db status [--json]")

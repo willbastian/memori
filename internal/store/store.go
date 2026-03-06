@@ -103,6 +103,15 @@ type LinkIssueParams struct {
 	CommandID     string
 }
 
+type EvaluateGateParams struct {
+	IssueID      string
+	GateID       string
+	Result       string
+	EvidenceRefs []string
+	Actor        string
+	CommandID    string
+}
+
 type ListIssuesParams struct {
 	Type     string
 	Status   string
@@ -165,6 +174,42 @@ type issueLinkedPayload struct {
 	ParentIDFrom string `json:"parent_id_from,omitempty"`
 	ParentIDTo   string `json:"parent_id_to"`
 	LinkedAt     string `json:"linked_at"`
+}
+
+type gateEvaluatedPayload struct {
+	IssueID      string   `json:"issue_id"`
+	GateSetID    string   `json:"gate_set_id"`
+	GateID       string   `json:"gate_id"`
+	Result       string   `json:"result"`
+	EvidenceRefs []string `json:"evidence_refs,omitempty"`
+	EvaluatedAt  string   `json:"evaluated_at"`
+}
+
+type GateEvaluation struct {
+	IssueID      string   `json:"issue_id"`
+	GateSetID    string   `json:"gate_set_id"`
+	GateID       string   `json:"gate_id"`
+	Result       string   `json:"result"`
+	EvidenceRefs []string `json:"evidence_refs,omitempty"`
+	EvaluatedAt  string   `json:"evaluated_at"`
+}
+
+type GateStatus struct {
+	IssueID   string           `json:"issue_id"`
+	GateSetID string           `json:"gate_set_id"`
+	CycleNo   int              `json:"cycle_no"`
+	LockedAt  string           `json:"locked_at,omitempty"`
+	Gates     []GateStatusItem `json:"gates"`
+}
+
+type GateStatusItem struct {
+	GateID       string   `json:"gate_id"`
+	Kind         string   `json:"kind"`
+	Required     bool     `json:"required"`
+	Result       string   `json:"result"`
+	EvidenceRefs []string `json:"evidence_refs,omitempty"`
+	EvaluatedAt  string   `json:"evaluated_at,omitempty"`
+	LastEventID  string   `json:"last_event_id,omitempty"`
 }
 
 func Open(path string) (*Store, error) {
@@ -361,6 +406,20 @@ func (s *Store) Initialize(ctx context.Context, p InitializeParams) error {
 			BEGIN
 				SELECT RAISE(ABORT, 'gate_set_items are immutable');
 			END;`,
+		`CREATE TABLE IF NOT EXISTS gate_status_projection (
+			issue_id TEXT NOT NULL,
+			gate_set_id TEXT NOT NULL,
+			gate_id TEXT NOT NULL,
+			result TEXT NOT NULL CHECK(result IN ('PASS','FAIL','BLOCKED')),
+			evidence_refs_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(evidence_refs_json)),
+			evaluated_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			last_event_id TEXT NOT NULL,
+			PRIMARY KEY(issue_id, gate_set_id, gate_id),
+			FOREIGN KEY(issue_id) REFERENCES work_items(id),
+			FOREIGN KEY(gate_set_id, gate_id) REFERENCES gate_set_items(gate_set_id, gate_id)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_gate_status_projection_issue ON gate_status_projection(issue_id, gate_set_id);`,
 	}
 
 	for _, stmt := range schema {
@@ -810,6 +869,235 @@ func (s *Store) LinkIssue(ctx context.Context, p LinkIssueParams) (Issue, Event,
 	return issue, appendRes.Event, appendRes.AlreadyExists, nil
 }
 
+func (s *Store) EvaluateGate(ctx context.Context, p EvaluateGateParams) (GateEvaluation, Event, bool, error) {
+	if p.Actor == "" {
+		p.Actor = defaultActor()
+	}
+	if strings.TrimSpace(p.CommandID) == "" {
+		return GateEvaluation{}, Event{}, false, errors.New("--command-id is required")
+	}
+	if len(normalizeReferences(p.EvidenceRefs)) == 0 {
+		return GateEvaluation{}, Event{}, false, errors.New("--evidence is required")
+	}
+
+	issueID, err := normalizeIssueKey(p.IssueID)
+	if err != nil {
+		return GateEvaluation{}, Event{}, false, err
+	}
+	gateID := strings.TrimSpace(p.GateID)
+	if gateID == "" {
+		return GateEvaluation{}, Event{}, false, errors.New("--gate is required")
+	}
+	result, err := normalizeGateResult(p.Result)
+	if err != nil {
+		return GateEvaluation{}, Event{}, false, err
+	}
+	evidenceRefs := normalizeReferences(p.EvidenceRefs)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return GateEvaluation{}, Event{}, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if existingEvent, found, err := findEventByActorCommandTx(ctx, tx, p.Actor, p.CommandID); err != nil {
+		return GateEvaluation{}, Event{}, false, err
+	} else if found {
+		if existingEvent.EventType != eventTypeGateEval {
+			return GateEvaluation{}, Event{}, false, fmt.Errorf("command id already used by %q", existingEvent.EventType)
+		}
+		payload, err := decodeGateEvaluatedPayload(existingEvent.PayloadJSON)
+		if err != nil {
+			return GateEvaluation{}, Event{}, false, err
+		}
+		if err := tx.Commit(); err != nil {
+			return GateEvaluation{}, Event{}, false, fmt.Errorf("commit tx: %w", err)
+		}
+		return GateEvaluation{
+			IssueID:      payload.IssueID,
+			GateSetID:    payload.GateSetID,
+			GateID:       payload.GateID,
+			Result:       payload.Result,
+			EvidenceRefs: payload.EvidenceRefs,
+			EvaluatedAt:  payload.EvaluatedAt,
+		}, existingEvent, true, nil
+	}
+
+	if _, err := getIssueTx(ctx, tx, issueID); err != nil {
+		return GateEvaluation{}, Event{}, false, err
+	}
+
+	gateSet, found, err := lockedGateSetForIssueTx(ctx, tx, issueID)
+	if err != nil {
+		return GateEvaluation{}, Event{}, false, err
+	}
+	if !found {
+		return GateEvaluation{}, Event{}, false, fmt.Errorf("no locked gate set found for issue %q", issueID)
+	}
+
+	var gateCount int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(1)
+		FROM gate_set_items
+		WHERE gate_set_id = ? AND gate_id = ?
+	`, gateSet.GateSetID, gateID).Scan(&gateCount); err != nil {
+		return GateEvaluation{}, Event{}, false, fmt.Errorf("lookup gate %q in gate_set %q: %w", gateID, gateSet.GateSetID, err)
+	}
+	if gateCount == 0 {
+		return GateEvaluation{}, Event{}, false, fmt.Errorf(
+			"gate %q is not defined in locked gate_set %q for issue %q",
+			gateID,
+			gateSet.GateSetID,
+			issueID,
+		)
+	}
+
+	payload := gateEvaluatedPayload{
+		IssueID:      issueID,
+		GateSetID:    gateSet.GateSetID,
+		GateID:       gateID,
+		Result:       result,
+		EvidenceRefs: evidenceRefs,
+		EvaluatedAt:  nowUTC(),
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return GateEvaluation{}, Event{}, false, fmt.Errorf("marshal payload: %w", err)
+	}
+
+	appendRes, err := s.appendEventTx(ctx, tx, appendEventRequest{
+		EntityType:          entityTypeIssue,
+		EntityID:            issueID,
+		EventType:           eventTypeGateEval,
+		PayloadJSON:         string(payloadBytes),
+		Actor:               p.Actor,
+		CommandID:           p.CommandID,
+		EventPayloadVersion: 1,
+	})
+	if err != nil {
+		return GateEvaluation{}, Event{}, false, err
+	}
+	if appendRes.Event.EventType != eventTypeGateEval {
+		return GateEvaluation{}, Event{}, false, fmt.Errorf("command id already used by %q", appendRes.Event.EventType)
+	}
+
+	if !appendRes.AlreadyExists {
+		if err := applyGateEvaluatedProjectionTx(ctx, tx, appendRes.Event); err != nil {
+			return GateEvaluation{}, Event{}, false, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return GateEvaluation{}, Event{}, false, fmt.Errorf("commit tx: %w", err)
+	}
+
+	return GateEvaluation{
+		IssueID:      payload.IssueID,
+		GateSetID:    payload.GateSetID,
+		GateID:       payload.GateID,
+		Result:       payload.Result,
+		EvidenceRefs: payload.EvidenceRefs,
+		EvaluatedAt:  payload.EvaluatedAt,
+	}, appendRes.Event, appendRes.AlreadyExists, nil
+}
+
+func (s *Store) GetGateStatus(ctx context.Context, issueID string) (GateStatus, error) {
+	normalizedIssueID, err := normalizeIssueKey(issueID)
+	if err != nil {
+		return GateStatus{}, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return GateStatus{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := getIssueTx(ctx, tx, normalizedIssueID); err != nil {
+		return GateStatus{}, err
+	}
+
+	gateSet, found, err := lockedGateSetForIssueTx(ctx, tx, normalizedIssueID)
+	if err != nil {
+		return GateStatus{}, err
+	}
+	if !found {
+		return GateStatus{}, fmt.Errorf("no locked gate set found for issue %q", normalizedIssueID)
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT
+			i.gate_id,
+			i.kind,
+			i.required,
+			COALESCE(gs.result, ''),
+			COALESCE(gs.evidence_refs_json, '[]'),
+			COALESCE(gs.evaluated_at, ''),
+			COALESCE(gs.last_event_id, '')
+		FROM gate_set_items i
+		LEFT JOIN gate_status_projection gs
+			ON gs.issue_id = ?
+			AND gs.gate_set_id = i.gate_set_id
+			AND gs.gate_id = i.gate_id
+		WHERE i.gate_set_id = ?
+		ORDER BY i.gate_id ASC
+	`, normalizedIssueID, gateSet.GateSetID)
+	if err != nil {
+		return GateStatus{}, fmt.Errorf("query gate status for issue %q: %w", normalizedIssueID, err)
+	}
+	defer rows.Close()
+
+	gates := make([]GateStatusItem, 0)
+	for rows.Next() {
+		var (
+			item         GateStatusItem
+			requiredInt  int
+			rawResult    string
+			evidenceJSON string
+		)
+		if err := rows.Scan(
+			&item.GateID,
+			&item.Kind,
+			&requiredInt,
+			&rawResult,
+			&evidenceJSON,
+			&item.EvaluatedAt,
+			&item.LastEventID,
+		); err != nil {
+			return GateStatus{}, fmt.Errorf("scan gate status row for issue %q: %w", normalizedIssueID, err)
+		}
+		item.Required = requiredInt == 1
+		if strings.TrimSpace(rawResult) == "" {
+			item.Result = "MISSING"
+		} else if normalizedResult, err := normalizeGateResult(rawResult); err == nil {
+			item.Result = normalizedResult
+		} else {
+			item.Result = strings.ToUpper(strings.TrimSpace(rawResult))
+		}
+		evidenceRefs, err := parseReferencesJSON(evidenceJSON)
+		if err != nil {
+			return GateStatus{}, fmt.Errorf("decode gate status evidence for issue %q: %w", normalizedIssueID, err)
+		}
+		item.EvidenceRefs = evidenceRefs
+		gates = append(gates, item)
+	}
+	if err := rows.Err(); err != nil {
+		return GateStatus{}, fmt.Errorf("iterate gate status rows for issue %q: %w", normalizedIssueID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return GateStatus{}, fmt.Errorf("commit tx: %w", err)
+	}
+
+	return GateStatus{
+		IssueID:   normalizedIssueID,
+		GateSetID: gateSet.GateSetID,
+		CycleNo:   gateSet.CycleNo,
+		LockedAt:  gateSet.LockedAt,
+		Gates:     gates,
+	}, nil
+}
+
 func findEventByActorCommandTx(ctx context.Context, tx *sql.Tx, actor, commandID string) (Event, bool, error) {
 	row := tx.QueryRowContext(ctx, `
 		SELECT
@@ -943,6 +1231,13 @@ func (s *Store) ReplayProjections(ctx context.Context) (ReplayResult, error) {
 	}
 	defer tx.Rollback()
 
+	if _, err := tx.ExecContext(ctx, `PRAGMA defer_foreign_keys = ON`); err != nil {
+		return ReplayResult{}, fmt.Errorf("defer foreign keys for replay: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM gate_status_projection`); err != nil {
+		return ReplayResult{}, fmt.Errorf("clear gate_status_projection: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM work_items`); err != nil {
 		return ReplayResult{}, fmt.Errorf("clear work_items: %w", err)
 	}
@@ -990,6 +1285,8 @@ func applyEventProjectionTx(ctx context.Context, tx *sql.Tx, event Event) error 
 		return applyIssueUpdatedProjectionTx(ctx, tx, event)
 	case eventTypeIssueLink:
 		return applyIssueLinkedProjectionTx(ctx, tx, event)
+	case eventTypeGateEval:
+		return applyGateEvaluatedProjectionTx(ctx, tx, event)
 	default:
 		return nil
 	}
@@ -1131,6 +1428,65 @@ func applyIssueLinkedProjectionTx(ctx context.Context, tx *sql.Tx, event Event) 
 		return fmt.Errorf("update work_item from event %s: issue %q not found", event.EventID, payload.IssueID)
 	}
 
+	return nil
+}
+
+func applyGateEvaluatedProjectionTx(ctx context.Context, tx *sql.Tx, event Event) error {
+	payload, err := decodeGateEvaluatedPayload(event.PayloadJSON)
+	if err != nil {
+		return fmt.Errorf("decode gate.evaluated payload for event %s: %w", event.EventID, err)
+	}
+	if payload.EvaluatedAt == "" {
+		payload.EvaluatedAt = event.CreatedAt
+	}
+
+	var gateCount int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(1)
+		FROM gate_set_items
+		WHERE gate_set_id = ? AND gate_id = ?
+	`, payload.GateSetID, payload.GateID).Scan(&gateCount); err != nil {
+		return fmt.Errorf("validate gate.evaluated payload for event %s: %w", event.EventID, err)
+	}
+	if gateCount == 0 {
+		return fmt.Errorf(
+			"validate gate.evaluated payload for event %s: gate %q not found in gate_set %q",
+			event.EventID,
+			payload.GateID,
+			payload.GateSetID,
+		)
+	}
+
+	evidenceJSON, err := json.Marshal(normalizeReferences(payload.EvidenceRefs))
+	if err != nil {
+		return fmt.Errorf("encode gate.evaluated evidence refs for event %s: %w", event.EventID, err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO gate_status_projection(
+			issue_id, gate_set_id, gate_id, result,
+			evidence_refs_json, evaluated_at, updated_at, last_event_id
+		)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(issue_id, gate_set_id, gate_id) DO UPDATE SET
+			result=excluded.result,
+			evidence_refs_json=excluded.evidence_refs_json,
+			evaluated_at=excluded.evaluated_at,
+			updated_at=excluded.updated_at,
+			last_event_id=excluded.last_event_id
+	`,
+		payload.IssueID,
+		payload.GateSetID,
+		payload.GateID,
+		payload.Result,
+		string(evidenceJSON),
+		payload.EvaluatedAt,
+		event.CreatedAt,
+		event.EventID,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert gate status projection from event %s: %w", event.EventID, err)
+	}
 	return nil
 }
 
@@ -1388,6 +1744,50 @@ func normalizeIssueStatus(raw string) (string, error) {
 	}
 }
 
+func normalizeGateResult(raw string) (string, error) {
+	switch strings.ToUpper(strings.TrimSpace(raw)) {
+	case "PASS":
+		return "PASS", nil
+	case "FAIL":
+		return "FAIL", nil
+	case "BLOCKED":
+		return "BLOCKED", nil
+	default:
+		return "", fmt.Errorf("invalid --result %q (expected PASS|FAIL|BLOCKED)", raw)
+	}
+}
+
+func decodeGateEvaluatedPayload(payloadJSON string) (gateEvaluatedPayload, error) {
+	var payload gateEvaluatedPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return gateEvaluatedPayload{}, err
+	}
+
+	issueID, err := normalizeIssueKey(payload.IssueID)
+	if err != nil {
+		return gateEvaluatedPayload{}, fmt.Errorf("invalid issue_id: %w", err)
+	}
+	payload.IssueID = issueID
+
+	payload.GateSetID = strings.TrimSpace(payload.GateSetID)
+	if payload.GateSetID == "" {
+		return gateEvaluatedPayload{}, errors.New("gate_set_id is required")
+	}
+	payload.GateID = strings.TrimSpace(payload.GateID)
+	if payload.GateID == "" {
+		return gateEvaluatedPayload{}, errors.New("gate_id is required")
+	}
+	result, err := normalizeGateResult(payload.Result)
+	if err != nil {
+		return gateEvaluatedPayload{}, err
+	}
+	payload.Result = result
+	payload.EvidenceRefs = normalizeReferences(payload.EvidenceRefs)
+	payload.EvaluatedAt = strings.TrimSpace(payload.EvaluatedAt)
+
+	return payload, nil
+}
+
 func validateIssueStatusTransition(from, to string) error {
 	fromStatus, err := normalizeIssueStatus(from)
 	if err != nil {
@@ -1413,10 +1813,16 @@ func validateIssueStatusTransition(from, to string) error {
 	return nil
 }
 
-func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID string) error {
-	var gateSetID string
+type lockedGateSet struct {
+	GateSetID string
+	CycleNo   int
+	LockedAt  string
+}
+
+func lockedGateSetForIssueTx(ctx context.Context, tx *sql.Tx, issueID string) (lockedGateSet, bool, error) {
+	var gateSet lockedGateSet
 	err := tx.QueryRowContext(ctx, `
-		SELECT gs.gate_set_id
+		SELECT gs.gate_set_id, gs.cycle_no, gs.locked_at
 		FROM gate_sets gs
 		INNER JOIN work_items wi
 			ON wi.id = gs.issue_id
@@ -1425,12 +1831,23 @@ func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID st
 			AND gs.locked_at IS NOT NULL
 		ORDER BY gs.cycle_no DESC
 		LIMIT 1
-	`, issueID).Scan(&gateSetID)
+	`, issueID).Scan(&gateSet.GateSetID, &gateSet.CycleNo, &gateSet.LockedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil
+		return lockedGateSet{}, false, nil
 	}
 	if err != nil {
-		return fmt.Errorf("close validation query gate set for issue %q: %w", issueID, err)
+		return lockedGateSet{}, false, fmt.Errorf("query locked gate set for issue %q: %w", issueID, err)
+	}
+	return gateSet, true, nil
+}
+
+func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID string) error {
+	gateSet, found, err := lockedGateSetForIssueTx(ctx, tx, issueID)
+	if err != nil {
+		return fmt.Errorf("close validation %w", err)
+	}
+	if !found {
+		return nil
 	}
 
 	rows, err := tx.QueryContext(ctx, `
@@ -1451,7 +1868,7 @@ func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID st
 		WHERE r.gate_set_id = ?
 			AND r.required = 1
 		ORDER BY r.gate_id ASC
-	`, entityTypeIssue, issueID, eventTypeGateEval, gateSetID, gateSetID)
+	`, entityTypeIssue, issueID, eventTypeGateEval, gateSet.GateSetID, gateSet.GateSetID)
 	if err != nil {
 		return fmt.Errorf("close validation list required gates for issue %q: %w", issueID, err)
 	}
@@ -1479,7 +1896,7 @@ func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID st
 		return fmt.Errorf(
 			"close validation failed for issue %q (gate_set %q): required gates not PASS: %s",
 			issueID,
-			gateSetID,
+			gateSet.GateSetID,
 			strings.Join(failures, ", "),
 		)
 	}

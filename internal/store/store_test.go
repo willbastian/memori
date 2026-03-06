@@ -1031,6 +1031,196 @@ func TestUpdateIssueStatusDoneRequiresPassingLockedRequiredGates(t *testing.T) {
 	}
 }
 
+func TestEvaluateGateAppendsEventAndUpdatesProjection(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-4545454"
+	_, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Gate evaluation projection test",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-eval-create-1",
+	})
+	if err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-eval-progress-1",
+	})
+	if err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+
+	gateSetID := "gs_eval_1"
+	seedLockedGateSetForTest(t, s, issueID, gateSetID)
+	seedGateSetItemForTest(t, s, gateSetID, "build", "check", 1)
+	seedGateSetItemForTest(t, s, gateSetID, "lint", "check", 0)
+
+	evaluation, event, idempotent, err := s.EvaluateGate(ctx, EvaluateGateParams{
+		IssueID:      issueID,
+		GateID:       "build",
+		Result:       "pass",
+		EvidenceRefs: []string{"go test ./...", " go test ./... ", "ci://run/1"},
+		Actor:        "agent-1",
+		CommandID:    "cmd-gate-eval-1",
+	})
+	if err != nil {
+		t.Fatalf("evaluate gate: %v", err)
+	}
+	if idempotent {
+		t.Fatalf("first gate evaluation should not be idempotent")
+	}
+	if event.EventType != eventTypeGateEval {
+		t.Fatalf("expected gate.evaluated event, got %s", event.EventType)
+	}
+	if evaluation.Result != "PASS" {
+		t.Fatalf("expected normalized PASS result, got %q", evaluation.Result)
+	}
+	if !reflect.DeepEqual(evaluation.EvidenceRefs, []string{"go test ./...", "ci://run/1"}) {
+		t.Fatalf("unexpected normalized evidence refs: %#v", evaluation.EvidenceRefs)
+	}
+
+	status, err := s.GetGateStatus(ctx, issueID)
+	if err != nil {
+		t.Fatalf("get gate status: %v", err)
+	}
+	if status.GateSetID != gateSetID {
+		t.Fatalf("expected gate_set_id %q, got %q", gateSetID, status.GateSetID)
+	}
+	if len(status.Gates) != 2 {
+		t.Fatalf("expected 2 gate status rows, got %d", len(status.Gates))
+	}
+	if status.Gates[0].GateID != "build" || status.Gates[0].Result != "PASS" {
+		t.Fatalf("expected build gate PASS, got %#v", status.Gates[0])
+	}
+	if status.Gates[1].GateID != "lint" || status.Gates[1].Result != "MISSING" {
+		t.Fatalf("expected lint gate MISSING, got %#v", status.Gates[1])
+	}
+}
+
+func TestEvaluateGateRequiresEvidenceAndKnownGate(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-5656565"
+	_, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Gate validation test",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-validate-create-1",
+	})
+	if err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-validate-progress-1",
+	})
+	if err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+	gateSetID := "gs_eval_2"
+	seedLockedGateSetForTest(t, s, issueID, gateSetID)
+	seedGateSetItemForTest(t, s, gateSetID, "build", "check", 1)
+
+	_, _, _, err = s.EvaluateGate(ctx, EvaluateGateParams{
+		IssueID:   issueID,
+		GateID:    "build",
+		Result:    "PASS",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-validate-no-evidence-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "--evidence is required") {
+		t.Fatalf("expected missing evidence error, got: %v", err)
+	}
+
+	_, _, _, err = s.EvaluateGate(ctx, EvaluateGateParams{
+		IssueID:      issueID,
+		GateID:       "not-defined",
+		Result:       "PASS",
+		EvidenceRefs: []string{"ci://run/2"},
+		Actor:        "agent-1",
+		CommandID:    "cmd-gate-validate-missing-gate-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), `gate "not-defined" is not defined`) {
+		t.Fatalf("expected missing gate definition error, got: %v", err)
+	}
+}
+
+func TestReplayProjectionsRebuildsGateStatusProjection(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-6767676"
+	_, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Replay gate status test",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-replay-create-1",
+	})
+	if err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-replay-progress-1",
+	})
+	if err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+	gateSetID := "gs_eval_3"
+	seedLockedGateSetForTest(t, s, issueID, gateSetID)
+	seedGateSetItemForTest(t, s, gateSetID, "build", "check", 1)
+
+	if _, _, _, err := s.EvaluateGate(ctx, EvaluateGateParams{
+		IssueID:      issueID,
+		GateID:       "build",
+		Result:       "FAIL",
+		EvidenceRefs: []string{"ci://run/3"},
+		Actor:        "agent-1",
+		CommandID:    "cmd-gate-replay-eval-1",
+	}); err != nil {
+		t.Fatalf("evaluate gate before replay: %v", err)
+	}
+
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM gate_status_projection WHERE issue_id = ?`, issueID); err != nil {
+		t.Fatalf("clear gate status projection manually: %v", err)
+	}
+
+	replay, err := s.ReplayProjections(ctx)
+	if err != nil {
+		t.Fatalf("replay projections: %v", err)
+	}
+	if replay.EventsApplied != 3 {
+		t.Fatalf("expected replay to apply 3 events, got %d", replay.EventsApplied)
+	}
+
+	status, err := s.GetGateStatus(ctx, issueID)
+	if err != nil {
+		t.Fatalf("get gate status after replay: %v", err)
+	}
+	if len(status.Gates) != 1 || status.Gates[0].Result != "FAIL" {
+		t.Fatalf("expected replayed gate status FAIL, got %#v", status.Gates)
+	}
+}
+
 func TestReplayProjectionsAppliesIssueUpdatedEvents(t *testing.T) {
 	t.Parallel()
 
@@ -1330,6 +1520,34 @@ func newTestStoreWithPrefix(t *testing.T, prefix string) *Store {
 	return s
 }
 
+func seedLockedGateSetForTest(t *testing.T, s *Store, issueID, gateSetID string) {
+	t.Helper()
+
+	ctx := context.Background()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO gate_sets(
+			gate_set_id, issue_id, cycle_no, template_refs_json, frozen_definition_json,
+			gate_set_hash, locked_at, created_at, created_by
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, gateSetID, issueID, 1, `["tmpl-default@1"]`, `{"gates":[{"id":"build"}]}`, gateSetID+"_hash", nowUTC(), nowUTC(), "agent-1")
+	if err != nil {
+		t.Fatalf("insert locked gate set %s: %v", gateSetID, err)
+	}
+}
+
+func seedGateSetItemForTest(t *testing.T, s *Store, gateSetID, gateID, kind string, required int) {
+	t.Helper()
+
+	ctx := context.Background()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO gate_set_items(gate_set_id, gate_id, kind, required, criteria_json)
+		VALUES(?, ?, ?, ?, ?)
+	`, gateSetID, gateID, kind, required, `{"ref":"test"}`)
+	if err != nil {
+		t.Fatalf("insert gate_set_item %s/%s: %v", gateSetID, gateID, err)
+	}
+}
+
 func appendGateEvaluationEventForTest(
 	t *testing.T,
 	s *Store,
@@ -1345,7 +1563,7 @@ func appendGateEvaluationEventForTest(
 	defer tx.Rollback()
 
 	payloadJSON := fmt.Sprintf(
-		`{"issue_id":%q,"gate_set_id":%q,"gate_id":%q,"result":%q,"evaluated_at":%q}`,
+		`{"issue_id":%q,"gate_set_id":%q,"gate_id":%q,"result":%q,"evidence_refs":["test://evidence"],"evaluated_at":%q}`,
 		issueID, gateSetID, gateID, result, nowUTC(),
 	)
 	res, err := s.appendEventTx(ctx, tx, appendEventRequest{

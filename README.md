@@ -13,6 +13,8 @@ This repo now contains the first implementation slice for a local event-ledger-b
 - `memori issue link`
 - `memori issue update`
 - `memori issue show`
+- `memori gate evaluate`
+- `memori gate status`
 - `memori event log`
 - `memori db status`
 - `memori db migrate`
@@ -66,13 +68,24 @@ memori issue link --child <child-key> --parent <parent-key> --command-id "cli-li
 # inspect event ledger for the issue
 memori event log --entity <issue-key>
 
+# evaluate a gate
+memori gate evaluate \
+  --issue <issue-key> \
+  --gate build \
+  --result PASS \
+  --evidence "ci://run/123" \
+  --command-id "cli-gate-eval-01"
+
+# inspect gate status for current locked gate set
+memori gate status --issue <issue-key>
+
 # rebuild projections from events
 memori db replay
 ```
 
 `--json` is supported on read/list commands in this slice and on `init`/`issue create`/`issue update` for structured automation.
 
-Mutating issue commands (`issue create`, `issue update`, `issue link`) require `--command-id` for idempotency tracking.
+Mutating commands (`issue create`, `issue update`, `issue link`, `gate evaluate`) require `--command-id` for idempotency tracking.
 
 Issue key format:
 

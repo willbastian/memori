@@ -32,6 +32,21 @@ func TestIssueLinkRequiresCommandID(t *testing.T) {
 	}
 }
 
+func TestGateEvaluateRequiresCommandID(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := runMemoriForTest(
+		"gate", "evaluate",
+		"--issue", "mem-a1b2c3d",
+		"--gate", "build",
+		"--result", "PASS",
+		"--evidence", "ci://run/1",
+	)
+	if err == nil || !strings.Contains(err.Error(), "--command-id is required") {
+		t.Fatalf("expected missing command-id error, got: %v", err)
+	}
+}
+
 func TestEventLogRejectsUnknownEntityType(t *testing.T) {
 	t.Parallel()
 
