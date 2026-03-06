@@ -71,6 +71,13 @@ type UpdateIssueStatusParams struct {
 	CommandID string
 }
 
+type LinkIssueParams struct {
+	ChildIssueID  string
+	ParentIssueID string
+	Actor         string
+	CommandID     string
+}
+
 type ListIssuesParams struct {
 	Type     string
 	Status   string
@@ -117,6 +124,13 @@ type issueUpdatedPayload struct {
 	StatusFrom string `json:"status_from"`
 	StatusTo   string `json:"status_to"`
 	UpdatedAt  string `json:"updated_at"`
+}
+
+type issueLinkedPayload struct {
+	IssueID      string `json:"issue_id"`
+	ParentIDFrom string `json:"parent_id_from,omitempty"`
+	ParentIDTo   string `json:"parent_id_to"`
+	LinkedAt     string `json:"linked_at"`
 }
 
 func Open(path string) (*Store, error) {
@@ -348,11 +362,27 @@ func (s *Store) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Ev
 		return Issue{}, Event{}, false, err
 	}
 
+	parentID := strings.TrimSpace(p.ParentID)
+	if parentID != "" {
+		normalizedParentID, err := normalizeIssueKey(parentID)
+		if err != nil {
+			return Issue{}, Event{}, false, err
+		}
+		parentIssue, err := getIssueTx(ctx, tx, normalizedParentID)
+		if err != nil {
+			return Issue{}, Event{}, false, err
+		}
+		if err := validateIssueLinkForNewIssueTx(ctx, tx, p.IssueID, issueType, parentIssue); err != nil {
+			return Issue{}, Event{}, false, err
+		}
+		parentID = normalizedParentID
+	}
+
 	payload := issueCreatedPayload{
 		IssueID:   p.IssueID,
 		Type:      issueType,
 		Title:     strings.TrimSpace(p.Title),
-		ParentID:  strings.TrimSpace(p.ParentID),
+		ParentID:  parentID,
 		Status:    "Todo",
 		CreatedAt: nowUTC(),
 	}
@@ -489,6 +519,102 @@ func (s *Store) UpdateIssueStatus(ctx context.Context, p UpdateIssueStatusParams
 	}
 
 	issue, err := getIssueTx(ctx, tx, issueID)
+	if err != nil {
+		return Issue{}, Event{}, false, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Issue{}, Event{}, false, fmt.Errorf("commit tx: %w", err)
+	}
+
+	return issue, appendRes.Event, appendRes.AlreadyExists, nil
+}
+
+func (s *Store) LinkIssue(ctx context.Context, p LinkIssueParams) (Issue, Event, bool, error) {
+	childID, err := normalizeIssueKey(p.ChildIssueID)
+	if err != nil {
+		return Issue{}, Event{}, false, err
+	}
+	parentID, err := normalizeIssueKey(p.ParentIssueID)
+	if err != nil {
+		return Issue{}, Event{}, false, err
+	}
+	if p.Actor == "" {
+		p.Actor = defaultActor()
+	}
+	if p.CommandID == "" {
+		p.CommandID = newID("cmd")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Issue{}, Event{}, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if existingEvent, found, err := findEventByActorCommandTx(ctx, tx, p.Actor, p.CommandID); err != nil {
+		return Issue{}, Event{}, false, err
+	} else if found {
+		if existingEvent.EventType != "issue.linked" {
+			return Issue{}, Event{}, false, fmt.Errorf("command id already used by %q", existingEvent.EventType)
+		}
+		issue, err := getIssueTx(ctx, tx, existingEvent.EntityID)
+		if err != nil {
+			return Issue{}, Event{}, false, err
+		}
+		if err := tx.Commit(); err != nil {
+			return Issue{}, Event{}, false, fmt.Errorf("commit tx: %w", err)
+		}
+		return issue, existingEvent, true, nil
+	}
+
+	childIssue, err := getIssueTx(ctx, tx, childID)
+	if err != nil {
+		return Issue{}, Event{}, false, err
+	}
+	parentIssue, err := getIssueTx(ctx, tx, parentID)
+	if err != nil {
+		return Issue{}, Event{}, false, err
+	}
+
+	if err := validateIssueLinkTx(ctx, tx, childIssue, parentIssue); err != nil {
+		return Issue{}, Event{}, false, err
+	}
+
+	payload := issueLinkedPayload{
+		IssueID:      childIssue.ID,
+		ParentIDFrom: childIssue.ParentID,
+		ParentIDTo:   parentIssue.ID,
+		LinkedAt:     nowUTC(),
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return Issue{}, Event{}, false, fmt.Errorf("marshal payload: %w", err)
+	}
+
+	appendRes, err := s.appendEventTx(ctx, tx, appendEventRequest{
+		EntityType:          "issue",
+		EntityID:            childIssue.ID,
+		EventType:           "issue.linked",
+		PayloadJSON:         string(payloadBytes),
+		Actor:               p.Actor,
+		CommandID:           p.CommandID,
+		EventPayloadVersion: 1,
+	})
+	if err != nil {
+		return Issue{}, Event{}, false, err
+	}
+	if appendRes.Event.EventType != "issue.linked" {
+		return Issue{}, Event{}, false, fmt.Errorf("command id already used by %q", appendRes.Event.EventType)
+	}
+
+	if !appendRes.AlreadyExists {
+		if err := applyIssueLinkedProjectionTx(ctx, tx, appendRes.Event); err != nil {
+			return Issue{}, Event{}, false, err
+		}
+	}
+
+	issue, err := getIssueTx(ctx, tx, childIssue.ID)
 	if err != nil {
 		return Issue{}, Event{}, false, err
 	}
@@ -666,6 +792,8 @@ func applyEventProjectionTx(ctx context.Context, tx *sql.Tx, event Event) error 
 		return applyIssueCreatedProjectionTx(ctx, tx, event)
 	case "issue.updated":
 		return applyIssueUpdatedProjectionTx(ctx, tx, event)
+	case "issue.linked":
+		return applyIssueLinkedProjectionTx(ctx, tx, event)
 	default:
 		return nil
 	}
@@ -724,6 +852,37 @@ func applyIssueUpdatedProjectionTx(ctx context.Context, tx *sql.Tx, event Event)
 		SET status = ?, updated_at = ?, last_event_id = ?
 		WHERE id = ?
 	`, issueStatus, event.CreatedAt, event.EventID, payload.IssueID)
+	if err != nil {
+		return fmt.Errorf("update work_item from event %s: %w", event.EventID, err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check updated rows for event %s: %w", event.EventID, err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("update work_item from event %s: issue %q not found", event.EventID, payload.IssueID)
+	}
+
+	return nil
+}
+
+func applyIssueLinkedProjectionTx(ctx context.Context, tx *sql.Tx, event Event) error {
+	var payload issueLinkedPayload
+	if err := json.Unmarshal([]byte(event.PayloadJSON), &payload); err != nil {
+		return fmt.Errorf("decode issue.linked payload for event %s: %w", event.EventID, err)
+	}
+
+	linkedParentID, err := normalizeIssueKey(payload.ParentIDTo)
+	if err != nil {
+		return fmt.Errorf("decode issue.linked payload for event %s: %w", event.EventID, err)
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE work_items
+		SET parent_id = ?, updated_at = ?, last_event_id = ?
+		WHERE id = ?
+	`, linkedParentID, event.CreatedAt, event.EventID, payload.IssueID)
 	if err != nil {
 		return fmt.Errorf("update work_item from event %s: %w", event.EventID, err)
 	}
@@ -1004,6 +1163,90 @@ func validateIssueStatusTransition(from, to string) error {
 		return fmt.Errorf("invalid status transition %q -> %q", fromStatus, toStatus)
 	}
 	return nil
+}
+
+func validateIssueLinkForNewIssueTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	childID, childType string,
+	parentIssue Issue,
+) error {
+	if childID == parentIssue.ID {
+		return fmt.Errorf("invalid issue link %q -> %q: issue cannot be its own parent", childID, parentIssue.ID)
+	}
+	if err := validateParentChildTypeConstraint(parentIssue.Type, childType); err != nil {
+		return err
+	}
+	if createsCycle, err := wouldCreateIssueLinkCycleTx(ctx, tx, childID, parentIssue.ID); err != nil {
+		return err
+	} else if createsCycle {
+		return fmt.Errorf("invalid issue link %q -> %q: cycle detected", childID, parentIssue.ID)
+	}
+	return nil
+}
+
+func validateIssueLinkTx(ctx context.Context, tx *sql.Tx, childIssue, parentIssue Issue) error {
+	if childIssue.ID == parentIssue.ID {
+		return fmt.Errorf("invalid issue link %q -> %q: issue cannot be its own parent", childIssue.ID, parentIssue.ID)
+	}
+	if childIssue.ParentID == parentIssue.ID {
+		return fmt.Errorf("issue %q is already linked to parent %q", childIssue.ID, parentIssue.ID)
+	}
+	if err := validateParentChildTypeConstraint(parentIssue.Type, childIssue.Type); err != nil {
+		return err
+	}
+	if createsCycle, err := wouldCreateIssueLinkCycleTx(ctx, tx, childIssue.ID, parentIssue.ID); err != nil {
+		return err
+	} else if createsCycle {
+		return fmt.Errorf("invalid issue link %q -> %q: cycle detected", childIssue.ID, parentIssue.ID)
+	}
+	return nil
+}
+
+func validateParentChildTypeConstraint(parentType, childType string) error {
+	switch parentType {
+	case "Epic":
+		if childType != "Story" {
+			return fmt.Errorf("invalid issue link type: parent Epic requires child Story (got %s)", childType)
+		}
+	case "Story":
+		if childType != "Task" && childType != "Bug" {
+			return fmt.Errorf("invalid issue link type: parent Story requires child Task|Bug (got %s)", childType)
+		}
+	default:
+		return fmt.Errorf("invalid issue link type: parent %s cannot have children", parentType)
+	}
+	return nil
+}
+
+func wouldCreateIssueLinkCycleTx(ctx context.Context, tx *sql.Tx, childID, proposedParentID string) (bool, error) {
+	current := strings.TrimSpace(proposedParentID)
+	for current != "" {
+		if current == childID {
+			return true, nil
+		}
+		parentID, err := parentIDForIssueTx(ctx, tx, current)
+		if err != nil {
+			return false, err
+		}
+		current = strings.TrimSpace(parentID)
+	}
+	return false, nil
+}
+
+func parentIDForIssueTx(ctx context.Context, tx *sql.Tx, issueID string) (string, error) {
+	var parentID sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT parent_id FROM work_items WHERE id = ?`, issueID).Scan(&parentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("issue %q not found", issueID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("query issue parent for %q: %w", issueID, err)
+	}
+	if parentID.Valid {
+		return parentID.String, nil
+	}
+	return "", nil
 }
 
 func normalizeIssueKey(raw string) (string, error) {

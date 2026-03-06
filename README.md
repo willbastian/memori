@@ -8,6 +8,7 @@ This repo now contains the first implementation slice for a local event-ledger-b
 - Event store foundation (`events` append-only, hash chain columns, idempotency key)
 - Minimal projection table (`work_items`)
 - `memori issue create`
+- `memori issue link`
 - `memori issue update`
 - `memori issue show`
 - `memori event log`
@@ -27,6 +28,9 @@ memori issue show --key <issue-key>
 
 # move issue to in-progress
 memori issue update --key <issue-key> --status inprogress
+
+# re-link child to parent
+memori issue link --child <child-key> --parent <parent-key>
 
 # inspect event ledger for the issue
 memori event log --entity <issue-key>

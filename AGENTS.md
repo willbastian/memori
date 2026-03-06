@@ -25,7 +25,8 @@ Use `memori` for issue tracking in this repository.
    - `memori issue update --key <issue_key> --status blocked --command-id "<unique-id>" --json`
    - `memori issue update --key <issue_key> --status done --command-id "<unique-id>" --json`
 5. Keep work decomposed.
-   - If scope grows, create child tasks/bugs and link with `--parent` on creation.
+   - If scope grows, create child tasks/bugs and link with `--parent` on creation or `issue link`.
+   - `memori issue link --child <child_key> --parent <parent_key> --command-id "<unique-id>" --json`
 6. Rebuild projections from event ledger when validating consistency.
    - `memori db replay --json`
 
@@ -44,7 +45,7 @@ Use issue keys in `{prefix}-{shortSHA}` format.
 - Prefix is project-wide (set once via `memori init --issue-prefix ...`) and must be consistent for all new issues.
 
 ## During Bootstrap
-- `issue link`, gates, and packet flows are still in progress.
+- Gates and packet flows are still in progress.
 - Use `issue update` status transitions for day-to-day progress tracking.
 - Prefer more small issues over untracked status notes.
 

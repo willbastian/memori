@@ -55,6 +55,7 @@ func runHelp(args []string, out io.Writer) error {
 			"memori help [--json]",
 			"memori init [--db <path>] [--issue-prefix <prefix>] [--json]",
 			"memori issue create --type epic|story|task|bug --title <title> [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] [--command-id <id>] [--json]",
+			"memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori issue update --key <prefix-shortSHA> --status todo|inprogress|blocked|done [--actor <actor>] [--command-id <id>] [--json]",
 			"memori issue show --key <prefix-shortSHA> [--json]",
 			"memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]",
@@ -121,12 +122,14 @@ func runInit(args []string, out io.Writer) error {
 
 func runIssue(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("issue subcommand required: create|update|show")
+		return errors.New("issue subcommand required: create|link|update|show")
 	}
 
 	switch args[0] {
 	case "create":
 		return runIssueCreate(args[1:], out)
+	case "link":
+		return runIssueLink(args[1:], out)
 	case "update":
 		return runIssueUpdate(args[1:], out)
 	case "show":
@@ -261,6 +264,66 @@ func runIssueUpdate(args []string, out io.Writer) error {
 		_, _ = fmt.Fprintf(out, "Issue %s update already applied from previous command replay.\n", issue.ID)
 	} else {
 		_, _ = fmt.Fprintf(out, "Updated issue %s status -> %s\n", issue.ID, issue.Status)
+	}
+	_, _ = fmt.Fprintf(out, "Event: %s (%s #%d)\n", event.EventID, event.EventType, event.EventOrder)
+	return nil
+}
+
+func runIssueLink(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("issue link", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	child := fs.String("child", "", "child issue key")
+	parent := fs.String("parent", "", "parent issue key")
+	actor := fs.String("actor", "", "actor id")
+	commandID := fs.String("command-id", "", "idempotency command id")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*child) == "" {
+		return errors.New("--child is required")
+	}
+	if strings.TrimSpace(*parent) == "" {
+		return errors.New("--parent is required")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	issue, event, idempotent, err := s.LinkIssue(ctx, store.LinkIssueParams{
+		ChildIssueID:  *child,
+		ParentIssueID: *parent,
+		Actor:         *actor,
+		CommandID:     *commandID,
+	})
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "issue link",
+			Data: issueLinkData{
+				Issue:      issue,
+				Event:      event,
+				Idempotent: idempotent,
+			},
+		})
+	}
+
+	if idempotent {
+		_, _ = fmt.Fprintf(out, "Issue link for %s already applied from previous command replay.\n", issue.ID)
+	} else {
+		_, _ = fmt.Fprintf(out, "Linked issue %s -> parent %s\n", issue.ID, issue.ParentID)
 	}
 	_, _ = fmt.Fprintf(out, "Event: %s (%s #%d)\n", event.EventID, event.EventType, event.EventOrder)
 	return nil
@@ -542,6 +605,12 @@ type issueCreateData struct {
 	Idempotent bool        `json:"idempotent"`
 }
 
+type issueLinkData struct {
+	Issue      store.Issue `json:"issue"`
+	Event      store.Event `json:"event"`
+	Idempotent bool        `json:"idempotent"`
+}
+
 type issueUpdateData struct {
 	Issue      store.Issue `json:"issue"`
 	Event      store.Event `json:"event"`
@@ -716,6 +785,7 @@ func printHelp(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "  memori help [--json]")
 	_, _ = fmt.Fprintln(out, "  memori init [--db <path>] [--issue-prefix <prefix>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori issue create --type epic|story|task|bug --title <title> [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] [--command-id <id>] [--json]")
+	_, _ = fmt.Fprintln(out, "  memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] [--command-id <id>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori issue update --key <prefix-shortSHA> --status todo|inprogress|blocked|done [--actor <actor>] [--command-id <id>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori issue show --key <prefix-shortSHA> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]")
