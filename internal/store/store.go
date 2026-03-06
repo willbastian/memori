@@ -27,6 +27,7 @@ const (
 	eventTypeIssueCreate = "issue.created"
 	eventTypeIssueUpdate = "issue.updated"
 	eventTypeIssueLink   = "issue.linked"
+	eventTypeGateEval    = "gate.evaluated"
 )
 
 type Store struct {
@@ -199,7 +200,7 @@ func (s *Store) Initialize(ctx context.Context, p InitializeParams) error {
 			entity_type TEXT NOT NULL CHECK(entity_type IN ('issue')),
 			entity_id TEXT NOT NULL,
 			entity_seq INTEGER NOT NULL CHECK(entity_seq > 0),
-			event_type TEXT NOT NULL CHECK(event_type IN ('issue.created','issue.updated','issue.linked')),
+			event_type TEXT NOT NULL CHECK(event_type IN ('issue.created','issue.updated','issue.linked','gate.evaluated')),
 			payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
 			actor TEXT NOT NULL,
 			command_id TEXT NOT NULL CHECK(length(command_id) > 0),
@@ -570,6 +571,11 @@ func (s *Store) UpdateIssueStatus(ctx context.Context, p UpdateIssueStatusParams
 
 	if err := validateIssueStatusTransition(currentIssue.Status, targetStatus); err != nil {
 		return Issue{}, Event{}, false, err
+	}
+	if targetStatus == "Done" {
+		if err := validateIssueCloseEligibilityTx(ctx, tx, issueID); err != nil {
+			return Issue{}, Event{}, false, err
+		}
 	}
 
 	payload := issueUpdatedPayload{
@@ -1248,6 +1254,79 @@ func validateIssueStatusTransition(from, to string) error {
 	}
 	if !allowed[fromStatus][toStatus] {
 		return fmt.Errorf("invalid status transition %q -> %q", fromStatus, toStatus)
+	}
+	return nil
+}
+
+func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID string) error {
+	var gateSetID string
+	err := tx.QueryRowContext(ctx, `
+		SELECT gs.gate_set_id
+		FROM gate_sets gs
+		INNER JOIN work_items wi
+			ON wi.id = gs.issue_id
+			AND wi.current_cycle_no = gs.cycle_no
+		WHERE gs.issue_id = ?
+			AND gs.locked_at IS NOT NULL
+		ORDER BY gs.cycle_no DESC
+		LIMIT 1
+	`, issueID).Scan(&gateSetID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("close validation query gate set for issue %q: %w", issueID, err)
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT
+			r.gate_id,
+			COALESCE((
+				SELECT json_extract(e.payload_json, '$.result')
+				FROM events e
+				WHERE e.entity_type = ?
+					AND e.entity_id = ?
+					AND e.event_type = ?
+					AND json_extract(e.payload_json, '$.gate_set_id') = ?
+					AND json_extract(e.payload_json, '$.gate_id') = r.gate_id
+				ORDER BY e.event_order DESC
+				LIMIT 1
+			), '')
+		FROM gate_set_items r
+		WHERE r.gate_set_id = ?
+			AND r.required = 1
+		ORDER BY r.gate_id ASC
+	`, entityTypeIssue, issueID, eventTypeGateEval, gateSetID, gateSetID)
+	if err != nil {
+		return fmt.Errorf("close validation list required gates for issue %q: %w", issueID, err)
+	}
+	defer rows.Close()
+
+	failures := make([]string, 0)
+	for rows.Next() {
+		var gateID, result string
+		if err := rows.Scan(&gateID, &result); err != nil {
+			return fmt.Errorf("close validation scan required gate for issue %q: %w", issueID, err)
+		}
+		if strings.ToUpper(strings.TrimSpace(result)) != "PASS" {
+			status := "MISSING"
+			if strings.TrimSpace(result) != "" {
+				status = strings.ToUpper(strings.TrimSpace(result))
+			}
+			failures = append(failures, gateID+"="+status)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("close validation iterate required gates for issue %q: %w", issueID, err)
+	}
+
+	if len(failures) > 0 {
+		return fmt.Errorf(
+			"close validation failed for issue %q (gate_set %q): required gates not PASS: %s",
+			issueID,
+			gateSetID,
+			strings.Join(failures, ", "),
+		)
 	}
 	return nil
 }

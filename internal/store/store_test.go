@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -855,6 +856,97 @@ func TestUpdateIssueStatusRejectsInvalidTransitions(t *testing.T) {
 	}
 }
 
+func TestUpdateIssueStatusDoneRequiresPassingLockedRequiredGates(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-3434343"
+	_, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Close validation test",
+		Actor:     "agent-1",
+		CommandID: "cmd-close-create-1",
+	})
+	if err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-close-progress-1",
+	})
+	if err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+
+	gateSetID := "gs_close_1"
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO gate_sets(
+			gate_set_id, issue_id, cycle_no, template_refs_json, frozen_definition_json,
+			gate_set_hash, locked_at, created_at, created_by
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, gateSetID, issueID, 1, `["tmpl-default@1"]`, `{"gates":[{"id":"build"}]}`, "closehash1", nowUTC(), nowUTC(), "agent-1")
+	if err != nil {
+		t.Fatalf("insert locked gate set: %v", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO gate_set_items(gate_set_id, gate_id, kind, required, criteria_json)
+		VALUES(?, ?, ?, ?, ?)
+	`, gateSetID, "build", "check", 1, `{"command":"go test ./..."}`)
+	if err != nil {
+		t.Fatalf("insert required gate item: %v", err)
+	}
+
+	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "done",
+		Actor:     "agent-1",
+		CommandID: "cmd-close-done-missing-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "required gates not PASS: build=MISSING") {
+		t.Fatalf("expected missing gate failure, got: %v", err)
+	}
+
+	eventsAfterMissing, err := s.ListEventsForEntity(ctx, entityTypeIssue, issueID)
+	if err != nil {
+		t.Fatalf("list events after missing gate close attempt: %v", err)
+	}
+	if len(eventsAfterMissing) != 2 {
+		t.Fatalf("expected no Done event appended on failed close, got %d events", len(eventsAfterMissing))
+	}
+
+	appendGateEvaluationEventForTest(t, s, issueID, gateSetID, "build", "FAIL", "agent-1", "cmd-close-gate-eval-fail-1")
+
+	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "done",
+		Actor:     "agent-1",
+		CommandID: "cmd-close-done-fail-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "required gates not PASS: build=FAIL") {
+		t.Fatalf("expected failing gate close rejection, got: %v", err)
+	}
+
+	appendGateEvaluationEventForTest(t, s, issueID, gateSetID, "build", "PASS", "agent-1", "cmd-close-gate-eval-pass-1")
+
+	closed, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "done",
+		Actor:     "agent-1",
+		CommandID: "cmd-close-done-pass-1",
+	})
+	if err != nil {
+		t.Fatalf("expected close to succeed once required gate passes: %v", err)
+	}
+	if closed.Status != "Done" {
+		t.Fatalf("expected issue status Done, got %s", closed.Status)
+	}
+}
+
 func TestReplayProjectionsAppliesIssueUpdatedEvents(t *testing.T) {
 	t.Parallel()
 
@@ -1152,6 +1244,45 @@ func newTestStoreWithPrefix(t *testing.T, prefix string) *Store {
 	}
 
 	return s
+}
+
+func appendGateEvaluationEventForTest(
+	t *testing.T,
+	s *Store,
+	issueID, gateSetID, gateID, result, actor, commandID string,
+) {
+	t.Helper()
+
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx for gate evaluation event: %v", err)
+	}
+	defer tx.Rollback()
+
+	payloadJSON := fmt.Sprintf(
+		`{"issue_id":%q,"gate_set_id":%q,"gate_id":%q,"result":%q,"evaluated_at":%q}`,
+		issueID, gateSetID, gateID, result, nowUTC(),
+	)
+	res, err := s.appendEventTx(ctx, tx, appendEventRequest{
+		EntityType:          entityTypeIssue,
+		EntityID:            issueID,
+		EventType:           eventTypeGateEval,
+		PayloadJSON:         payloadJSON,
+		Actor:               actor,
+		CommandID:           commandID,
+		EventPayloadVersion: 1,
+	})
+	if err != nil {
+		t.Fatalf("append gate evaluation event: %v", err)
+	}
+	if res.AlreadyExists {
+		t.Fatalf("expected non-idempotent append for unique command_id %q", commandID)
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit gate evaluation event: %v", err)
+	}
 }
 
 func assertIssueEqual(t *testing.T, expected, actual Issue) {

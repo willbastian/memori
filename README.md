@@ -6,6 +6,8 @@ This repo now contains the first implementation slice for a local event-ledger-b
 
 - `memori init`
 - Event store foundation (`events` append-only, hash chain columns, idempotency key)
+- Immutable gate schema foundation (`gate_templates`, `gate_sets`, `gate_set_items` + immutability triggers)
+- Close-validator contract on `issue update --status done` (checks required locked gates from source-of-truth data)
 - Minimal projection table (`work_items`)
 - `memori issue create`
 - `memori issue link`
