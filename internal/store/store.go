@@ -243,6 +243,86 @@ func (s *Store) Initialize(ctx context.Context, p InitializeParams) error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_work_items_type_status ON work_items(type, status);`,
 		`CREATE INDEX IF NOT EXISTS idx_work_items_parent ON work_items(parent_id);`,
+		`CREATE TABLE IF NOT EXISTS gate_templates (
+			template_id TEXT NOT NULL,
+			version INTEGER NOT NULL CHECK(version > 0),
+			applies_to_json TEXT NOT NULL CHECK(json_valid(applies_to_json)),
+			definition_json TEXT NOT NULL CHECK(json_valid(definition_json)),
+			definition_hash TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			created_by TEXT NOT NULL,
+			PRIMARY KEY(template_id, version),
+			UNIQUE(definition_hash)
+		);`,
+		`CREATE TRIGGER IF NOT EXISTS gate_templates_no_update
+			BEFORE UPDATE ON gate_templates
+			BEGIN
+				SELECT RAISE(ABORT, 'gate_templates are immutable');
+			END;`,
+		`CREATE TRIGGER IF NOT EXISTS gate_templates_no_delete
+			BEFORE DELETE ON gate_templates
+			BEGIN
+				SELECT RAISE(ABORT, 'gate_templates are immutable');
+			END;`,
+		`CREATE TABLE IF NOT EXISTS gate_sets (
+			gate_set_id TEXT PRIMARY KEY,
+			issue_id TEXT NOT NULL,
+			cycle_no INTEGER NOT NULL CHECK(cycle_no > 0),
+			template_refs_json TEXT NOT NULL CHECK(json_valid(template_refs_json)),
+			frozen_definition_json TEXT NOT NULL CHECK(json_valid(frozen_definition_json)),
+			gate_set_hash TEXT NOT NULL,
+			locked_at TEXT,
+			created_at TEXT NOT NULL,
+			created_by TEXT NOT NULL,
+			UNIQUE(issue_id, cycle_no),
+			UNIQUE(issue_id, gate_set_hash),
+			FOREIGN KEY(issue_id) REFERENCES work_items(id)
+		);`,
+		`CREATE TRIGGER IF NOT EXISTS gate_sets_no_delete
+			BEFORE DELETE ON gate_sets
+			BEGIN
+				SELECT RAISE(ABORT, 'gate_sets are immutable');
+			END;`,
+		`CREATE TRIGGER IF NOT EXISTS gate_sets_frozen_definition_no_update
+			BEFORE UPDATE ON gate_sets
+			WHEN NEW.template_refs_json IS NOT OLD.template_refs_json
+				OR NEW.frozen_definition_json IS NOT OLD.frozen_definition_json
+				OR NEW.gate_set_hash IS NOT OLD.gate_set_hash
+			BEGIN
+				SELECT RAISE(ABORT, 'gate_set definitions are immutable');
+			END;`,
+		`CREATE TRIGGER IF NOT EXISTS gate_sets_lock_noop_rejected
+			BEFORE UPDATE OF locked_at ON gate_sets
+			WHEN OLD.locked_at IS NOT NULL
+			BEGIN
+				SELECT RAISE(ABORT, 'gate_set is already locked');
+			END;`,
+		`CREATE TRIGGER IF NOT EXISTS gate_sets_locked_row_no_update
+			BEFORE UPDATE ON gate_sets
+			WHEN OLD.locked_at IS NOT NULL
+				AND NEW.locked_at IS OLD.locked_at
+			BEGIN
+				SELECT RAISE(ABORT, 'locked gate_sets are immutable');
+			END;`,
+		`CREATE TABLE IF NOT EXISTS gate_set_items (
+			gate_set_id TEXT NOT NULL,
+			gate_id TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			required INTEGER NOT NULL CHECK(required IN (0,1)),
+			criteria_json TEXT NOT NULL CHECK(json_valid(criteria_json)),
+			PRIMARY KEY(gate_set_id, gate_id),
+			FOREIGN KEY(gate_set_id) REFERENCES gate_sets(gate_set_id)
+		);`,
+		`CREATE TRIGGER IF NOT EXISTS gate_set_items_no_update
+			BEFORE UPDATE ON gate_set_items
+			BEGIN
+				SELECT RAISE(ABORT, 'gate_set_items are immutable');
+			END;`,
+		`CREATE TRIGGER IF NOT EXISTS gate_set_items_no_delete
+			BEFORE DELETE ON gate_set_items
+			BEGIN
+				SELECT RAISE(ABORT, 'gate_set_items are immutable');
+			END;`,
 	}
 
 	for _, stmt := range schema {

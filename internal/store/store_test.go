@@ -438,6 +438,176 @@ func TestEventsTableAppendOnlyTriggersBlockMutation(t *testing.T) {
 	}
 }
 
+func TestGateTemplatesImmutabilityTriggersBlockMutation(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO gate_templates(
+			template_id, version, applies_to_json, definition_json,
+			definition_hash, created_at, created_by
+		) VALUES(?, ?, ?, ?, ?, ?, ?)
+	`, "tmpl-default", 1, `["Task"]`, `{"gates":[{"id":"build"}]}`, "tmplhash1", nowUTC(), "agent-1")
+	if err != nil {
+		t.Fatalf("insert gate template: %v", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE gate_templates SET definition_json = ? WHERE template_id = ? AND version = ?
+	`, `{"gates":[{"id":"lint"}]}`, "tmpl-default", 1)
+	if err == nil {
+		t.Fatalf("expected update on gate_templates to fail due to immutability trigger")
+	}
+	if !strings.Contains(err.Error(), "gate_templates are immutable") {
+		t.Fatalf("expected gate template immutability error, got: %v", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		DELETE FROM gate_templates WHERE template_id = ? AND version = ?
+	`, "tmpl-default", 1)
+	if err == nil {
+		t.Fatalf("expected delete on gate_templates to fail due to immutability trigger")
+	}
+	if !strings.Contains(err.Error(), "gate_templates are immutable") {
+		t.Fatalf("expected gate template delete immutability error, got: %v", err)
+	}
+}
+
+func TestGateSetItemsImmutabilityTriggersBlockMutation(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	_, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   "mem-1212121",
+		Type:      "task",
+		Title:     "Gate item trigger test",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-item-1",
+	})
+	if err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO gate_sets(
+			gate_set_id, issue_id, cycle_no, template_refs_json, frozen_definition_json,
+			gate_set_hash, locked_at, created_at, created_by
+		) VALUES(?, ?, ?, ?, ?, ?, NULL, ?, ?)
+	`, "gs_1", "mem-1212121", 1, `["tmpl-default@1"]`, `{"gates":[{"id":"build"}]}`, "gshash1", nowUTC(), "agent-1")
+	if err != nil {
+		t.Fatalf("insert gate set: %v", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO gate_set_items(gate_set_id, gate_id, kind, required, criteria_json)
+		VALUES(?, ?, ?, ?, ?)
+	`, "gs_1", "build", "check", 1, `{"command":"go test ./..."}`)
+	if err != nil {
+		t.Fatalf("insert gate set item: %v", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE gate_set_items SET required = 0 WHERE gate_set_id = ? AND gate_id = ?
+	`, "gs_1", "build")
+	if err == nil {
+		t.Fatalf("expected update on gate_set_items to fail due to immutability trigger")
+	}
+	if !strings.Contains(err.Error(), "gate_set_items are immutable") {
+		t.Fatalf("expected gate_set_items immutability error, got: %v", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		DELETE FROM gate_set_items WHERE gate_set_id = ? AND gate_id = ?
+	`, "gs_1", "build")
+	if err == nil {
+		t.Fatalf("expected delete on gate_set_items to fail due to immutability trigger")
+	}
+	if !strings.Contains(err.Error(), "gate_set_items are immutable") {
+		t.Fatalf("expected gate_set_items delete immutability error, got: %v", err)
+	}
+}
+
+func TestGateSetsImmutabilityTriggersEnforceFrozenFieldsAndLocking(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	_, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   "mem-2323232",
+		Type:      "task",
+		Title:     "Gate set trigger test",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-set-1",
+	})
+	if err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+
+	createdAt := nowUTC()
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO gate_sets(
+			gate_set_id, issue_id, cycle_no, template_refs_json, frozen_definition_json,
+			gate_set_hash, locked_at, created_at, created_by
+		) VALUES(?, ?, ?, ?, ?, ?, NULL, ?, ?)
+	`, "gs_2", "mem-2323232", 1, `["tmpl-default@1"]`, `{"gates":[{"id":"build"}]}`, "gshash2", createdAt, "agent-1")
+	if err != nil {
+		t.Fatalf("insert gate set: %v", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE gate_sets SET template_refs_json = ? WHERE gate_set_id = ?
+	`, `["tmpl-default@2"]`, "gs_2")
+	if err == nil {
+		t.Fatalf("expected frozen field update to fail")
+	}
+	if !strings.Contains(err.Error(), "gate_set definitions are immutable") {
+		t.Fatalf("expected frozen definition immutability error, got: %v", err)
+	}
+
+	lockedAt := nowUTC()
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE gate_sets SET locked_at = ? WHERE gate_set_id = ?
+	`, lockedAt, "gs_2")
+	if err != nil {
+		t.Fatalf("lock gate set (set locked_at once): %v", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE gate_sets SET created_by = ? WHERE gate_set_id = ?
+	`, "agent-2", "gs_2")
+	if err == nil {
+		t.Fatalf("expected update on locked gate_set to fail")
+	}
+	if !strings.Contains(err.Error(), "locked gate_sets are immutable") {
+		t.Fatalf("expected locked gate_set immutability error, got: %v", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE gate_sets SET locked_at = ? WHERE gate_set_id = ?
+	`, nowUTC(), "gs_2")
+	if err == nil {
+		t.Fatalf("expected second lock attempt to fail")
+	}
+	if !strings.Contains(err.Error(), "gate_set is already locked") {
+		t.Fatalf("expected clear lock no-op rejection error, got: %v", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		DELETE FROM gate_sets WHERE gate_set_id = ?
+	`, "gs_2")
+	if err == nil {
+		t.Fatalf("expected delete on gate_sets to fail due to immutability trigger")
+	}
+	if !strings.Contains(err.Error(), "gate_sets are immutable") {
+		t.Fatalf("expected gate_sets delete immutability error, got: %v", err)
+	}
+}
+
 func TestListIssuesFiltersByTypeStatusAndParent(t *testing.T) {
 	t.Parallel()
 
