@@ -31,6 +31,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return runInit(args[1:], stdout)
 	case "issue":
 		return runIssue(args[1:], stdout)
+	case "backlog":
+		return runBacklog(args[1:], stdout)
 	case "event":
 		return runEvent(args[1:], stdout)
 	case "db":
@@ -51,9 +53,10 @@ func runHelp(args []string, out io.Writer) error {
 	if *jsonOut {
 		commands := []string{
 			"memori help [--json]",
-			"memori init [--db <path>] [--json]",
-			"memori issue create --type epic|story|task|bug --title <title> [--parent <id>] [--id <id>] [--actor <actor>] [--command-id <id>] [--json]",
-			"memori issue show --id <id> [--json]",
+			"memori init [--db <path>] [--issue-prefix <prefix>] [--json]",
+			"memori issue create --type epic|story|task|bug --title <title> [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] [--command-id <id>] [--json]",
+			"memori issue show --key <prefix-shortSHA> [--json]",
+			"memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]",
 			"memori event log --entity <entityType:id|id> [--json]",
 			"memori db replay [--json]",
 		}
@@ -74,6 +77,7 @@ func runInit(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	issuePrefix := fs.String("issue-prefix", store.DefaultIssueKeyPrefix, "project-wide issue key prefix for new issues")
 	jsonOut := fs.Bool("json", false, "machine-readable output")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -88,7 +92,7 @@ func runInit(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
-	if err := s.Initialize(ctx); err != nil {
+	if err := s.Initialize(ctx, store.InitializeParams{IssueKeyPrefix: *issuePrefix}); err != nil {
 		return err
 	}
 
@@ -103,13 +107,14 @@ func runInit(args []string, out io.Writer) error {
 			DBSchemaVersion:       dbVersion,
 			Command:               "init",
 			Data: initData{
-				DBPath: *dbPath,
-				Status: "initialized",
+				DBPath:         *dbPath,
+				Status:         "initialized",
+				IssueKeyPrefix: *issuePrefix,
 			},
 		})
 	}
 
-	_, _ = fmt.Fprintf(out, "Initialized memori database at %s (schema v%d)\n", *dbPath, dbVersion)
+	_, _ = fmt.Fprintf(out, "Initialized memori database at %s (schema v%d, issue prefix %s)\n", *dbPath, dbVersion, *issuePrefix)
 	return nil
 }
 
@@ -134,12 +139,17 @@ func runIssueCreate(args []string, out io.Writer) error {
 	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
 	issueType := fs.String("type", "", "issue type: epic|story|task|bug")
 	title := fs.String("title", "", "issue title")
-	parent := fs.String("parent", "", "parent issue id")
-	id := fs.String("id", "", "explicit issue id (optional)")
+	parent := fs.String("parent", "", "parent issue key")
+	key := fs.String("key", "", "explicit issue key: {prefix}-{shortSHA} (optional)")
+	id := fs.String("id", "", "deprecated alias for --key")
 	actor := fs.String("actor", "", "actor id")
 	commandID := fs.String("command-id", "", "idempotency command id")
 	jsonOut := fs.Bool("json", false, "machine-readable output")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	issueKey, err := coalesceIssueKey(*key, *id)
+	if err != nil {
 		return err
 	}
 
@@ -153,7 +163,7 @@ func runIssueCreate(args []string, out io.Writer) error {
 	defer s.Close()
 
 	issue, event, idempotent, err := s.CreateIssue(ctx, store.CreateIssueParams{
-		IssueID:   *id,
+		IssueID:   issueKey,
 		Type:      *issueType,
 		Title:     *title,
 		ParentID:  *parent,
@@ -191,13 +201,18 @@ func runIssueShow(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("issue show", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
-	id := fs.String("id", "", "issue id")
+	key := fs.String("key", "", "issue key")
+	id := fs.String("id", "", "deprecated alias for --key")
 	jsonOut := fs.Bool("json", false, "machine-readable output")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if strings.TrimSpace(*id) == "" {
-		return errors.New("--id is required")
+	issueKey, err := coalesceIssueKey(*key, *id)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(issueKey) == "" {
+		return errors.New("--key is required")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -209,7 +224,7 @@ func runIssueShow(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
-	issue, err := s.GetIssue(ctx, *id)
+	issue, err := s.GetIssue(ctx, issueKey)
 	if err != nil {
 		return err
 	}
@@ -232,6 +247,56 @@ func runIssueShow(args []string, out io.Writer) error {
 	_, _ = fmt.Fprintf(out, "Status: %s\n", issue.Status)
 	_, _ = fmt.Fprintf(out, "Created: %s\n", issue.CreatedAt)
 	_, _ = fmt.Fprintf(out, "Updated: %s\n", issue.UpdatedAt)
+	return nil
+}
+
+func runBacklog(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("backlog", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	issueType := fs.String("type", "", "filter by issue type: epic|story|task|bug")
+	status := fs.String("status", "", "filter by status: todo|inprogress|blocked|done")
+	parent := fs.String("parent", "", "filter by parent issue key")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	issues, err := s.ListIssues(ctx, store.ListIssuesParams{
+		Type:     *issueType,
+		Status:   *status,
+		ParentID: *parent,
+	})
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "backlog",
+			Data: backlogData{
+				Count:  len(issues),
+				Issues: issues,
+			},
+		})
+	}
+
+	if len(issues) == 0 {
+		_, _ = fmt.Fprintln(out, "No issues matched the backlog filters.")
+		return nil
+	}
+	renderBacklogTree(out, issues, shouldUseColor(out))
 	return nil
 }
 
@@ -397,8 +462,9 @@ type helpData struct {
 }
 
 type initData struct {
-	DBPath string `json:"db_path"`
-	Status string `json:"status"`
+	DBPath         string `json:"db_path"`
+	Status         string `json:"status"`
+	IssueKeyPrefix string `json:"issue_key_prefix"`
 }
 
 type issueCreateData struct {
@@ -417,6 +483,151 @@ type eventLogData struct {
 	Events     []store.Event `json:"events"`
 }
 
+type backlogData struct {
+	Count  int           `json:"count"`
+	Issues []store.Issue `json:"issues"`
+}
+
+func coalesceIssueKey(key, id string) (string, error) {
+	key = strings.TrimSpace(key)
+	id = strings.TrimSpace(id)
+	if key != "" && id != "" && key != id {
+		return "", errors.New("--key and --id were both provided with different values")
+	}
+	if key != "" {
+		return key, nil
+	}
+	return id, nil
+}
+
+func renderBacklogTree(out io.Writer, issues []store.Issue, colors bool) {
+	inSet := make(map[string]bool, len(issues))
+	children := make(map[string][]store.Issue)
+	roots := make([]store.Issue, 0, len(issues))
+
+	for _, issue := range issues {
+		inSet[issue.ID] = true
+	}
+	for _, issue := range issues {
+		if issue.ParentID != "" && inSet[issue.ParentID] {
+			children[issue.ParentID] = append(children[issue.ParentID], issue)
+			continue
+		}
+		roots = append(roots, issue)
+	}
+
+	visited := make(map[string]bool, len(issues))
+	for i, root := range roots {
+		printBacklogNode(out, root, "", i == len(roots)-1, true, inSet, children, visited, colors)
+	}
+}
+
+func printBacklogNode(
+	out io.Writer,
+	issue store.Issue,
+	prefix string,
+	isLast bool,
+	isRoot bool,
+	inSet map[string]bool,
+	children map[string][]store.Issue,
+	visited map[string]bool,
+	colors bool,
+) {
+	if visited[issue.ID] {
+		return
+	}
+	visited[issue.ID] = true
+
+	branch := "- "
+	if !isRoot {
+		if isLast {
+			branch = "`- "
+		} else {
+			branch = "|- "
+		}
+	}
+
+	line := formatIssueLine(issue, colors)
+	if issue.ParentID != "" && !inSet[issue.ParentID] {
+		line += fmt.Sprintf(" (parent: %s)", issue.ParentID)
+	}
+	_, _ = fmt.Fprintf(out, "%s%s%s\n", prefix, branch, line)
+
+	nextPrefix := prefix
+	if !isRoot {
+		if isLast {
+			nextPrefix += "   "
+		} else {
+			nextPrefix += "|  "
+		}
+	}
+	kids := children[issue.ID]
+	for i, child := range kids {
+		printBacklogNode(out, child, nextPrefix, i == len(kids)-1, false, inSet, children, visited, colors)
+	}
+}
+
+func formatIssueLine(issue store.Issue, colors bool) string {
+	issueType := colorize(colors, colorForType(issue.Type), issue.Type)
+	status := colorize(colors, colorForStatus(issue.Status), issue.Status)
+	return fmt.Sprintf("%s [%s/%s] %s", issue.ID, issueType, status, issue.Title)
+}
+
+func shouldUseColor(out io.Writer) bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("TERM")), "dumb") {
+		return false
+	}
+	file, ok := out.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return false
+	}
+	return (info.Mode() & os.ModeCharDevice) != 0
+}
+
+func colorForType(issueType string) string {
+	switch issueType {
+	case "Epic":
+		return "34" // blue
+	case "Story":
+		return "36" // cyan
+	case "Task":
+		return "33" // yellow
+	case "Bug":
+		return "31" // red
+	default:
+		return "37" // white
+	}
+}
+
+func colorForStatus(status string) string {
+	switch status {
+	case "Todo":
+		return "90" // gray
+	case "InProgress":
+		return "33" // yellow
+	case "Blocked":
+		return "31" // red
+	case "Done":
+		return "32" // green
+	default:
+		return "37" // white
+	}
+}
+
+func colorize(enabled bool, colorCode, value string) string {
+	if !enabled {
+		return value
+	}
+	return "\033[" + colorCode + "m" + value + "\033[0m"
+}
+
 func printJSON(out io.Writer, v any) error {
 	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")
@@ -428,9 +639,10 @@ func printHelp(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "")
 	_, _ = fmt.Fprintln(out, "Commands:")
 	_, _ = fmt.Fprintln(out, "  memori help [--json]")
-	_, _ = fmt.Fprintln(out, "  memori init [--db <path>] [--json]")
-	_, _ = fmt.Fprintln(out, "  memori issue create --type epic|story|task|bug --title <title> [--parent <id>] [--id <id>] [--actor <actor>] [--command-id <id>] [--json]")
-	_, _ = fmt.Fprintln(out, "  memori issue show --id <id> [--json]")
+	_, _ = fmt.Fprintln(out, "  memori init [--db <path>] [--issue-prefix <prefix>] [--json]")
+	_, _ = fmt.Fprintln(out, "  memori issue create --type epic|story|task|bug --title <title> [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] [--command-id <id>] [--json]")
+	_, _ = fmt.Fprintln(out, "  memori issue show --key <prefix-shortSHA> [--json]")
+	_, _ = fmt.Fprintln(out, "  memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori event log --entity <entityType:id|id> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori db replay [--json]")
 }

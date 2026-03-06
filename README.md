@@ -16,19 +16,25 @@ This repo now contains the first implementation slice for a local event-ledger-b
 
 ```bash
 # initialize DB
-memori init
+memori init --issue-prefix mem
 
 # create an issue
 memori issue create --type task --title "First ticket"
 
 # show issue
-memori issue show --id <issue-id>
+memori issue show --key <issue-key>
 
 # inspect event ledger for the issue
-memori event log --entity <issue-id>
+memori event log --entity <issue-key>
 
 # rebuild projections from events
 memori db replay
 ```
 
 `--json` is supported on read/list commands in this slice and on `init`/`issue create` for structured automation.
+
+Issue key format:
+
+- `{prefix}-{shortSHA}` (example: `wrk-a1b2c3d`)
+- Issue type is stored in `--type`; do not encode type names (`epic|story|task|bug`) into the key prefix.
+- Prefix is project-wide and set at init (`--issue-prefix`); all new issue keys must use that prefix.
