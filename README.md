@@ -83,6 +83,11 @@ memori gate evaluate \
 # inspect gate status for current locked gate set
 memori gate status --issue <issue-key>
 
+# close validation requires:
+# - a locked gate set for the issue's current cycle
+# - PASS for every required gate
+# - proof-bearing evaluations (non-empty evidence refs) for those PASS results
+
 # create template definition file and register versioned gate template
 cat > /tmp/quality-gates.json <<'JSON'
 {"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}},{"id":"lint","kind":"check","required":false}]}

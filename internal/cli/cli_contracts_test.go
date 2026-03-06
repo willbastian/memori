@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -58,6 +59,48 @@ func TestGateTemplateCreateRequiresFile(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), "--file is required") {
 		t.Fatalf("expected missing --file error, got: %v", err)
+	}
+}
+
+func TestIssueDoneRequiresLockedGateSet(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-done-requires-gates.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-a1a1a1a",
+		"--type", "task",
+		"--title", "Done gate requirement test",
+		"--command-id", "cmd-cli-done-gates-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-a1a1a1a",
+		"--status", "inprogress",
+		"--command-id", "cmd-cli-done-gates-progress-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue update inprogress: %v\nstderr: %s", err, stderr)
+	}
+
+	_, _, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-a1a1a1a",
+		"--status", "done",
+		"--command-id", "cmd-cli-done-gates-done-1",
+		"--json",
+	)
+	if err == nil || !strings.Contains(err.Error(), "no locked gate set for current cycle") {
+		t.Fatalf("expected done gate-set requirement error, got: %v", err)
 	}
 }
 

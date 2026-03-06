@@ -1088,6 +1088,11 @@ func TestUpdateIssueStatusRejectsInvalidTransitions(t *testing.T) {
 		t.Fatalf("Todo->InProgress should be allowed: %v", err)
 	}
 
+	gateSetID := "gs_update_transitions_1"
+	seedLockedGateSetForTest(t, s, "mem-2222222", gateSetID)
+	seedGateSetItemForTest(t, s, gateSetID, "build", "check", 1)
+	appendGateEvaluationEventForTest(t, s, "mem-2222222", gateSetID, "build", "PASS", "agent-1", "cmd-update-gate-pass-1")
+
 	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
 		IssueID:   "mem-2222222",
 		Status:    "done",
@@ -1095,7 +1100,7 @@ func TestUpdateIssueStatusRejectsInvalidTransitions(t *testing.T) {
 		CommandID: "cmd-update-4",
 	})
 	if err != nil {
-		t.Fatalf("InProgress->Done should be allowed: %v", err)
+		t.Fatalf("InProgress->Done with passing required gates should be allowed: %v", err)
 	}
 
 	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
@@ -1106,6 +1111,44 @@ func TestUpdateIssueStatusRejectsInvalidTransitions(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "invalid status transition") {
 		t.Fatalf("expected invalid transition from Done error, got: %v", err)
+	}
+}
+
+func TestUpdateIssueStatusDoneRequiresLockedGateSet(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-2323233"
+	_, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Done requires locked gate set",
+		Actor:     "agent-1",
+		CommandID: "cmd-close-requires-lock-create-1",
+	})
+	if err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-close-requires-lock-progress-1",
+	})
+	if err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+
+	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "done",
+		Actor:     "agent-1",
+		CommandID: "cmd-close-requires-lock-done-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "no locked gate set for current cycle") {
+		t.Fatalf("expected locked gate set requirement error, got: %v", err)
 	}
 }
 
@@ -1182,6 +1225,18 @@ func TestUpdateIssueStatusDoneRequiresPassingLockedRequiredGates(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "required gates not PASS: build=FAIL") {
 		t.Fatalf("expected failing gate close rejection, got: %v", err)
+	}
+
+	appendGateEvaluationEventWithoutEvidenceForTest(t, s, issueID, gateSetID, "build", "PASS", "agent-1", "cmd-close-gate-eval-pass-no-proof-1")
+
+	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "done",
+		Actor:     "agent-1",
+		CommandID: "cmd-close-done-pass-no-proof-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "required gates not PASS: build=PASS_NO_PROOF") {
+		t.Fatalf("expected pass-no-proof rejection, got: %v", err)
 	}
 
 	appendGateEvaluationEventForTest(t, s, issueID, gateSetID, "build", "PASS", "agent-1", "cmd-close-gate-eval-pass-1")
@@ -1733,6 +1788,45 @@ func appendGateEvaluationEventForTest(
 
 	payloadJSON := fmt.Sprintf(
 		`{"issue_id":%q,"gate_set_id":%q,"gate_id":%q,"result":%q,"evidence_refs":["test://evidence"],"evaluated_at":%q}`,
+		issueID, gateSetID, gateID, result, nowUTC(),
+	)
+	res, err := s.appendEventTx(ctx, tx, appendEventRequest{
+		EntityType:          entityTypeIssue,
+		EntityID:            issueID,
+		EventType:           eventTypeGateEval,
+		PayloadJSON:         payloadJSON,
+		Actor:               actor,
+		CommandID:           commandID,
+		EventPayloadVersion: 1,
+	})
+	if err != nil {
+		t.Fatalf("append gate evaluation event: %v", err)
+	}
+	if res.AlreadyExists {
+		t.Fatalf("expected non-idempotent append for unique command_id %q", commandID)
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit gate evaluation event: %v", err)
+	}
+}
+
+func appendGateEvaluationEventWithoutEvidenceForTest(
+	t *testing.T,
+	s *Store,
+	issueID, gateSetID, gateID, result, actor, commandID string,
+) {
+	t.Helper()
+
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx for gate evaluation event: %v", err)
+	}
+	defer tx.Rollback()
+
+	payloadJSON := fmt.Sprintf(
+		`{"issue_id":%q,"gate_set_id":%q,"gate_id":%q,"result":%q,"evaluated_at":%q}`,
 		issueID, gateSetID, gateID, result, nowUTC(),
 	)
 	res, err := s.appendEventTx(ctx, tx, appendEventRequest{

@@ -2595,7 +2595,7 @@ func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID st
 		return fmt.Errorf("close validation %w", err)
 	}
 	if !found {
-		return nil
+		return fmt.Errorf("close validation failed for issue %q: no locked gate set for current cycle", issueID)
 	}
 
 	rows, err := tx.QueryContext(ctx, `
@@ -2612,11 +2612,27 @@ func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID st
 				ORDER BY e.event_order DESC
 				LIMIT 1
 			), '')
+			,
+			COALESCE((
+				SELECT json_array_length(json_extract(e.payload_json, '$.evidence_refs'))
+				FROM events e
+				WHERE e.entity_type = ?
+					AND e.entity_id = ?
+					AND e.event_type = ?
+					AND json_extract(e.payload_json, '$.gate_set_id') = ?
+					AND json_extract(e.payload_json, '$.gate_id') = r.gate_id
+				ORDER BY e.event_order DESC
+				LIMIT 1
+			), 0)
 		FROM gate_set_items r
 		WHERE r.gate_set_id = ?
 			AND r.required = 1
 		ORDER BY r.gate_id ASC
-	`, entityTypeIssue, issueID, eventTypeGateEval, gateSet.GateSetID, gateSet.GateSetID)
+	`,
+		entityTypeIssue, issueID, eventTypeGateEval, gateSet.GateSetID,
+		entityTypeIssue, issueID, eventTypeGateEval, gateSet.GateSetID,
+		gateSet.GateSetID,
+	)
 	if err != nil {
 		return fmt.Errorf("close validation list required gates for issue %q: %w", issueID, err)
 	}
@@ -2624,16 +2640,25 @@ func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID st
 
 	failures := make([]string, 0)
 	for rows.Next() {
-		var gateID, result string
-		if err := rows.Scan(&gateID, &result); err != nil {
+		var (
+			gateID            string
+			result            string
+			evidenceRefsCount int
+		)
+		if err := rows.Scan(&gateID, &result, &evidenceRefsCount); err != nil {
 			return fmt.Errorf("close validation scan required gate for issue %q: %w", issueID, err)
 		}
-		if strings.ToUpper(strings.TrimSpace(result)) != "PASS" {
+		normalizedResult := strings.ToUpper(strings.TrimSpace(result))
+		if normalizedResult != "PASS" {
 			status := "MISSING"
 			if strings.TrimSpace(result) != "" {
-				status = strings.ToUpper(strings.TrimSpace(result))
+				status = normalizedResult
 			}
 			failures = append(failures, gateID+"="+status)
+			continue
+		}
+		if evidenceRefsCount <= 0 {
+			failures = append(failures, gateID+"=PASS_NO_PROOF")
 		}
 	}
 	if err := rows.Err(); err != nil {
