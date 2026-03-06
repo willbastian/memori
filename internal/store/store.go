@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -112,6 +113,30 @@ type EvaluateGateParams struct {
 	CommandID    string
 }
 
+type CreateGateTemplateParams struct {
+	TemplateID     string
+	Version        int
+	AppliesTo      []string
+	DefinitionJSON string
+	Actor          string
+}
+
+type ListGateTemplatesParams struct {
+	IssueType string
+}
+
+type InstantiateGateSetParams struct {
+	IssueID      string
+	TemplateRefs []string
+	Actor        string
+}
+
+type LockGateSetParams struct {
+	IssueID string
+	CycleNo *int
+	Actor   string
+}
+
 type ListIssuesParams struct {
 	Type     string
 	Status   string
@@ -210,6 +235,36 @@ type GateStatusItem struct {
 	EvidenceRefs []string `json:"evidence_refs,omitempty"`
 	EvaluatedAt  string   `json:"evaluated_at,omitempty"`
 	LastEventID  string   `json:"last_event_id,omitempty"`
+}
+
+type GateTemplate struct {
+	TemplateID     string   `json:"template_id"`
+	Version        int      `json:"version"`
+	AppliesTo      []string `json:"applies_to"`
+	DefinitionJSON string   `json:"definition_json"`
+	DefinitionHash string   `json:"definition_hash"`
+	CreatedAt      string   `json:"created_at"`
+	CreatedBy      string   `json:"created_by"`
+}
+
+type GateSet struct {
+	GateSetID        string              `json:"gate_set_id"`
+	IssueID          string              `json:"issue_id"`
+	CycleNo          int                 `json:"cycle_no"`
+	TemplateRefs     []string            `json:"template_refs"`
+	FrozenDefinition map[string]any      `json:"frozen_definition,omitempty"`
+	GateSetHash      string              `json:"gate_set_hash"`
+	LockedAt         string              `json:"locked_at,omitempty"`
+	CreatedAt        string              `json:"created_at"`
+	CreatedBy        string              `json:"created_by"`
+	Items            []GateSetDefinition `json:"items,omitempty"`
+}
+
+type GateSetDefinition struct {
+	GateID   string `json:"gate_id"`
+	Kind     string `json:"kind"`
+	Required bool   `json:"required"`
+	Criteria any    `json:"criteria,omitempty"`
 }
 
 func Open(path string) (*Store, error) {
@@ -1098,6 +1153,350 @@ func (s *Store) GetGateStatus(ctx context.Context, issueID string) (GateStatus, 
 	}, nil
 }
 
+func (s *Store) CreateGateTemplate(ctx context.Context, p CreateGateTemplateParams) (GateTemplate, bool, error) {
+	templateID, err := normalizeGateTemplateID(p.TemplateID)
+	if err != nil {
+		return GateTemplate{}, false, err
+	}
+	if p.Version <= 0 {
+		return GateTemplate{}, false, errors.New("--version must be > 0")
+	}
+	appliesTo, err := normalizeGateAppliesTo(p.AppliesTo)
+	if err != nil {
+		return GateTemplate{}, false, err
+	}
+	definitionJSON, definitionHash, err := canonicalizeGateDefinition(p.DefinitionJSON)
+	if err != nil {
+		return GateTemplate{}, false, err
+	}
+	actor := strings.TrimSpace(p.Actor)
+	if actor == "" {
+		actor = defaultActor()
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return GateTemplate{}, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var (
+		existingAppliesToJSON string
+		existingDefinition    string
+		existingHash          string
+		existingCreatedAt     string
+		existingCreatedBy     string
+	)
+	err = tx.QueryRowContext(ctx, `
+		SELECT applies_to_json, definition_json, definition_hash, created_at, created_by
+		FROM gate_templates
+		WHERE template_id = ? AND version = ?
+	`, templateID, p.Version).Scan(
+		&existingAppliesToJSON,
+		&existingDefinition,
+		&existingHash,
+		&existingCreatedAt,
+		&existingCreatedBy,
+	)
+	if err == nil {
+		existingAppliesTo, parseErr := parseAppliesToJSON(existingAppliesToJSON)
+		if parseErr != nil {
+			return GateTemplate{}, false, parseErr
+		}
+		if existingHash == definitionHash &&
+			existingDefinition == definitionJSON &&
+			equalStringSlices(existingAppliesTo, appliesTo) {
+			if err := tx.Commit(); err != nil {
+				return GateTemplate{}, false, fmt.Errorf("commit tx: %w", err)
+			}
+			return GateTemplate{
+				TemplateID:     templateID,
+				Version:        p.Version,
+				AppliesTo:      existingAppliesTo,
+				DefinitionJSON: existingDefinition,
+				DefinitionHash: existingHash,
+				CreatedAt:      existingCreatedAt,
+				CreatedBy:      existingCreatedBy,
+			}, true, nil
+		}
+		return GateTemplate{}, false, fmt.Errorf("template %s@%d already exists (create a new version to change it)", templateID, p.Version)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return GateTemplate{}, false, fmt.Errorf("query gate template %s@%d: %w", templateID, p.Version, err)
+	}
+
+	appliesToJSON, err := json.Marshal(appliesTo)
+	if err != nil {
+		return GateTemplate{}, false, fmt.Errorf("encode applies_to for %s@%d: %w", templateID, p.Version, err)
+	}
+	createdAt := nowUTC()
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO gate_templates(
+			template_id, version, applies_to_json, definition_json,
+			definition_hash, created_at, created_by
+		) VALUES(?, ?, ?, ?, ?, ?, ?)
+	`, templateID, p.Version, string(appliesToJSON), definitionJSON, definitionHash, createdAt, actor)
+	if err != nil {
+		return GateTemplate{}, false, fmt.Errorf("insert gate template %s@%d: %w", templateID, p.Version, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return GateTemplate{}, false, fmt.Errorf("commit tx: %w", err)
+	}
+
+	return GateTemplate{
+		TemplateID:     templateID,
+		Version:        p.Version,
+		AppliesTo:      appliesTo,
+		DefinitionJSON: definitionJSON,
+		DefinitionHash: definitionHash,
+		CreatedAt:      createdAt,
+		CreatedBy:      actor,
+	}, false, nil
+}
+
+func (s *Store) ListGateTemplates(ctx context.Context, p ListGateTemplatesParams) ([]GateTemplate, error) {
+	var issueTypeFilter string
+	if strings.TrimSpace(p.IssueType) != "" {
+		normalizedType, err := normalizeIssueType(p.IssueType)
+		if err != nil {
+			return nil, err
+		}
+		issueTypeFilter = normalizedType
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT template_id, version, applies_to_json, definition_json, definition_hash, created_at, created_by
+		FROM gate_templates
+		ORDER BY template_id ASC, version ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query gate_templates: %w", err)
+	}
+	defer rows.Close()
+
+	templates := make([]GateTemplate, 0)
+	for rows.Next() {
+		var (
+			template      GateTemplate
+			appliesToJSON string
+		)
+		if err := rows.Scan(
+			&template.TemplateID,
+			&template.Version,
+			&appliesToJSON,
+			&template.DefinitionJSON,
+			&template.DefinitionHash,
+			&template.CreatedAt,
+			&template.CreatedBy,
+		); err != nil {
+			return nil, fmt.Errorf("scan gate template: %w", err)
+		}
+		appliesTo, err := parseAppliesToJSON(appliesToJSON)
+		if err != nil {
+			return nil, err
+		}
+		template.AppliesTo = appliesTo
+		if issueTypeFilter != "" && !stringSliceContains(appliesTo, issueTypeFilter) {
+			continue
+		}
+		templates = append(templates, template)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate gate_templates rows: %w", err)
+	}
+	return templates, nil
+}
+
+func (s *Store) InstantiateGateSet(ctx context.Context, p InstantiateGateSetParams) (GateSet, bool, error) {
+	issueID, err := normalizeIssueKey(p.IssueID)
+	if err != nil {
+		return GateSet{}, false, err
+	}
+	templateRefs, parsedRefs, err := normalizeGateTemplateRefs(p.TemplateRefs)
+	if err != nil {
+		return GateSet{}, false, err
+	}
+	actor := strings.TrimSpace(p.Actor)
+	if actor == "" {
+		actor = defaultActor()
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return GateSet{}, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	issue, err := getIssueTx(ctx, tx, issueID)
+	if err != nil {
+		return GateSet{}, false, err
+	}
+
+	var cycleNo int
+	if err := tx.QueryRowContext(ctx, `SELECT current_cycle_no FROM work_items WHERE id = ?`, issueID).Scan(&cycleNo); err != nil {
+		return GateSet{}, false, fmt.Errorf("read current cycle for issue %q: %w", issueID, err)
+	}
+
+	existing, found, err := gateSetForIssueCycleTx(ctx, tx, issueID, cycleNo)
+	if err != nil {
+		return GateSet{}, false, err
+	}
+	if found {
+		existingRefs := normalizeReferences(existing.TemplateRefs)
+		if equalStringSlices(existingRefs, templateRefs) {
+			if err := tx.Commit(); err != nil {
+				return GateSet{}, false, fmt.Errorf("commit tx: %w", err)
+			}
+			return existing, true, nil
+		}
+		return GateSet{}, false, fmt.Errorf(
+			"gate set already exists for issue %q cycle %d (existing gate_set_id %q)",
+			issueID,
+			cycleNo,
+			existing.GateSetID,
+		)
+	}
+
+	gates, err := buildGateSetDefinitionsTx(ctx, tx, issue.Type, parsedRefs)
+	if err != nil {
+		return GateSet{}, false, err
+	}
+	frozenJSON, frozenObj, err := buildFrozenGateDefinition(templateRefs, gates)
+	if err != nil {
+		return GateSet{}, false, err
+	}
+	hash := sha256.Sum256([]byte(frozenJSON))
+	gateSetHash := hex.EncodeToString(hash[:])
+	gateSetID := newID("gset")
+	createdAt := nowUTC()
+
+	templateRefsJSON, err := json.Marshal(templateRefs)
+	if err != nil {
+		return GateSet{}, false, fmt.Errorf("encode template refs for %s cycle %d: %w", issueID, cycleNo, err)
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO gate_sets(
+			gate_set_id, issue_id, cycle_no, template_refs_json, frozen_definition_json,
+			gate_set_hash, locked_at, created_at, created_by
+		) VALUES(?, ?, ?, ?, ?, ?, NULL, ?, ?)
+	`, gateSetID, issueID, cycleNo, string(templateRefsJSON), frozenJSON, gateSetHash, createdAt, actor)
+	if err != nil {
+		return GateSet{}, false, fmt.Errorf("insert gate set for issue %q cycle %d: %w", issueID, cycleNo, err)
+	}
+
+	for _, gate := range gates {
+		criteriaJSON, err := json.Marshal(gate.Criteria)
+		if err != nil {
+			return GateSet{}, false, fmt.Errorf("encode gate criteria for %s/%s: %w", gateSetID, gate.GateID, err)
+		}
+		requiredInt := 0
+		if gate.Required {
+			requiredInt = 1
+		}
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO gate_set_items(gate_set_id, gate_id, kind, required, criteria_json)
+			VALUES(?, ?, ?, ?, ?)
+		`, gateSetID, gate.GateID, gate.Kind, requiredInt, string(criteriaJSON))
+		if err != nil {
+			return GateSet{}, false, fmt.Errorf("insert gate set item %s/%s: %w", gateSetID, gate.GateID, err)
+		}
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		UPDATE work_items
+		SET active_gate_set_id = ?, updated_at = ?
+		WHERE id = ?
+	`, gateSetID, createdAt, issueID)
+	if err != nil {
+		return GateSet{}, false, fmt.Errorf("set active_gate_set_id for issue %q: %w", issueID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return GateSet{}, false, fmt.Errorf("commit tx: %w", err)
+	}
+
+	return GateSet{
+		GateSetID:        gateSetID,
+		IssueID:          issueID,
+		CycleNo:          cycleNo,
+		TemplateRefs:     templateRefs,
+		FrozenDefinition: frozenObj,
+		GateSetHash:      gateSetHash,
+		CreatedAt:        createdAt,
+		CreatedBy:        actor,
+		Items:            gates,
+	}, false, nil
+}
+
+func (s *Store) LockGateSet(ctx context.Context, p LockGateSetParams) (GateSet, bool, error) {
+	issueID, err := normalizeIssueKey(p.IssueID)
+	if err != nil {
+		return GateSet{}, false, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return GateSet{}, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := getIssueTx(ctx, tx, issueID); err != nil {
+		return GateSet{}, false, err
+	}
+
+	cycleNo := 0
+	if p.CycleNo != nil {
+		if *p.CycleNo <= 0 {
+			return GateSet{}, false, errors.New("--cycle must be > 0")
+		}
+		cycleNo = *p.CycleNo
+	} else {
+		if err := tx.QueryRowContext(ctx, `SELECT current_cycle_no FROM work_items WHERE id = ?`, issueID).Scan(&cycleNo); err != nil {
+			return GateSet{}, false, fmt.Errorf("read current cycle for issue %q: %w", issueID, err)
+		}
+	}
+
+	gateSet, found, err := gateSetForIssueCycleTx(ctx, tx, issueID, cycleNo)
+	if err != nil {
+		return GateSet{}, false, err
+	}
+	if !found {
+		return GateSet{}, false, fmt.Errorf("no gate set found for issue %q cycle %d", issueID, cycleNo)
+	}
+	if len(gateSet.Items) == 0 {
+		return GateSet{}, false, fmt.Errorf("cannot lock gate set %q: no gate items defined", gateSet.GateSetID)
+	}
+
+	lockedNow := false
+	lockTime := strings.TrimSpace(gateSet.LockedAt)
+	if lockTime == "" {
+		lockTime = nowUTC()
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE gate_sets
+			SET locked_at = ?
+			WHERE gate_set_id = ?
+		`, lockTime, gateSet.GateSetID); err != nil {
+			return GateSet{}, false, fmt.Errorf("lock gate set %q: %w", gateSet.GateSetID, err)
+		}
+		lockedNow = true
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE work_items
+		SET active_gate_set_id = ?, updated_at = ?
+		WHERE id = ?
+	`, gateSet.GateSetID, nowUTC(), issueID); err != nil {
+		return GateSet{}, false, fmt.Errorf("set active gate set for issue %q: %w", issueID, err)
+	}
+
+	gateSet.LockedAt = lockTime
+	if err := tx.Commit(); err != nil {
+		return GateSet{}, false, fmt.Errorf("commit tx: %w", err)
+	}
+	return gateSet, lockedNow, nil
+}
+
 func findEventByActorCommandTx(ctx context.Context, tx *sql.Tx, actor, commandID string) (Event, bool, error) {
 	row := tx.QueryRowContext(ctx, `
 		SELECT
@@ -1788,6 +2187,349 @@ func decodeGateEvaluatedPayload(payloadJSON string) (gateEvaluatedPayload, error
 	return payload, nil
 }
 
+func normalizeGateTemplateID(raw string) (string, error) {
+	templateID := strings.ToLower(strings.TrimSpace(raw))
+	if templateID == "" {
+		return "", errors.New("--id is required")
+	}
+	if len(templateID) < 2 || len(templateID) > 64 {
+		return "", fmt.Errorf("invalid template id %q (must be 2-64 chars)", raw)
+	}
+	for i, r := range templateID {
+		if i == 0 && (r < 'a' || r > 'z') {
+			return "", fmt.Errorf("invalid template id %q (must start with a lowercase letter)", raw)
+		}
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' && r != '_' {
+			return "", fmt.Errorf("invalid template id %q (allowed: lowercase letters, digits, -, _)", raw)
+		}
+	}
+	return templateID, nil
+}
+
+func normalizeGateAppliesTo(values []string) ([]string, error) {
+	if len(values) == 0 {
+		return nil, errors.New("--applies-to is required")
+	}
+	normalized := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		issueType, err := normalizeIssueType(value)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --applies-to %q: %w", value, err)
+		}
+		if seen[issueType] {
+			continue
+		}
+		seen[issueType] = true
+		normalized = append(normalized, issueType)
+	}
+	sort.Strings(normalized)
+	return normalized, nil
+}
+
+func parseAppliesToJSON(raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, errors.New("applies_to_json is empty")
+	}
+	var appliesTo []string
+	if err := json.Unmarshal([]byte(raw), &appliesTo); err != nil {
+		return nil, fmt.Errorf("decode applies_to_json: %w", err)
+	}
+	return normalizeGateAppliesTo(appliesTo)
+}
+
+func canonicalizeGateDefinition(raw string) (string, string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", "", errors.New("--file must contain JSON")
+	}
+
+	var decoded any
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		return "", "", fmt.Errorf("invalid gate definition JSON: %w", err)
+	}
+
+	canonicalBytes, err := json.Marshal(decoded)
+	if err != nil {
+		return "", "", fmt.Errorf("canonicalize gate definition JSON: %w", err)
+	}
+	hash := sha256.Sum256(canonicalBytes)
+	return string(canonicalBytes), hex.EncodeToString(hash[:]), nil
+}
+
+func parseGateTemplateRef(raw string) (gateTemplateRef, error) {
+	ref := strings.TrimSpace(raw)
+	templateIDRaw, versionRaw, ok := strings.Cut(ref, "@")
+	if !ok {
+		return gateTemplateRef{}, fmt.Errorf("invalid --template %q (expected <template_id>@<version>)", raw)
+	}
+	templateID, err := normalizeGateTemplateID(templateIDRaw)
+	if err != nil {
+		return gateTemplateRef{}, err
+	}
+	version, err := strconv.Atoi(strings.TrimSpace(versionRaw))
+	if err != nil || version <= 0 {
+		return gateTemplateRef{}, fmt.Errorf("invalid --template %q (version must be > 0)", raw)
+	}
+	return gateTemplateRef{
+		TemplateID: templateID,
+		Version:    version,
+		Ref:        fmt.Sprintf("%s@%d", templateID, version),
+	}, nil
+}
+
+func normalizeGateTemplateRefs(rawRefs []string) ([]string, []gateTemplateRef, error) {
+	if len(rawRefs) == 0 {
+		return nil, nil, errors.New("--template is required")
+	}
+	parsed := make([]gateTemplateRef, 0, len(rawRefs))
+	seen := make(map[string]bool, len(rawRefs))
+	for _, raw := range rawRefs {
+		ref, err := parseGateTemplateRef(raw)
+		if err != nil {
+			return nil, nil, err
+		}
+		if seen[ref.Ref] {
+			continue
+		}
+		seen[ref.Ref] = true
+		parsed = append(parsed, ref)
+	}
+	sort.Slice(parsed, func(i, j int) bool {
+		return parsed[i].Ref < parsed[j].Ref
+	})
+	refs := make([]string, 0, len(parsed))
+	for _, ref := range parsed {
+		refs = append(refs, ref.Ref)
+	}
+	return refs, parsed, nil
+}
+
+func buildGateSetDefinitionsTx(ctx context.Context, tx *sql.Tx, issueType string, refs []gateTemplateRef) ([]GateSetDefinition, error) {
+	gatesByID := make(map[string]GateSetDefinition)
+	for _, ref := range refs {
+		var (
+			appliesToJSON  string
+			definitionJSON string
+		)
+		err := tx.QueryRowContext(ctx, `
+			SELECT applies_to_json, definition_json
+			FROM gate_templates
+			WHERE template_id = ? AND version = ?
+		`, ref.TemplateID, ref.Version).Scan(&appliesToJSON, &definitionJSON)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("gate template %s@%d not found", ref.TemplateID, ref.Version)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("query gate template %s@%d: %w", ref.TemplateID, ref.Version, err)
+		}
+
+		appliesTo, err := parseAppliesToJSON(appliesToJSON)
+		if err != nil {
+			return nil, err
+		}
+		if !stringSliceContains(appliesTo, issueType) {
+			return nil, fmt.Errorf("gate template %s@%d does not apply to issue type %s", ref.TemplateID, ref.Version, issueType)
+		}
+
+		defs, err := extractGateDefinitions(definitionJSON)
+		if err != nil {
+			return nil, fmt.Errorf("invalid gate definition in template %s@%d: %w", ref.TemplateID, ref.Version, err)
+		}
+		for _, gate := range defs {
+			if existing, exists := gatesByID[gate.GateID]; exists {
+				return nil, fmt.Errorf("duplicate gate id %q across templates (%s conflicts with existing %s)", gate.GateID, ref.Ref, existing.GateID)
+			}
+			gatesByID[gate.GateID] = gate
+		}
+	}
+
+	gates := make([]GateSetDefinition, 0, len(gatesByID))
+	for _, gate := range gatesByID {
+		gates = append(gates, gate)
+	}
+	sort.Slice(gates, func(i, j int) bool {
+		return gates[i].GateID < gates[j].GateID
+	})
+	if len(gates) == 0 {
+		return nil, errors.New("instantiated gate set has no gates")
+	}
+	return gates, nil
+}
+
+func extractGateDefinitions(definitionJSON string) ([]GateSetDefinition, error) {
+	var parsed struct {
+		Gates []struct {
+			ID       string          `json:"id"`
+			Kind     string          `json:"kind"`
+			Required *bool           `json:"required"`
+			Criteria json.RawMessage `json:"criteria"`
+		} `json:"gates"`
+	}
+	if err := json.Unmarshal([]byte(definitionJSON), &parsed); err != nil {
+		return nil, err
+	}
+	if len(parsed.Gates) == 0 {
+		return nil, errors.New("definition must contain at least one gate")
+	}
+
+	defs := make([]GateSetDefinition, 0, len(parsed.Gates))
+	seen := make(map[string]bool, len(parsed.Gates))
+	for _, gate := range parsed.Gates {
+		gateID := strings.TrimSpace(gate.ID)
+		if gateID == "" {
+			return nil, errors.New("each gate requires a non-empty id")
+		}
+		if seen[gateID] {
+			return nil, fmt.Errorf("duplicate gate id %q in template definition", gateID)
+		}
+		seen[gateID] = true
+
+		kind := strings.TrimSpace(gate.Kind)
+		if kind == "" {
+			kind = "check"
+		}
+		required := true
+		if gate.Required != nil {
+			required = *gate.Required
+		}
+
+		var criteria any = map[string]any{}
+		if len(gate.Criteria) > 0 {
+			if err := json.Unmarshal(gate.Criteria, &criteria); err != nil {
+				return nil, fmt.Errorf("decode criteria for gate %q: %w", gateID, err)
+			}
+		}
+
+		defs = append(defs, GateSetDefinition{
+			GateID:   gateID,
+			Kind:     kind,
+			Required: required,
+			Criteria: criteria,
+		})
+	}
+
+	sort.Slice(defs, func(i, j int) bool {
+		return defs[i].GateID < defs[j].GateID
+	})
+	return defs, nil
+}
+
+func buildFrozenGateDefinition(templateRefs []string, gates []GateSetDefinition) (string, map[string]any, error) {
+	frozen := struct {
+		Templates []string            `json:"templates"`
+		Gates     []GateSetDefinition `json:"gates"`
+	}{
+		Templates: templateRefs,
+		Gates:     gates,
+	}
+	frozenBytes, err := json.Marshal(frozen)
+	if err != nil {
+		return "", nil, fmt.Errorf("encode frozen gate definition: %w", err)
+	}
+	var frozenObj map[string]any
+	if err := json.Unmarshal(frozenBytes, &frozenObj); err != nil {
+		return "", nil, fmt.Errorf("decode frozen gate definition: %w", err)
+	}
+	return string(frozenBytes), frozenObj, nil
+}
+
+func gateSetForIssueCycleTx(ctx context.Context, tx *sql.Tx, issueID string, cycleNo int) (GateSet, bool, error) {
+	var (
+		gateSet          GateSet
+		templateRefsJSON string
+		frozenJSON       string
+		lockedAt         sql.NullString
+	)
+	err := tx.QueryRowContext(ctx, `
+		SELECT gate_set_id, issue_id, cycle_no, template_refs_json, frozen_definition_json,
+			gate_set_hash, locked_at, created_at, created_by
+		FROM gate_sets
+		WHERE issue_id = ? AND cycle_no = ?
+	`, issueID, cycleNo).Scan(
+		&gateSet.GateSetID,
+		&gateSet.IssueID,
+		&gateSet.CycleNo,
+		&templateRefsJSON,
+		&frozenJSON,
+		&gateSet.GateSetHash,
+		&lockedAt,
+		&gateSet.CreatedAt,
+		&gateSet.CreatedBy,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return GateSet{}, false, nil
+	}
+	if err != nil {
+		return GateSet{}, false, fmt.Errorf("query gate set for issue %q cycle %d: %w", issueID, cycleNo, err)
+	}
+	if lockedAt.Valid {
+		gateSet.LockedAt = lockedAt.String
+	}
+	templateRefs, err := parseReferencesJSON(templateRefsJSON)
+	if err != nil {
+		return GateSet{}, false, fmt.Errorf("decode template refs for gate set %q: %w", gateSet.GateSetID, err)
+	}
+	gateSet.TemplateRefs = templateRefs
+	if strings.TrimSpace(frozenJSON) != "" {
+		if err := json.Unmarshal([]byte(frozenJSON), &gateSet.FrozenDefinition); err != nil {
+			return GateSet{}, false, fmt.Errorf("decode frozen definition for gate set %q: %w", gateSet.GateSetID, err)
+		}
+	}
+	items, err := gateSetItemsTx(ctx, tx, gateSet.GateSetID)
+	if err != nil {
+		return GateSet{}, false, err
+	}
+	gateSet.Items = items
+	return gateSet, true, nil
+}
+
+func gateSetItemsTx(ctx context.Context, tx *sql.Tx, gateSetID string) ([]GateSetDefinition, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT gate_id, kind, required, criteria_json
+		FROM gate_set_items
+		WHERE gate_set_id = ?
+		ORDER BY gate_id ASC
+	`, gateSetID)
+	if err != nil {
+		return nil, fmt.Errorf("query gate set items for %q: %w", gateSetID, err)
+	}
+	defer rows.Close()
+
+	items := make([]GateSetDefinition, 0)
+	for rows.Next() {
+		var (
+			item         GateSetDefinition
+			requiredInt  int
+			criteriaJSON string
+		)
+		if err := rows.Scan(&item.GateID, &item.Kind, &requiredInt, &criteriaJSON); err != nil {
+			return nil, fmt.Errorf("scan gate set item for %q: %w", gateSetID, err)
+		}
+		item.Required = requiredInt == 1
+		var criteria any
+		if err := json.Unmarshal([]byte(criteriaJSON), &criteria); err != nil {
+			return nil, fmt.Errorf("decode criteria_json for %q/%s: %w", gateSetID, item.GateID, err)
+		}
+		item.Criteria = criteria
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate gate set items for %q: %w", gateSetID, err)
+	}
+	return items, nil
+}
+
+func stringSliceContains(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
+}
+
 func validateIssueStatusTransition(from, to string) error {
 	fromStatus, err := normalizeIssueStatus(from)
 	if err != nil {
@@ -1817,6 +2559,12 @@ type lockedGateSet struct {
 	GateSetID string
 	CycleNo   int
 	LockedAt  string
+}
+
+type gateTemplateRef struct {
+	TemplateID string
+	Version    int
+	Ref        string
 }
 
 func lockedGateSetForIssueTx(ctx context.Context, tx *sql.Tx, issueID string) (lockedGateSet, bool, error) {

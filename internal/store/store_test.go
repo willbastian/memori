@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -607,6 +608,174 @@ func TestGateSetsImmutabilityTriggersEnforceFrozenFieldsAndLocking(t *testing.T)
 	}
 	if !strings.Contains(err.Error(), "gate_sets are immutable") {
 		t.Fatalf("expected gate_sets delete immutability error, got: %v", err)
+	}
+}
+
+func TestCreateGateTemplateVersioningAndListing(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	firstDef := `{"gates":[{"id":"build","required":true}]}`
+	created, idempotent, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "quality",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: firstDef,
+		Actor:          "agent-1",
+	})
+	if err != nil {
+		t.Fatalf("create gate template v1: %v", err)
+	}
+	if idempotent {
+		t.Fatalf("expected first template create to be non-idempotent")
+	}
+	if created.TemplateID != "quality" || created.Version != 1 {
+		t.Fatalf("unexpected created template identity: %#v", created)
+	}
+
+	same, sameIdempotent, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "quality",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: firstDef,
+		Actor:          "agent-1",
+	})
+	if err != nil {
+		t.Fatalf("idempotent template create retry: %v", err)
+	}
+	if !sameIdempotent {
+		t.Fatalf("expected same template create to be idempotent")
+	}
+	if same.DefinitionHash != created.DefinitionHash {
+		t.Fatalf("expected same hash on idempotent retry, got %s vs %s", same.DefinitionHash, created.DefinitionHash)
+	}
+
+	_, _, err = s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "quality",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"build","required":false}]}`,
+		Actor:          "agent-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "create a new version") {
+		t.Fatalf("expected same-version mutation rejection, got: %v", err)
+	}
+
+	_, idempotent, err = s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "quality",
+		Version:        2,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"build","required":false}]}`,
+		Actor:          "agent-1",
+	})
+	if err != nil {
+		t.Fatalf("create gate template v2: %v", err)
+	}
+	if idempotent {
+		t.Fatalf("expected v2 create to be non-idempotent")
+	}
+
+	templates, err := s.ListGateTemplates(ctx, ListGateTemplatesParams{IssueType: "task"})
+	if err != nil {
+		t.Fatalf("list gate templates by type: %v", err)
+	}
+	if len(templates) != 2 {
+		t.Fatalf("expected 2 task templates, got %d", len(templates))
+	}
+}
+
+func TestInstantiateAndLockGateSetFlow(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-7878787"
+	_, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Instantiate lock flow",
+		Actor:     "agent-1",
+		CommandID: "cmd-gset-flow-create-1",
+	})
+	if err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+
+	_, _, err = s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "quality",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}},{"id":"lint","kind":"check","required":false}]}`,
+		Actor:          "agent-1",
+	})
+	if err != nil {
+		t.Fatalf("create gate template: %v", err)
+	}
+
+	gateSet, idempotent, err := s.InstantiateGateSet(ctx, InstantiateGateSetParams{
+		IssueID:      issueID,
+		TemplateRefs: []string{"quality@1"},
+		Actor:        "agent-1",
+	})
+	if err != nil {
+		t.Fatalf("instantiate gate set: %v", err)
+	}
+	if idempotent {
+		t.Fatalf("expected first instantiate to be non-idempotent")
+	}
+	if gateSet.CycleNo != 1 {
+		t.Fatalf("expected cycle 1, got %d", gateSet.CycleNo)
+	}
+	if len(gateSet.Items) != 2 {
+		t.Fatalf("expected 2 gate items, got %d", len(gateSet.Items))
+	}
+
+	retrySet, retryIdempotent, err := s.InstantiateGateSet(ctx, InstantiateGateSetParams{
+		IssueID:      issueID,
+		TemplateRefs: []string{"quality@1"},
+		Actor:        "agent-1",
+	})
+	if err != nil {
+		t.Fatalf("instantiate gate set retry: %v", err)
+	}
+	if !retryIdempotent {
+		t.Fatalf("expected retry instantiate to be idempotent")
+	}
+	if retrySet.GateSetID != gateSet.GateSetID {
+		t.Fatalf("expected same gate set id on retry, got %q vs %q", retrySet.GateSetID, gateSet.GateSetID)
+	}
+
+	locked, lockedNow, err := s.LockGateSet(ctx, LockGateSetParams{IssueID: issueID})
+	if err != nil {
+		t.Fatalf("lock gate set: %v", err)
+	}
+	if !lockedNow {
+		t.Fatalf("expected first lock call to lock now")
+	}
+	if strings.TrimSpace(locked.LockedAt) == "" {
+		t.Fatalf("expected locked_at timestamp to be set")
+	}
+
+	relock, relockNow, err := s.LockGateSet(ctx, LockGateSetParams{IssueID: issueID})
+	if err != nil {
+		t.Fatalf("lock gate set second time: %v", err)
+	}
+	if relockNow {
+		t.Fatalf("expected second lock call to report already locked")
+	}
+	if relock.GateSetID != gateSet.GateSetID {
+		t.Fatalf("expected same gate set on relock, got %q vs %q", relock.GateSetID, gateSet.GateSetID)
+	}
+
+	var activeGateSetID sql.NullString
+	if err := s.db.QueryRowContext(ctx, `SELECT active_gate_set_id FROM work_items WHERE id = ?`, issueID).Scan(&activeGateSetID); err != nil {
+		t.Fatalf("read active_gate_set_id: %v", err)
+	}
+	if !activeGateSetID.Valid || activeGateSetID.String != gateSet.GateSetID {
+		t.Fatalf("expected active_gate_set_id=%q, got %#v", gateSet.GateSetID, activeGateSetID)
 	}
 }
 

@@ -13,6 +13,10 @@ This repo now contains the first implementation slice for a local event-ledger-b
 - `memori issue link`
 - `memori issue update`
 - `memori issue show`
+- `memori gate template create`
+- `memori gate template list`
+- `memori gate set instantiate`
+- `memori gate set lock`
 - `memori gate evaluate`
 - `memori gate status`
 - `memori event log`
@@ -78,6 +82,23 @@ memori gate evaluate \
 
 # inspect gate status for current locked gate set
 memori gate status --issue <issue-key>
+
+# create template definition file and register versioned gate template
+cat > /tmp/quality-gates.json <<'JSON'
+{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}},{"id":"lint","kind":"check","required":false}]}
+JSON
+memori gate template create \
+  --id quality \
+  --version 1 \
+  --applies-to task \
+  --file /tmp/quality-gates.json
+
+# instantiate and lock a gate set for the issue's current cycle
+memori gate set instantiate --issue <issue-key> --template quality@1
+memori gate set lock --issue <issue-key>
+
+# list templates (optionally filtered by issue type)
+memori gate template list --type task
 
 # rebuild projections from events
 memori db replay

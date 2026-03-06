@@ -47,6 +47,20 @@ func TestGateEvaluateRequiresCommandID(t *testing.T) {
 	}
 }
 
+func TestGateTemplateCreateRequiresFile(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := runMemoriForTest(
+		"gate", "template", "create",
+		"--id", "quality",
+		"--version", "1",
+		"--applies-to", "task",
+	)
+	if err == nil || !strings.Contains(err.Error(), "--file is required") {
+		t.Fatalf("expected missing --file error, got: %v", err)
+	}
+}
+
 func TestEventLogRejectsUnknownEntityType(t *testing.T) {
 	t.Parallel()
 
