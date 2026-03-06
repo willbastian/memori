@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -739,6 +740,89 @@ func TestCreateIssueGeneratedKeysFollowPrefixShortSHAPattern(t *testing.T) {
 	}
 }
 
+func TestCreateIssuePersistsRichContextFields(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	created, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:            "mem-0f0f0f0",
+		Type:               "task",
+		Title:              "Rich context",
+		Description:        "Implement richer ticket context rendering",
+		AcceptanceCriteria: "Shows description and acceptance criteria in issue show",
+		References:         []string{"https://example.com/spec", " https://example.com/spec ", "notes.md"},
+		Actor:              "agent-1",
+		CommandID:          "cmd-rich-create-1",
+	})
+	if err != nil {
+		t.Fatalf("create issue with rich context: %v", err)
+	}
+
+	if created.Description != "Implement richer ticket context rendering" {
+		t.Fatalf("unexpected description: %q", created.Description)
+	}
+	if created.Acceptance != "Shows description and acceptance criteria in issue show" {
+		t.Fatalf("unexpected acceptance criteria: %q", created.Acceptance)
+	}
+	expectedRefs := []string{"https://example.com/spec", "notes.md"}
+	if !reflect.DeepEqual(created.References, expectedRefs) {
+		t.Fatalf("unexpected references: %#v", created.References)
+	}
+}
+
+func TestUpdateIssueAllowsContextOnlyMutation(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	_, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   "mem-1f1f1f1",
+		Type:      "task",
+		Title:     "Context updates",
+		Actor:     "agent-1",
+		CommandID: "cmd-rich-update-create-1",
+	})
+	if err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+
+	description := "Track rich context as first-class metadata"
+	acceptance := "Issue show surfaces context fields"
+	references := []string{"https://example.com/rfc", "adr-001.md"}
+	updated, event, idempotent, err := s.UpdateIssue(ctx, UpdateIssueParams{
+		IssueID:            "mem-1f1f1f1",
+		Description:        &description,
+		AcceptanceCriteria: &acceptance,
+		References:         &references,
+		Actor:              "agent-1",
+		CommandID:          "cmd-rich-update-1",
+	})
+	if err != nil {
+		t.Fatalf("update issue context: %v", err)
+	}
+	if idempotent {
+		t.Fatalf("first context update should not be idempotent")
+	}
+	if event.EventType != "issue.updated" {
+		t.Fatalf("expected issue.updated event, got %s", event.EventType)
+	}
+	if updated.Status != "Todo" {
+		t.Fatalf("status should remain Todo when only context changes, got %s", updated.Status)
+	}
+	if updated.Description != description {
+		t.Fatalf("unexpected description: %q", updated.Description)
+	}
+	if updated.Acceptance != acceptance {
+		t.Fatalf("unexpected acceptance criteria: %q", updated.Acceptance)
+	}
+	if !reflect.DeepEqual(updated.References, references) {
+		t.Fatalf("unexpected references: %#v", updated.References)
+	}
+}
+
 func TestUpdateIssueStatusValidTransitionsAndIdempotency(t *testing.T) {
 	t.Parallel()
 
@@ -1287,7 +1371,7 @@ func appendGateEvaluationEventForTest(
 
 func assertIssueEqual(t *testing.T, expected, actual Issue) {
 	t.Helper()
-	if expected != actual {
+	if !reflect.DeepEqual(expected, actual) {
 		t.Fatalf("issue mismatch\nexpected: %#v\nactual:   %#v", expected, actual)
 	}
 }

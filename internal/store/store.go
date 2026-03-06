@@ -36,14 +36,17 @@ type Store struct {
 }
 
 type Issue struct {
-	ID          string `json:"id"`
-	Type        string `json:"type"`
-	Title       string `json:"title"`
-	ParentID    string `json:"parent_id,omitempty"`
-	Status      string `json:"status"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
-	LastEventID string `json:"last_event_id"`
+	ID          string   `json:"id"`
+	Type        string   `json:"type"`
+	Title       string   `json:"title"`
+	ParentID    string   `json:"parent_id,omitempty"`
+	Status      string   `json:"status"`
+	Description string   `json:"description,omitempty"`
+	Acceptance  string   `json:"acceptance_criteria,omitempty"`
+	References  []string `json:"references,omitempty"`
+	CreatedAt   string   `json:"created_at"`
+	UpdatedAt   string   `json:"updated_at"`
+	LastEventID string   `json:"last_event_id"`
 }
 
 type Event struct {
@@ -65,12 +68,15 @@ type Event struct {
 }
 
 type CreateIssueParams struct {
-	IssueID   string
-	Type      string
-	Title     string
-	ParentID  string
-	Actor     string
-	CommandID string
+	IssueID            string
+	Type               string
+	Title              string
+	ParentID           string
+	Description        string
+	AcceptanceCriteria string
+	References         []string
+	Actor              string
+	CommandID          string
 }
 
 type UpdateIssueStatusParams struct {
@@ -78,6 +84,16 @@ type UpdateIssueStatusParams struct {
 	Status    string
 	Actor     string
 	CommandID string
+}
+
+type UpdateIssueParams struct {
+	IssueID            string
+	Status             *string
+	Description        *string
+	AcceptanceCriteria *string
+	References         *[]string
+	Actor              string
+	CommandID          string
 }
 
 type LinkIssueParams struct {
@@ -120,19 +136,28 @@ type appendEventResult struct {
 }
 
 type issueCreatedPayload struct {
-	IssueID   string `json:"issue_id"`
-	Type      string `json:"type"`
-	Title     string `json:"title"`
-	ParentID  string `json:"parent_id,omitempty"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"created_at"`
+	IssueID            string   `json:"issue_id"`
+	Type               string   `json:"type"`
+	Title              string   `json:"title"`
+	ParentID           string   `json:"parent_id,omitempty"`
+	Status             string   `json:"status"`
+	Description        string   `json:"description,omitempty"`
+	AcceptanceCriteria string   `json:"acceptance_criteria,omitempty"`
+	References         []string `json:"references,omitempty"`
+	CreatedAt          string   `json:"created_at"`
 }
 
 type issueUpdatedPayload struct {
-	IssueID    string `json:"issue_id"`
-	StatusFrom string `json:"status_from"`
-	StatusTo   string `json:"status_to"`
-	UpdatedAt  string `json:"updated_at"`
+	IssueID                string    `json:"issue_id"`
+	StatusFrom             *string   `json:"status_from,omitempty"`
+	StatusTo               *string   `json:"status_to,omitempty"`
+	DescriptionFrom        *string   `json:"description_from,omitempty"`
+	DescriptionTo          *string   `json:"description_to,omitempty"`
+	AcceptanceCriteriaFrom *string   `json:"acceptance_criteria_from,omitempty"`
+	AcceptanceCriteriaTo   *string   `json:"acceptance_criteria_to,omitempty"`
+	ReferencesFrom         *[]string `json:"references_from,omitempty"`
+	ReferencesTo           *[]string `json:"references_to,omitempty"`
+	UpdatedAt              string    `json:"updated_at"`
 }
 
 type issueLinkedPayload struct {
@@ -243,6 +268,9 @@ func (s *Store) Initialize(ctx context.Context, p InitializeParams) error {
 			title TEXT NOT NULL,
 			parent_id TEXT,
 			status TEXT NOT NULL CHECK(status IN ('Todo','InProgress','Blocked','Done')),
+			description TEXT NOT NULL DEFAULT '',
+			acceptance_criteria TEXT NOT NULL DEFAULT '',
+			references_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(references_json)),
 			priority TEXT,
 			labels_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(labels_json)),
 			current_cycle_no INTEGER NOT NULL DEFAULT 1,
@@ -476,12 +504,15 @@ func (s *Store) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Ev
 	}
 
 	payload := issueCreatedPayload{
-		IssueID:   p.IssueID,
-		Type:      issueType,
-		Title:     strings.TrimSpace(p.Title),
-		ParentID:  parentID,
-		Status:    "Todo",
-		CreatedAt: nowUTC(),
+		IssueID:            p.IssueID,
+		Type:               issueType,
+		Title:              strings.TrimSpace(p.Title),
+		ParentID:           parentID,
+		Status:             "Todo",
+		Description:        strings.TrimSpace(p.Description),
+		AcceptanceCriteria: strings.TrimSpace(p.AcceptanceCriteria),
+		References:         normalizeReferences(p.References),
+		CreatedAt:          nowUTC(),
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -535,6 +566,16 @@ func (s *Store) GetIssue(ctx context.Context, id string) (Issue, error) {
 }
 
 func (s *Store) UpdateIssueStatus(ctx context.Context, p UpdateIssueStatusParams) (Issue, Event, bool, error) {
+	status := p.Status
+	return s.UpdateIssue(ctx, UpdateIssueParams{
+		IssueID:   p.IssueID,
+		Status:    &status,
+		Actor:     p.Actor,
+		CommandID: p.CommandID,
+	})
+}
+
+func (s *Store) UpdateIssue(ctx context.Context, p UpdateIssueParams) (Issue, Event, bool, error) {
 	if p.Actor == "" {
 		p.Actor = defaultActor()
 	}
@@ -568,31 +609,72 @@ func (s *Store) UpdateIssueStatus(ctx context.Context, p UpdateIssueStatusParams
 	if err != nil {
 		return Issue{}, Event{}, false, err
 	}
-	targetStatus, err := normalizeIssueStatus(p.Status)
-	if err != nil {
-		return Issue{}, Event{}, false, err
-	}
 
 	currentIssue, err := getIssueTx(ctx, tx, issueID)
 	if err != nil {
 		return Issue{}, Event{}, false, err
 	}
 
-	if err := validateIssueStatusTransition(currentIssue.Status, targetStatus); err != nil {
-		return Issue{}, Event{}, false, err
+	payload := issueUpdatedPayload{
+		IssueID:   issueID,
+		UpdatedAt: nowUTC(),
 	}
+	changed := false
+	targetStatus := ""
+
+	if p.Status != nil {
+		statusTo, err := normalizeIssueStatus(*p.Status)
+		if err != nil {
+			return Issue{}, Event{}, false, err
+		}
+		if err := validateIssueStatusTransition(currentIssue.Status, statusTo); err != nil {
+			return Issue{}, Event{}, false, err
+		}
+		statusFrom := currentIssue.Status
+		payload.StatusFrom = &statusFrom
+		payload.StatusTo = &statusTo
+		targetStatus = statusTo
+		changed = true
+	}
+	if p.Description != nil {
+		descriptionTo := strings.TrimSpace(*p.Description)
+		if currentIssue.Description != descriptionTo {
+			descriptionFrom := currentIssue.Description
+			payload.DescriptionFrom = &descriptionFrom
+			payload.DescriptionTo = &descriptionTo
+			changed = true
+		}
+	}
+	if p.AcceptanceCriteria != nil {
+		acceptanceTo := strings.TrimSpace(*p.AcceptanceCriteria)
+		if currentIssue.Acceptance != acceptanceTo {
+			acceptanceFrom := currentIssue.Acceptance
+			payload.AcceptanceCriteriaFrom = &acceptanceFrom
+			payload.AcceptanceCriteriaTo = &acceptanceTo
+			changed = true
+		}
+	}
+	if p.References != nil {
+		referencesTo := normalizeReferences(*p.References)
+		if !equalStringSlices(currentIssue.References, referencesTo) {
+			referencesFrom := copyStringSlice(currentIssue.References)
+			referencesToCopy := copyStringSlice(referencesTo)
+			payload.ReferencesFrom = &referencesFrom
+			payload.ReferencesTo = &referencesToCopy
+			changed = true
+		}
+	}
+
+	if !changed {
+		return Issue{}, Event{}, false, errors.New("--status, --description, --acceptance-criteria, or --reference is required")
+	}
+
 	if targetStatus == "Done" {
 		if err := validateIssueCloseEligibilityTx(ctx, tx, issueID); err != nil {
 			return Issue{}, Event{}, false, err
 		}
 	}
 
-	payload := issueUpdatedPayload{
-		IssueID:    issueID,
-		StatusFrom: currentIssue.Status,
-		StatusTo:   targetStatus,
-		UpdatedAt:  nowUTC(),
-	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return Issue{}, Event{}, false, fmt.Errorf("marshal payload: %w", err)
@@ -775,7 +857,10 @@ func (s *Store) ListIssues(ctx context.Context, p ListIssuesParams) ([]Issue, er
 	}
 
 	query := `
-		SELECT id, type, title, COALESCE(parent_id, ''), status, created_at, updated_at, last_event_id
+		SELECT
+			id, type, title, COALESCE(parent_id, ''), status,
+			COALESCE(description, ''), COALESCE(acceptance_criteria, ''), COALESCE(references_json, '[]'),
+			created_at, updated_at, last_event_id
 		FROM work_items
 	`
 	if len(clauses) > 0 {
@@ -792,18 +877,27 @@ func (s *Store) ListIssues(ctx context.Context, p ListIssuesParams) ([]Issue, er
 	issues := make([]Issue, 0)
 	for rows.Next() {
 		var issue Issue
+		var referencesJSON string
 		if err := rows.Scan(
 			&issue.ID,
 			&issue.Type,
 			&issue.Title,
 			&issue.ParentID,
 			&issue.Status,
+			&issue.Description,
+			&issue.Acceptance,
+			&referencesJSON,
 			&issue.CreatedAt,
 			&issue.UpdatedAt,
 			&issue.LastEventID,
 		); err != nil {
 			return nil, fmt.Errorf("scan work_item row: %w", err)
 		}
+		references, err := parseReferencesJSON(referencesJSON)
+		if err != nil {
+			return nil, fmt.Errorf("scan work_item row references: %w", err)
+		}
+		issue.References = references
 		issues = append(issues, issue)
 	}
 	if err := rows.Err(); err != nil {
@@ -906,19 +1000,27 @@ func applyIssueCreatedProjectionTx(ctx context.Context, tx *sql.Tx, event Event)
 	if err := json.Unmarshal([]byte(event.PayloadJSON), &payload); err != nil {
 		return fmt.Errorf("decode issue.created payload for event %s: %w", event.EventID, err)
 	}
+	referencesJSON, err := json.Marshal(normalizeReferences(payload.References))
+	if err != nil {
+		return fmt.Errorf("encode issue.created references payload for event %s: %w", event.EventID, err)
+	}
 
-	_, err := tx.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO work_items(
 			id, type, title, parent_id, status,
+			description, acceptance_criteria, references_json,
 			labels_json, current_cycle_no, active_gate_set_id,
 			created_at, updated_at, last_event_id
 		)
-		VALUES(?, ?, ?, ?, ?, '[]', 1, NULL, ?, ?, ?)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, '[]', 1, NULL, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			type=excluded.type,
 			title=excluded.title,
 			parent_id=excluded.parent_id,
 			status=excluded.status,
+			description=excluded.description,
+			acceptance_criteria=excluded.acceptance_criteria,
+			references_json=excluded.references_json,
 			updated_at=excluded.updated_at,
 			last_event_id=excluded.last_event_id
 	`,
@@ -927,6 +1029,9 @@ func applyIssueCreatedProjectionTx(ctx context.Context, tx *sql.Tx, event Event)
 		payload.Title,
 		nullIfEmpty(payload.ParentID),
 		payload.Status,
+		strings.TrimSpace(payload.Description),
+		strings.TrimSpace(payload.AcceptanceCriteria),
+		string(referencesJSON),
 		payload.CreatedAt,
 		event.CreatedAt,
 		event.EventID,
@@ -944,16 +1049,45 @@ func applyIssueUpdatedProjectionTx(ctx context.Context, tx *sql.Tx, event Event)
 		return fmt.Errorf("decode issue.updated payload for event %s: %w", event.EventID, err)
 	}
 
-	issueStatus, err := normalizeIssueStatus(payload.StatusTo)
-	if err != nil {
-		return fmt.Errorf("decode issue.updated payload for event %s: %w", event.EventID, err)
-	}
+	setClauses := make([]string, 0, 6)
+	args := make([]any, 0, 8)
 
-	result, err := tx.ExecContext(ctx, `
+	if payload.StatusTo != nil {
+		issueStatus, err := normalizeIssueStatus(*payload.StatusTo)
+		if err != nil {
+			return fmt.Errorf("decode issue.updated payload for event %s: %w", event.EventID, err)
+		}
+		setClauses = append(setClauses, "status = ?")
+		args = append(args, issueStatus)
+	}
+	if payload.DescriptionTo != nil {
+		setClauses = append(setClauses, "description = ?")
+		args = append(args, strings.TrimSpace(*payload.DescriptionTo))
+	}
+	if payload.AcceptanceCriteriaTo != nil {
+		setClauses = append(setClauses, "acceptance_criteria = ?")
+		args = append(args, strings.TrimSpace(*payload.AcceptanceCriteriaTo))
+	}
+	if payload.ReferencesTo != nil {
+		referencesJSON, err := json.Marshal(normalizeReferences(*payload.ReferencesTo))
+		if err != nil {
+			return fmt.Errorf("encode issue.updated references payload for event %s: %w", event.EventID, err)
+		}
+		setClauses = append(setClauses, "references_json = ?")
+		args = append(args, string(referencesJSON))
+	}
+	if len(setClauses) == 0 {
+		return fmt.Errorf("decode issue.updated payload for event %s: no mutable fields provided", event.EventID)
+	}
+	setClauses = append(setClauses, "updated_at = ?", "last_event_id = ?")
+	args = append(args, event.CreatedAt, event.EventID, payload.IssueID)
+
+	query := `
 		UPDATE work_items
-		SET status = ?, updated_at = ?, last_event_id = ?
+		SET ` + strings.Join(setClauses, ", ") + `
 		WHERE id = ?
-	`, issueStatus, event.CreatedAt, event.EventID, payload.IssueID)
+	`
+	result, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("update work_item from event %s: %w", event.EventID, err)
 	}
@@ -1125,23 +1259,35 @@ func getIssueTx(ctx context.Context, tx *sql.Tx, id string) (Issue, error) {
 
 func getIssueQueryable(ctx context.Context, q queryable, id string) (Issue, error) {
 	row := q.QueryRowContext(ctx, `
-		SELECT id, type, title, COALESCE(parent_id, ''), status, created_at, updated_at, last_event_id
+		SELECT
+			id, type, title, COALESCE(parent_id, ''), status,
+			COALESCE(description, ''), COALESCE(acceptance_criteria, ''), COALESCE(references_json, '[]'),
+			created_at, updated_at, last_event_id
 		FROM work_items
 		WHERE id = ?
 	`, id)
 	var issue Issue
+	var referencesJSON string
 	if err := row.Scan(
 		&issue.ID,
 		&issue.Type,
 		&issue.Title,
 		&issue.ParentID,
 		&issue.Status,
+		&issue.Description,
+		&issue.Acceptance,
+		&referencesJSON,
 		&issue.CreatedAt,
 		&issue.UpdatedAt,
 		&issue.LastEventID,
 	); err != nil {
 		return Issue{}, err
 	}
+	references, err := parseReferencesJSON(referencesJSON)
+	if err != nil {
+		return Issue{}, err
+	}
+	issue.References = references
 	return issue, nil
 }
 
@@ -1498,6 +1644,56 @@ func validateIssueKeyPrefixMatchesProject(issueKey, projectPrefix string) error 
 
 func isHexRune(r rune) bool {
 	return (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')
+}
+
+func normalizeReferences(references []string) []string {
+	if len(references) == 0 {
+		return []string{}
+	}
+	normalized := make([]string, 0, len(references))
+	seen := make(map[string]bool, len(references))
+	for _, reference := range references {
+		ref := strings.TrimSpace(reference)
+		if ref == "" || seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		normalized = append(normalized, ref)
+	}
+	return normalized
+}
+
+func parseReferencesJSON(raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return []string{}, nil
+	}
+	var references []string
+	if err := json.Unmarshal([]byte(raw), &references); err != nil {
+		return nil, fmt.Errorf("decode references_json: %w", err)
+	}
+	return normalizeReferences(references), nil
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func copyStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return []string{}
+	}
+	out := make([]string, len(values))
+	copy(out, values)
+	return out
 }
 
 func nowUTC() string {

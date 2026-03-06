@@ -55,9 +55,9 @@ func runHelp(args []string, out io.Writer) error {
 		commands := []string{
 			"memori help [--json]",
 			"memori init [--db <path>] [--issue-prefix <prefix>] [--json]",
-			"memori issue create --type epic|story|task|bug --title <title> [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] --command-id <id> [--json]",
+			"memori issue create --type epic|story|task|bug --title <title> [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] --command-id <id> [--json]",
 			"memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] --command-id <id> [--json]",
-			"memori issue update --key <prefix-shortSHA> --status todo|inprogress|blocked|done [--actor <actor>] --command-id <id> [--json]",
+			"memori issue update --key <prefix-shortSHA> [--status todo|inprogress|blocked|done] [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--actor <actor>] --command-id <id> [--json]",
 			"memori issue show --key <prefix-shortSHA> [--json]",
 			"memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]",
 			"memori event log --entity <entityType:id|id> [--json]",
@@ -149,7 +149,11 @@ func runIssueCreate(args []string, out io.Writer) error {
 	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
 	issueType := fs.String("type", "", "issue type: epic|story|task|bug")
 	title := fs.String("title", "", "issue title")
+	description := fs.String("description", "", "issue description/context")
+	acceptance := fs.String("acceptance-criteria", "", "acceptance criteria")
 	parent := fs.String("parent", "", "parent issue key")
+	var references stringSliceFlag
+	fs.Var(&references, "reference", "reference link/evidence (repeatable)")
 	key := fs.String("key", "", "explicit issue key: {prefix}-{shortSHA} (optional)")
 	id := fs.String("id", "", "deprecated alias for --key")
 	actor := fs.String("actor", "", "actor id")
@@ -176,12 +180,15 @@ func runIssueCreate(args []string, out io.Writer) error {
 	defer s.Close()
 
 	issue, event, idempotent, err := s.CreateIssue(ctx, store.CreateIssueParams{
-		IssueID:   issueKey,
-		Type:      *issueType,
-		Title:     *title,
-		ParentID:  *parent,
-		Actor:     *actor,
-		CommandID: *commandID,
+		IssueID:            issueKey,
+		Type:               *issueType,
+		Title:              *title,
+		ParentID:           *parent,
+		Description:        *description,
+		AcceptanceCriteria: *acceptance,
+		References:         references,
+		Actor:              *actor,
+		CommandID:          *commandID,
 	})
 	if err != nil {
 		return err
@@ -217,6 +224,10 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	key := fs.String("key", "", "issue key")
 	id := fs.String("id", "", "deprecated alias for --key")
 	status := fs.String("status", "", "issue status: todo|inprogress|blocked|done")
+	description := fs.String("description", "", "issue description/context")
+	acceptance := fs.String("acceptance-criteria", "", "acceptance criteria")
+	var references stringSliceFlag
+	fs.Var(&references, "reference", "reference link/evidence (repeatable)")
 	actor := fs.String("actor", "", "actor id")
 	commandID := fs.String("command-id", "", "idempotency command id")
 	jsonOut := fs.Bool("json", false, "machine-readable output")
@@ -231,11 +242,33 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	if strings.TrimSpace(issueKey) == "" {
 		return errors.New("--key is required")
 	}
-	if strings.TrimSpace(*status) == "" {
-		return errors.New("--status is required")
-	}
 	if strings.TrimSpace(*commandID) == "" {
 		return errors.New("--command-id is required")
+	}
+	statusProvided := hasFlag(args, "status")
+	descriptionProvided := hasFlag(args, "description")
+	acceptanceProvided := hasFlag(args, "acceptance-criteria")
+	referencesProvided := hasFlag(args, "reference")
+	if !statusProvided && !descriptionProvided && !acceptanceProvided && !referencesProvided {
+		return errors.New("one of --status, --description, --acceptance-criteria, or --reference is required")
+	}
+
+	var statusPtr *string
+	if statusProvided {
+		statusPtr = status
+	}
+	var descriptionPtr *string
+	if descriptionProvided {
+		descriptionPtr = description
+	}
+	var acceptancePtr *string
+	if acceptanceProvided {
+		acceptancePtr = acceptance
+	}
+	var referencesPtr *[]string
+	if referencesProvided {
+		refs := []string(references)
+		referencesPtr = &refs
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -247,11 +280,14 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
-	issue, event, idempotent, err := s.UpdateIssueStatus(ctx, store.UpdateIssueStatusParams{
-		IssueID:   issueKey,
-		Status:    *status,
-		Actor:     *actor,
-		CommandID: *commandID,
+	issue, event, idempotent, err := s.UpdateIssue(ctx, store.UpdateIssueParams{
+		IssueID:            issueKey,
+		Status:             statusPtr,
+		Description:        descriptionPtr,
+		AcceptanceCriteria: acceptancePtr,
+		References:         referencesPtr,
+		Actor:              *actor,
+		CommandID:          *commandID,
 	})
 	if err != nil {
 		return err
@@ -390,6 +426,15 @@ func runIssueShow(args []string, out io.Writer) error {
 		_, _ = fmt.Fprintf(out, "Parent: %s\n", issue.ParentID)
 	}
 	_, _ = fmt.Fprintf(out, "Status: %s\n", issue.Status)
+	if strings.TrimSpace(issue.Description) != "" {
+		_, _ = fmt.Fprintf(out, "Description: %s\n", issue.Description)
+	}
+	if strings.TrimSpace(issue.Acceptance) != "" {
+		_, _ = fmt.Fprintf(out, "Acceptance Criteria: %s\n", issue.Acceptance)
+	}
+	if len(issue.References) > 0 {
+		_, _ = fmt.Fprintf(out, "References: %s\n", strings.Join(issue.References, ", "))
+	}
 	_, _ = fmt.Fprintf(out, "Created: %s\n", issue.CreatedAt)
 	_, _ = fmt.Fprintf(out, "Updated: %s\n", issue.UpdatedAt)
 	return nil
@@ -597,13 +642,7 @@ func runDBMigrate(args []string, out io.Writer) error {
 		return err
 	}
 
-	toSet := false
-	for i := range args {
-		if args[i] == "--to" || strings.HasPrefix(args[i], "--to=") {
-			toSet = true
-			break
-		}
-	}
+	toSet := hasFlag(args, "to")
 	var toPtr *int
 	if toSet {
 		toPtr = to
@@ -747,6 +786,19 @@ func openInitializedStore(ctx context.Context, dbPath string) (*store.Store, int
 		_ = s.Close()
 		return nil, 0, fmt.Errorf("database is not initialized at %s (run: memori init --db %s)", dbPath, dbPath)
 	}
+	migrationStatus, err := dbschema.StatusOf(ctx, s.DB())
+	if err != nil {
+		_ = s.Close()
+		return nil, 0, err
+	}
+	if migrationStatus.PendingMigrations > 0 {
+		_ = s.Close()
+		return nil, 0, fmt.Errorf(
+			"database schema is behind by %d migration(s) (run: memori db migrate --db %s)",
+			migrationStatus.PendingMigrations,
+			dbPath,
+		)
+	}
 	return s, v, nil
 }
 
@@ -767,6 +819,16 @@ func parseEntityRef(raw string) (entityType, entityID string, err error) {
 		return "", "", fmt.Errorf("invalid entity type %q (expected issue)", parts[0])
 	}
 	return entityType, entityID, nil
+}
+
+func hasFlag(args []string, name string) bool {
+	long := "--" + name
+	for _, arg := range args {
+		if arg == long || strings.HasPrefix(arg, long+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 type jsonEnvelope struct {
@@ -830,6 +892,17 @@ type dbMigrateData struct {
 	CurrentVersion    int `json:"current_version"`
 	HeadVersion       int `json:"head_version"`
 	PendingMigrations int `json:"pending_migrations"`
+}
+
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string {
+	return strings.Join(*s, ",")
+}
+
+func (s *stringSliceFlag) Set(value string) error {
+	*s = append(*s, value)
+	return nil
 }
 
 func coalesceIssueKey(key, id string) (string, error) {
@@ -984,9 +1057,9 @@ func printHelp(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "Commands:")
 	_, _ = fmt.Fprintln(out, "  memori help [--json]")
 	_, _ = fmt.Fprintln(out, "  memori init [--db <path>] [--issue-prefix <prefix>] [--json]")
-	_, _ = fmt.Fprintln(out, "  memori issue create --type epic|story|task|bug --title <title> [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] --command-id <id> [--json]")
+	_, _ = fmt.Fprintln(out, "  memori issue create --type epic|story|task|bug --title <title> [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] --command-id <id> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] --command-id <id> [--json]")
-	_, _ = fmt.Fprintln(out, "  memori issue update --key <prefix-shortSHA> --status todo|inprogress|blocked|done [--actor <actor>] --command-id <id> [--json]")
+	_, _ = fmt.Fprintln(out, "  memori issue update --key <prefix-shortSHA> [--status todo|inprogress|blocked|done] [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--actor <actor>] --command-id <id> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori issue show --key <prefix-shortSHA> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori event log --entity <entityType:id|id> [--json]")

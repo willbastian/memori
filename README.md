@@ -37,11 +37,28 @@ memori db verify
 # create an issue
 memori issue create --type task --title "First ticket" --command-id "cli-create-01"
 
+# create with richer context
+memori issue create \
+  --type task \
+  --title "Improve issue context" \
+  --description "Add richer fields for agent/human handoff" \
+  --acceptance-criteria "Issue show returns context-rich payload" \
+  --reference "https://example.com/spec" \
+  --command-id "cli-create-02"
+
 # show issue
 memori issue show --key <issue-key>
 
 # move issue to in-progress
 memori issue update --key <issue-key> --status inprogress --command-id "cli-update-01"
+
+# update context fields without changing status
+memori issue update \
+  --key <issue-key> \
+  --description "Updated context" \
+  --acceptance-criteria "Readable in issue show output" \
+  --reference "notes.md" \
+  --command-id "cli-update-02"
 
 # re-link child to parent
 memori issue link --child <child-key> --parent <parent-key> --command-id "cli-link-01"
