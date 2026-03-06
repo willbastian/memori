@@ -137,14 +137,14 @@ flowchart LR
   - Keep raw conversational/context artifacts in a local store and generate compact "rehydration packets" for reset recovery.
 - **Core domain model**
   - `work_items` (projection): materialized issue identity/state view (`id`, `type`, `title`, `parent_id`, `status`, `priority`, `labels`, `created_at`) derived from events.
-  - `events` (append-only): (`event_id`, `entity_type`, `entity_id`, `entity_seq`, `event_type`, `payload_json`, `actor`, `causation_id`, `correlation_id`, `created_at`, `hash`, `prev_hash`).
-  - `events` constraints and indexes: `UNIQUE(entity_type, entity_id, entity_seq)` for deterministic per-entity ordering, plus index on (`entity_type`, `entity_id`, `created_at`).
-  - write rule for `entity_seq`: assigned in the same transaction as event insert as `max(entity_seq)+1` per entity (or equivalent atomic counter table) to avoid timestamp/id tie ambiguity.
+  - `events` (append-only): (`event_id`, `event_order`, `entity_type`, `entity_id`, `entity_seq`, `event_type`, `payload_json`, `actor`, `command_id`, `causation_id`, `correlation_id`, `created_at`, `hash`, `prev_hash`, `event_payload_version`).
+  - `events` constraints and indexes: `UNIQUE(event_order)` for deterministic global ordering, `UNIQUE(entity_type, entity_id, entity_seq)` for deterministic per-entity ordering, and `UNIQUE(command_id, actor)` for idempotent command handling.
+  - write rule for `event_order` and `entity_seq`: both assigned atomically in the same transaction as event insert (`event_order` global monotonic, `entity_seq=max(entity_seq)+1` per entity or equivalent counter tables) so replay never depends on timestamp ties.
   - `gate_templates`: versioned reusable definitions (`template_id`, `version`, `applies_to`, `definition_json`, `created_at`) with immutable versions (new version on change).
   - `gate_sets`: instantiated immutable completion contracts per issue-cycle (`gate_set_id`, `issue_id`, `cycle_no`, `template_refs`, `frozen_definition_json`, `gate_set_hash`, `locked_at`, `created_at`).
   - `sessions`: agent session boundaries (`session_id`, `started_at`, `ended_at`, `trigger`, `summary_event_id`).
   - `context_chunks`: compressed context artifacts linked to events/work items (`chunk_id`, `session_id`, `kind`, `content`, `embedding_ref`, `created_at`).
-  - `rehydrate_packets`: persisted packet artifacts (`packet_id`, `scope`, `packet_json`, `built_from_event_id`, `created_at`) for deterministic reset recovery.
+  - `rehydrate_packets`: persisted packet artifacts (`packet_id`, `scope`, `packet_json`, `packet_schema_version`, `built_from_event_id`, `created_at`) for deterministic reset recovery.
   - `agent_focus`: per-agent resume cursor (`agent_id`, `active_issue_id`, `active_cycle_no`, `last_packet_id`, `updated_at`).
   - `issue_summaries` (projection): lineage-aware rolling summaries (`summary_id`, `issue_id`, `cycle_no`, `summary_level`, `summary_json`, `from_entity_seq`, `to_entity_seq`, `parent_summary_id`, `created_at`).
   - `open_loops` (projection): unresolved items (`loop_id`, `issue_id`, `cycle_no`, `loop_type`, `status`, `owner`, `priority`, `source_event_id`, `updated_at`).
@@ -157,6 +157,7 @@ flowchart LR
   - Gate definition policy: human-created tickets may define or select templates directly; agent-created tickets must bind to approved templates (or enter a human-approval step before lock).
   - Every field/state change emits events (no in-place mutation).
   - Completion gate policy: each issue cycle references one locked `gate_set`; `Done` transition is rejected unless all required gates in that set have current `PASS`.
+  - Close-validator consistency: close eligibility is evaluated on source-of-truth data (`events` + immutable `gate_set_items`) in the same write transaction as `issue status -> Done`; projection tables are read optimization only and never authority for close.
   - Reopen policy: reopening an issue creates a new cycle with a new gate set instance; previous cycle gates/events remain immutable and auditable.
 - **Context-bridge behavior**
   - On each meaningful agent update, write events plus optional context chunk references.
@@ -165,19 +166,23 @@ flowchart LR
     - `open_questions`
     - `next_actions`
     - `linked_work_items`
-  - Persist every generated packet in `rehydrate_packets`; packets include `schema_version` and source event cursor.
+  - Persist every generated packet in `rehydrate_packets`; packets include `packet_schema_version` and source event cursor.
   - On reset, rehydrate from latest valid packet + unresolved work graph + recent high-relevance chunks; raw event scan is fallback/debug path only.
   - Packet section contract: `goal`, `state`, `gates`, `open_loops`, `next_actions`, `risks`.
   - Every packet must include close-eligibility and failing/blocked gate status for active issues.
 - **CLI surface (v1)**
-  - global output contract: all read/list commands support `--json` and output stable key order + documented schema version (`schema_version`) for machine parsing.
+  - global output contract: all read/list commands support `--json` and output stable key order + documented versions (`response_schema_version`, `db_schema_version`) for machine parsing.
   - `memori help --json`
   - `memori init`
+  - `memori db status [--json]`
+  - `memori db migrate [--to <version>] [--json]` (`--to` must be `>= current` and `<= head`)
+  - `memori db verify [--json]`
+  - `memori db backup --out ... [--json]`
   - `memori gate template create --id ... --version ... --applies-to ... --file ... [--json]`
   - `memori gate template list [--type ...] [--json]`
   - `memori gate set instantiate --issue ... --template id@version [--template ...] [--json]`
   - `memori gate set lock --issue ... [--cycle ...] [--json]`
-  - `memori gate evaluate --issue ... --gate ... --result pass|fail|blocked --evidence ... [--json]`
+  - `memori gate evaluate --issue ... --gate ... --result PASS|FAIL|BLOCKED --evidence ... [--json]`
   - `memori gate status --issue ... [--cycle ...] [--json]`
   - `memori issue create --type epic|story|task|bug --title ... [--parent ...] [--json]`
   - `memori issue update --id ... --status ... --priority ... --label ... [--json]`
@@ -195,11 +200,13 @@ flowchart LR
 - **Traceability guarantees**
   - Event hash chain (`hash`, `prev_hash`) for tamper evidence.
   - Monotonic sequence per entity for deterministic replay.
-  - Replay order contract: sort by (`entity_seq`) per entity and by (`created_at`, `event_id`) only for cross-entity timeline views.
+  - Global replay order contract: canonical replay uses `event_order` only; per-entity reconstruction additionally requires strictly increasing `entity_seq`.
+  - Timeline view order contract: cross-entity human timelines may sort by (`created_at`, `event_id`) for display only; this order is never used for replay semantics.
   - Gate immutability contract: after `gate_set lock`, no gate definition mutation events are accepted for that `gate_set_id`.
   - Anti-cheat close contract: `issue status -> Done` event must reference a locked `gate_set_hash` and a verifier proof that all required gates are `PASS`.
   - No hard deletes; use tombstone/deprecation events.
   - Correlation metadata required for multi-step operations.
+  - Mutating commands must carry non-empty `command_id`; retries with same (`actor`, `command_id`) are idempotent and return prior success result.
 
 ## Database Schema (v1)
 - **SQLite baseline**
@@ -210,14 +217,18 @@ flowchart LR
 - **System tables**
   - `schema_meta`
     - columns: `key TEXT PRIMARY KEY`, `value TEXT NOT NULL`, `updated_at TEXT NOT NULL`
-    - purpose: schema/data-format versioning (for migrations and `schema_version` output)
+    - purpose: database/runtime compatibility metadata (`db_schema_version`, `min_supported_db_schema_version`, `last_migrated_at_utc`)
+  - `schema_migrations`
+    - columns: `version INTEGER PRIMARY KEY`, `name TEXT NOT NULL`, `checksum TEXT NOT NULL`, `applied_at TEXT NOT NULL`, `applied_by TEXT NOT NULL`, `duration_ms INTEGER NOT NULL`, `success INTEGER NOT NULL CHECK(success IN (0,1))`
+    - constraints: `UNIQUE(checksum)`
+    - purpose: append-only migration audit and drift detection independent of engine internals
 
 - **Event store (source of truth)**
   - `events`
-    - columns: `event_id TEXT PRIMARY KEY`, `entity_type TEXT NOT NULL`, `entity_id TEXT NOT NULL`, `entity_seq INTEGER NOT NULL CHECK(entity_seq > 0)`, `event_type TEXT NOT NULL`, `payload_json TEXT NOT NULL`, `actor TEXT NOT NULL`, `causation_id TEXT`, `correlation_id TEXT`, `created_at TEXT NOT NULL`, `hash TEXT NOT NULL`, `prev_hash TEXT`, `schema_version INTEGER NOT NULL DEFAULT 1`
-    - constraints: `UNIQUE(entity_type, entity_id, entity_seq)`, `UNIQUE(hash)`, `CHECK(json_valid(payload_json))`
-    - indexes: `(entity_type, entity_id, created_at)`, `(correlation_id, created_at)`, `(event_type, created_at)`
-    - write invariant: `entity_seq` assigned atomically per `(entity_type, entity_id)` in the same transaction as insert
+    - columns: `event_id TEXT PRIMARY KEY`, `event_order INTEGER NOT NULL CHECK(event_order > 0)`, `entity_type TEXT NOT NULL`, `entity_id TEXT NOT NULL`, `entity_seq INTEGER NOT NULL CHECK(entity_seq > 0)`, `event_type TEXT NOT NULL`, `payload_json TEXT NOT NULL`, `actor TEXT NOT NULL`, `command_id TEXT NOT NULL`, `causation_id TEXT`, `correlation_id TEXT`, `created_at TEXT NOT NULL`, `hash TEXT NOT NULL`, `prev_hash TEXT`, `event_payload_version INTEGER NOT NULL DEFAULT 1`
+    - constraints: `UNIQUE(event_order)`, `UNIQUE(entity_type, entity_id, entity_seq)`, `UNIQUE(hash)`, `UNIQUE(actor, command_id)`, `CHECK(length(command_id) > 0)`, `CHECK(event_payload_version > 0)`, `CHECK(json_valid(payload_json))`
+    - indexes: `(entity_type, entity_id, created_at)`, `(correlation_id, created_at)`, `(event_type, created_at)`, `(event_order)`
+    - write invariant: `event_order` assigned atomically and globally; `entity_seq` assigned atomically per `(entity_type, entity_id)` in the same transaction as insert
   - immutability triggers
     - `BEFORE UPDATE ON events` -> `RAISE(ABORT, 'events are append-only')`
     - `BEFORE DELETE ON events` -> `RAISE(ABORT, 'events are append-only')`
@@ -238,7 +249,8 @@ flowchart LR
   - gate immutability triggers
     - block `UPDATE/DELETE` on `gate_templates`
     - block `DELETE` on `gate_sets` and `gate_set_items`
-    - on `gate_sets`, block updates to frozen fields (`template_refs_json`, `frozen_definition_json`, `gate_set_hash`) and block any update once `locked_at` is set (except no-op)
+    - block `UPDATE` on `gate_set_items` (definitions are immutable after insert)
+    - on `gate_sets`, block updates to frozen fields (`template_refs_json`, `frozen_definition_json`, `gate_set_hash`) and block any update once `locked_at` is set (except no-op `locked_at` set attempt rejection with clear error)
 
 - **Context/session tables**
   - `sessions`
@@ -249,8 +261,8 @@ flowchart LR
     - constraints: `FOREIGN KEY(session_id) REFERENCES sessions(session_id)`, `CHECK(json_valid(metadata_json))`
     - indexes: `(session_id, created_at)`, `(entity_type, entity_id, created_at)`, `(kind, created_at)`
   - `rehydrate_packets`
-    - columns: `packet_id TEXT PRIMARY KEY`, `scope_type TEXT NOT NULL`, `scope_id TEXT NOT NULL`, `session_id TEXT`, `issue_id TEXT`, `cycle_no INTEGER`, `packet_json TEXT NOT NULL`, `schema_version INTEGER NOT NULL`, `built_from_event_id TEXT NOT NULL`, `built_from_entity_seq INTEGER`, `created_at TEXT NOT NULL`, `created_by TEXT NOT NULL`
-    - constraints: `CHECK(scope_type IN ('issue','session'))`, `CHECK(json_valid(packet_json))`, `FOREIGN KEY(session_id) REFERENCES sessions(session_id)`, `FOREIGN KEY(built_from_event_id) REFERENCES events(event_id)`
+    - columns: `packet_id TEXT PRIMARY KEY`, `scope_type TEXT NOT NULL`, `scope_id TEXT NOT NULL`, `session_id TEXT`, `issue_id TEXT`, `cycle_no INTEGER`, `packet_json TEXT NOT NULL`, `packet_schema_version INTEGER NOT NULL`, `built_from_event_id TEXT NOT NULL`, `built_from_entity_seq INTEGER`, `created_at TEXT NOT NULL`, `created_by TEXT NOT NULL`
+    - constraints: `CHECK(scope_type IN ('issue','session'))`, `CHECK(packet_schema_version > 0)`, `CHECK(json_valid(packet_json))`, `FOREIGN KEY(session_id) REFERENCES sessions(session_id)`, `FOREIGN KEY(built_from_event_id) REFERENCES events(event_id)`
     - indexes: `(scope_type, scope_id, created_at)`, `(issue_id, cycle_no, created_at)`, `(built_from_event_id)`
   - `agent_focus`
     - columns: `agent_id TEXT PRIMARY KEY`, `active_issue_id TEXT`, `active_cycle_no INTEGER`, `last_packet_id TEXT`, `updated_at TEXT NOT NULL`
@@ -284,6 +296,44 @@ flowchart LR
   - Only projection/worker components write `work_items`, `gate_status_projection`, `open_loops`, `issue_summaries`, and packet materializations.
   - CLI/user paths do not write projection tables directly.
 
+## Migration Tooling Decision
+- **Decision**
+  - Use `pressly/goose` as the migration engine (embedded in the Go binary).
+  - Do not roll a full migration framework by hand.
+  - Migration execution authority is Goose's version table (`goose_db_version`).
+  - Keep a thin Memori policy layer around Goose for backup-first upgrades, checksum verification, and contract-specific health checks.
+- **Alternatives**
+  - `golang-migrate` is acceptable fallback if we need simpler up/down workflows.
+  - `Atlas` is optional for schema diff/lint ergonomics, but not required for v1.
+- **Why this is the best fit**
+  - We get battle-tested ordering/version application from an existing tool.
+  - We still retain control of project-specific guarantees (`schema_meta`, packet/event compatibility checks, local backup policy).
+  - Implementation complexity stays low while reducing migration-risk surface.
+
+## Database Migration Plan (Concrete)
+- **Migration artifacts**
+  - Store migrations under `internal/db/migrations/` as forward-only files `NNNN_name.sql`.
+  - Never edit an applied migration file; add a new migration for any change.
+- **Version and integrity tracking**
+  - `goose_db_version` is the single source of truth for applied migration version.
+  - `schema_meta` must contain: `db_schema_version`, `min_supported_db_schema_version`, `last_migrated_at_utc`.
+  - `schema_meta.db_schema_version` must mirror `goose_db_version`; mismatch is treated as startup error.
+  - `schema_migrations(version, name, checksum, applied_at, applied_by, duration_ms, success)` is an audit/checksum ledger (not version authority).
+  - `memori db verify` must compare on-disk checksums with recorded checksums and fail on mismatch.
+- **Execution contract**
+  - `memori init` bootstraps DB + metadata tables, then migrates to head.
+  - `memori db migrate` is forward-only and rejects any `--to` target lower than current version.
+  - `memori db migrate` acquires exclusive lock, creates backup, applies pending migrations in order, records each success, and updates `schema_meta.db_schema_version`.
+  - On failure, abort current migration transaction, keep DB at last successful version, and print backup restore path.
+- **Compatibility contract**
+  - Startup fails with actionable message if DB is below `min_supported_db_schema_version`.
+  - Startup fails read/write if DB is newer than binary support.
+  - Any migration changing packet/event payload contract must also update parser compatibility and version docs (`event_payload_version`, `packet_schema_version`, `response_schema_version`).
+- **Authoring rules**
+  - Prefer additive expand/contract sequence over destructive rewrites.
+  - Never mutate historical `events`; use additive columns, projection rebuilds, or new events.
+  - Separate heavy backfills into dedicated migrations with bounded work per transaction.
+
 ## ERD (v1)
 ```mermaid
 erDiagram
@@ -293,20 +343,32 @@ erDiagram
       TEXT updated_at
     }
 
+    SCHEMA_MIGRATIONS {
+      INTEGER version PK
+      TEXT name
+      TEXT checksum
+      TEXT applied_at
+      TEXT applied_by
+      INTEGER duration_ms
+      INTEGER success
+    }
+
     EVENTS {
       TEXT event_id PK
+      INTEGER event_order
       TEXT entity_type
       TEXT entity_id
       INTEGER entity_seq
       TEXT event_type
       TEXT payload_json
       TEXT actor
+      TEXT command_id
       TEXT causation_id
       TEXT correlation_id
       TEXT created_at
       TEXT hash
       TEXT prev_hash
-      INTEGER schema_version
+      INTEGER event_payload_version
     }
 
     GATE_TEMPLATES {
@@ -369,7 +431,7 @@ erDiagram
       TEXT issue_id
       INTEGER cycle_no
       TEXT packet_json
-      INTEGER schema_version
+      INTEGER packet_schema_version
       TEXT built_from_event_id FK
       INTEGER built_from_entity_seq
       TEXT created_at
@@ -481,6 +543,11 @@ erDiagram
     - gates: reset simulation restores active issue, open loops, and gate health.
 
 ## Delivery Vertical Slices
+- `Slice 0: Invariants + contracts lock-in`
+  - Deliver canonical mutation contracts before feature work: global `event_order`, per-entity `entity_seq`, command idempotency (`actor`,`command_id`), and enum normalization (`PASS|FAIL|BLOCKED`).
+  - Deliver DB-level immutability triggers for `events`, `gate_templates`, `gate_sets`, and `gate_set_items`, including explicit `UPDATE` blocking on `gate_set_items`.
+  - Deliver close-validator write-path contract: evaluate eligibility from source-of-truth (`events` + immutable gate definitions) in the same transaction as `Done`.
+  - Done when invariants are executable (DDL + tests) and every later slice depends on these contracts instead of redefining them.
 - `Slice 1: Ledger foundation + basic issue flow`
   - Deliver `memori init`, event store schema, and minimal projection pipeline.
   - Deliver `issue create`, `issue show`, and `event log` with optional `--json`.
@@ -492,7 +559,7 @@ erDiagram
 - `Slice 3: Immutable success gates (template + instance model)`
   - Deliver versioned gate templates and per-issue-cycle gate-set instantiation/locking.
   - Deliver gate evaluation events (`PASS|FAIL|BLOCKED`) with evidence references and gate status projection.
-  - Deliver close validator that blocks `Done` until all required locked gates pass.
+  - Deliver close validator that blocks `Done` until all required locked gates pass, with validation executed against source-of-truth data in the same write transaction.
   - Done when attempts to modify locked gates are rejected and closure succeeds only with full gate pass proof.
 - `Slice 4: Deterministic replay + audit integrity`
   - Deliver `entity_seq` assignment logic, uniqueness enforcement, and replay engine contract.
@@ -507,21 +574,26 @@ erDiagram
   - Deliver packet section contracts and mandatory gate-health inclusion.
   - Done when large histories produce compact packets with stable structure and full completion-context fidelity.
 - `Slice 7: Hardening + operational ergonomics`
-  - Deliver schema versioning in json output, migration path for DB upgrades, and consistency checks.
+  - Deliver versioning contracts in json output (`response_schema_version`, `db_schema_version`) plus migration path for DB upgrades and consistency checks.
+  - Deliver migration commands (`db status`, `db migrate`, `db verify`, `db backup`) and backup-first failure handling.
   - Deliver full automated tests for replay integrity, CLI json stability, and reset continuity scenarios.
   - Done when all test plan cases pass in CI and local reruns are deterministic.
 
 ## Test Plan
 - `Issue lifecycle replay`: create/update/close items and rebuild projections from empty DB; projection state must match expected.
+- `Invariant lock-in`: verify `event_order` monotonic uniqueness, `entity_seq` per-entity monotonic uniqueness, and canonical replay order based on `event_order` only.
 - `Hierarchy rules`: reject invalid parent-child links and cycles.
 - `Immutability`: confirm updates append events only; prior events unchanged.
+- `Command idempotency`: retry same mutating command with same (`actor`,`command_id`) and verify no duplicate event is appended.
+- `Command metadata enforcement`: reject mutating writes with missing/empty `command_id`.
 - `Agent ticket creation policy`: verify agent-created tickets can be created but cannot attach non-approved gate criteria without human approval.
 - `Gate anti-drift`: verify agent cannot modify locked success criteria and cannot close by criteria mutation.
 - `Gate immutability`: verify locked gate sets reject definition changes and preserve historical cycle evidence.
 - `Gate close enforcement`: verify `Done` transition fails with any required gate not passed and succeeds only with full required gate pass set.
 - `Template versioning`: verify template changes require a new version and do not mutate previously instantiated gate sets.
 - `Trace chain`: verify hash-chain integrity and detection on tampered row.
-- `Entity ordering`: verify `UNIQUE(entity_type, entity_id, entity_seq)` enforcement and deterministic replay after import/rebuild.
+- `Entity ordering`: verify `UNIQUE(entity_type, entity_id, entity_seq)` enforcement and deterministic per-entity reconstruction after import/rebuild.
+- `Global ordering`: verify `UNIQUE(event_order)` enforcement and deterministic cross-entity replay independent of timestamp collisions.
 - `Reset continuity`: simulate session cutoff, run checkpoint + rehydrate, confirm unresolved items/next actions preserved.
 - `Compaction quality`: ensure compaction output includes decisions, blockers, and next actions tied to entity IDs.
 - `Packet contract`: validate packet sections (`goal/state/gates/open_loops/next_actions/risks`) are always present and schema-valid.
@@ -530,7 +602,12 @@ erDiagram
 - `Summary lineage`: validate `issue_summaries` lineage links and deterministic regeneration from event ranges.
 - `Agent focus resume`: validate `agent_focus.last_packet_id` restores same working set across process restarts.
 - `LLM discoverability`: validate `help --json` and `issue next --json` provide sufficient structured guidance to pick and execute the next ticket.
-- `CLI usability`: validate key commands produce deterministic machine-readable output (`--json`, stable keys, `schema_version`) and human-readable output.
+- `CLI usability`: validate key commands produce deterministic machine-readable output (`--json`, stable keys, `response_schema_version`, `db_schema_version`) and human-readable output.
+- `Migration fresh install`: validate empty DB migrates to latest schema using `init`.
+- `Migration upgrade`: validate N-1 and N-2 fixture DBs migrate cleanly to head.
+- `Migration no-op`: validate migrate-at-head performs no schema/data change.
+- `Migration drift detection`: validate edited historical migration file is caught by checksum verification.
+- `Migration failure recovery`: validate failed migration leaves DB at prior version and backup restore path works.
 
 ## Assumptions and Defaults
 - Single-user local-first system in v1; `actor` defaults to local profile.
