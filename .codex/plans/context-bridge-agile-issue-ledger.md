@@ -457,6 +457,29 @@ erDiagram
     EVENTS ||--o{ WORK_ITEMS : last_event
 ```
 
+## Dogfooding Plan (Build Memori With Memori)
+- **Operating principle**
+  - We will dogfood this system while building it and progressively offload active planning/execution tracking into Memori itself.
+- **Offload note**
+  - During bootstrap, the markdown plan remains source-of-intent.
+  - Once `Slice 1` is operational (`init`, event ledger, basic issue flow), active work management is offloaded to Memori tickets and gates.
+  - After offload, markdown remains architecture/reference; ticket state-of-truth lives in Memori.
+- **Execution loop**
+  - Create `Epic: Build Memori With Memori`.
+  - Represent each delivery slice as a `Story`; break implementation into `Task`/`Bug`.
+  - Require locked success gates for every active story/task before moving beyond `Todo`.
+  - Allow both human and agent ticket creation, with agent-created tickets restricted to approved gate templates (or human approval path).
+  - Run work via CLI only (`issue next`, `issue update`, `gate evaluate`, `context packet build/use`).
+  - Enforce close-validator from day one: no ticket closes unless required gates pass.
+  - Checkpoint and resume through packet-first flow daily to validate finite-context recovery.
+- **Initial dogfood tickets**
+  - `Story: Event Ledger + Replay`
+    - gates: append-only enforcement, deterministic replay rebuild.
+  - `Story: Immutable Gates`
+    - gates: locked-gate mutation blocked, close blocked until all required gates pass.
+  - `Story: Packet-first Resume`
+    - gates: reset simulation restores active issue, open loops, and gate health.
+
 ## Delivery Vertical Slices
 - `Slice 1: Ledger foundation + basic issue flow`
   - Deliver `memori init`, event store schema, and minimal projection pipeline.
