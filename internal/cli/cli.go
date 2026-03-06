@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"memori/internal/dbschema"
 	"memori/internal/store"
 )
 
@@ -60,6 +61,9 @@ func runHelp(args []string, out io.Writer) error {
 			"memori issue show --key <prefix-shortSHA> [--json]",
 			"memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]",
 			"memori event log --entity <entityType:id|id> [--json]",
+			"memori db status [--json]",
+			"memori db migrate [--to <version>] [--json]",
+			"memori db verify [--json]",
 			"memori db replay [--json]",
 		}
 		sort.Strings(commands)
@@ -506,15 +510,184 @@ func runEvent(args []string, out io.Writer) error {
 
 func runDB(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("db subcommand required: replay")
+		return errors.New("db subcommand required: status|migrate|verify|replay")
 	}
 
 	switch args[0] {
+	case "status":
+		return runDBStatus(args[1:], out)
+	case "migrate":
+		return runDBMigrate(args[1:], out)
+	case "verify":
+		return runDBVerify(args[1:], out)
 	case "replay":
 		return runDBReplay(args[1:], out)
 	default:
 		return fmt.Errorf("unknown db subcommand %q", args[0])
 	}
+}
+
+func runDBStatus(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("db status", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	status, err := dbschema.StatusOf(ctx, s.DB())
+	if err != nil {
+		return err
+	}
+	dbVersion, err := s.SchemaVersion(ctx)
+	if err != nil {
+		dbVersion = 0
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "db status",
+			Data: dbStatusData{
+				CurrentVersion:    status.CurrentVersion,
+				HeadVersion:       status.HeadVersion,
+				PendingMigrations: status.PendingMigrations,
+			},
+		})
+	}
+
+	_, _ = fmt.Fprintf(out, "Current schema version: %d\n", status.CurrentVersion)
+	_, _ = fmt.Fprintf(out, "Head schema version: %d\n", status.HeadVersion)
+	_, _ = fmt.Fprintf(out, "Pending migrations: %d\n", status.PendingMigrations)
+	return nil
+}
+
+func runDBMigrate(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("db migrate", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	to := fs.Int("to", 0, "target migration version (optional)")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	s, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	before, err := dbschema.StatusOf(ctx, s.DB())
+	if err != nil {
+		return err
+	}
+
+	toSet := false
+	for i := range args {
+		if args[i] == "--to" || strings.HasPrefix(args[i], "--to=") {
+			toSet = true
+			break
+		}
+	}
+	var toPtr *int
+	if toSet {
+		toPtr = to
+	}
+	after, err := dbschema.Migrate(ctx, s.DB(), toPtr)
+	if err != nil {
+		return err
+	}
+
+	dbVersion, err := s.SchemaVersion(ctx)
+	if err != nil {
+		dbVersion = 0
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "db migrate",
+			Data: dbMigrateData{
+				FromVersion:       before.CurrentVersion,
+				CurrentVersion:    after.CurrentVersion,
+				HeadVersion:       after.HeadVersion,
+				PendingMigrations: after.PendingMigrations,
+			},
+		})
+	}
+
+	_, _ = fmt.Fprintf(out, "Migrated database from version %d to %d\n", before.CurrentVersion, after.CurrentVersion)
+	_, _ = fmt.Fprintf(out, "Head schema version: %d\n", after.HeadVersion)
+	_, _ = fmt.Fprintf(out, "Pending migrations: %d\n", after.PendingMigrations)
+	return nil
+}
+
+func runDBVerify(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("db verify", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	result, err := dbschema.Verify(ctx, s.DB())
+	if err != nil {
+		return err
+	}
+
+	dbVersion, err := s.SchemaVersion(ctx)
+	if err != nil {
+		dbVersion = 0
+	}
+
+	if *jsonOut {
+		if err := printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "db verify",
+			Data:                  result,
+		}); err != nil {
+			return err
+		}
+	} else if result.OK {
+		_, _ = fmt.Fprintln(out, "Database verify: OK")
+	} else {
+		_, _ = fmt.Fprintln(out, "Database verify: FAILED")
+	}
+
+	if !result.OK {
+		return errors.New(strings.Join(result.Checks, "; "))
+	}
+	if !*jsonOut {
+		_, _ = fmt.Fprintln(out, strings.Join(result.Checks, "; "))
+	}
+	return nil
 }
 
 func runDBReplay(args []string, out io.Writer) error {
@@ -644,6 +817,19 @@ type eventLogData struct {
 type backlogData struct {
 	Count  int           `json:"count"`
 	Issues []store.Issue `json:"issues"`
+}
+
+type dbStatusData struct {
+	CurrentVersion    int `json:"current_version"`
+	HeadVersion       int `json:"head_version"`
+	PendingMigrations int `json:"pending_migrations"`
+}
+
+type dbMigrateData struct {
+	FromVersion       int `json:"from_version"`
+	CurrentVersion    int `json:"current_version"`
+	HeadVersion       int `json:"head_version"`
+	PendingMigrations int `json:"pending_migrations"`
 }
 
 func coalesceIssueKey(key, id string) (string, error) {
@@ -804,5 +990,8 @@ func printHelp(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "  memori issue show --key <prefix-shortSHA> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori event log --entity <entityType:id|id> [--json]")
+	_, _ = fmt.Fprintln(out, "  memori db status [--json]")
+	_, _ = fmt.Fprintln(out, "  memori db migrate [--to <version>] [--json]")
+	_, _ = fmt.Fprintln(out, "  memori db verify [--json]")
 	_, _ = fmt.Fprintln(out, "  memori db replay [--json]")
 }

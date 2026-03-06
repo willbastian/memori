@@ -16,10 +16,11 @@ import (
 	"strings"
 	"time"
 
+	"memori/internal/dbschema"
+
 	_ "modernc.org/sqlite"
 )
 
-const DBSchemaVersion = 1
 const DefaultIssueKeyPrefix = "mem"
 
 const (
@@ -173,13 +174,11 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-func (s *Store) Initialize(ctx context.Context, p InitializeParams) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
+func (s *Store) DB() *sql.DB {
+	return s.db
+}
 
+func (s *Store) Initialize(ctx context.Context, p InitializeParams) error {
 	issueKeyPrefix, err := normalizeIssueKeyPrefix(p.IssueKeyPrefix)
 	if err != nil {
 		return fmt.Errorf("invalid issue key prefix: %w", err)
@@ -187,6 +186,16 @@ func (s *Store) Initialize(ctx context.Context, p InitializeParams) error {
 	if err := validateIssueTypeNotEmbeddedInKeyPrefix(issueKeyPrefix + "-a1b2c3d"); err != nil {
 		return fmt.Errorf("invalid issue key prefix: %w", err)
 	}
+	migrationStatus, err := dbschema.Migrate(ctx, s.db, nil)
+	if err != nil {
+		return fmt.Errorf("migrate schema: %w", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
 
 	schema := []string{
 		`CREATE TABLE IF NOT EXISTS schema_meta (
@@ -337,8 +346,8 @@ func (s *Store) Initialize(ctx context.Context, p InitializeParams) error {
 		key   string
 		value string
 	}{
-		{key: "db_schema_version", value: strconv.Itoa(DBSchemaVersion)},
-		{key: "min_supported_db_schema_version", value: strconv.Itoa(DBSchemaVersion)},
+		{key: "db_schema_version", value: strconv.Itoa(migrationStatus.CurrentVersion)},
+		{key: "min_supported_db_schema_version", value: strconv.Itoa(dbschema.MinSupportedVersion)},
 		{key: "last_migrated_at_utc", value: now},
 	}
 	for _, item := range meta {

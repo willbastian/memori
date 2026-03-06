@@ -14,6 +14,9 @@ This repo now contains the first implementation slice for a local event-ledger-b
 - `memori issue update`
 - `memori issue show`
 - `memori event log`
+- `memori db status`
+- `memori db migrate`
+- `memori db verify`
 - `memori db replay` (rebuild projections from the event ledger)
 
 ## Quick start
@@ -21,6 +24,15 @@ This repo now contains the first implementation slice for a local event-ledger-b
 ```bash
 # initialize DB
 memori init --issue-prefix mem
+
+# inspect migration status
+memori db status
+
+# apply pending migrations (uses goose)
+memori db migrate
+
+# verify version alignment
+memori db verify
 
 # create an issue
 memori issue create --type task --title "First ticket" --command-id "cli-create-01"
