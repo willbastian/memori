@@ -316,6 +316,167 @@ func TestCreateIssueGeneratedKeysFollowPrefixShortSHAPattern(t *testing.T) {
 	}
 }
 
+func TestUpdateIssueStatusValidTransitionsAndIdempotency(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	created, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   "mem-1111111",
+		Type:      "task",
+		Title:     "Status transition test",
+		Actor:     "agent-1",
+		CommandID: "cmd-update-create-1",
+	})
+	if err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	if created.Status != "Todo" {
+		t.Fatalf("expected initial status Todo, got %s", created.Status)
+	}
+
+	updated, event, idempotent, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   "mem-1111111",
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-update-1",
+	})
+	if err != nil {
+		t.Fatalf("update issue status: %v", err)
+	}
+	if idempotent {
+		t.Fatalf("first update should not be idempotent")
+	}
+	if updated.Status != "InProgress" {
+		t.Fatalf("expected status InProgress, got %s", updated.Status)
+	}
+	if event.EventType != "issue.updated" {
+		t.Fatalf("expected issue.updated event, got %s", event.EventType)
+	}
+
+	retryIssue, retryEvent, retryIdempotent, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   "mem-1111111",
+		Status:    "done",
+		Actor:     "agent-1",
+		CommandID: "cmd-update-1",
+	})
+	if err != nil {
+		t.Fatalf("retry update with same command id should succeed idempotently: %v", err)
+	}
+	if !retryIdempotent {
+		t.Fatalf("expected idempotent retry")
+	}
+	if retryEvent.EventID != event.EventID {
+		t.Fatalf("expected same event id on retry, got %s vs %s", retryEvent.EventID, event.EventID)
+	}
+	if retryIssue.Status != "InProgress" {
+		t.Fatalf("expected status to remain InProgress on idempotent retry, got %s", retryIssue.Status)
+	}
+}
+
+func TestUpdateIssueStatusRejectsInvalidTransitions(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	_, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   "mem-2222222",
+		Type:      "task",
+		Title:     "Invalid transition test",
+		Actor:     "agent-1",
+		CommandID: "cmd-update-create-2",
+	})
+	if err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+
+	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   "mem-2222222",
+		Status:    "done",
+		Actor:     "agent-1",
+		CommandID: "cmd-update-2",
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid status transition") {
+		t.Fatalf("expected invalid transition error, got: %v", err)
+	}
+
+	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   "mem-2222222",
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-update-3",
+	})
+	if err != nil {
+		t.Fatalf("Todo->InProgress should be allowed: %v", err)
+	}
+
+	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   "mem-2222222",
+		Status:    "done",
+		Actor:     "agent-1",
+		CommandID: "cmd-update-4",
+	})
+	if err != nil {
+		t.Fatalf("InProgress->Done should be allowed: %v", err)
+	}
+
+	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   "mem-2222222",
+		Status:    "blocked",
+		Actor:     "agent-1",
+		CommandID: "cmd-update-5",
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid status transition") {
+		t.Fatalf("expected invalid transition from Done error, got: %v", err)
+	}
+}
+
+func TestReplayProjectionsAppliesIssueUpdatedEvents(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	_, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   "mem-3333333",
+		Type:      "task",
+		Title:     "Replay update test",
+		Actor:     "agent-1",
+		CommandID: "cmd-update-create-3",
+	})
+	if err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+
+	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   "mem-3333333",
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-update-6",
+	})
+	if err != nil {
+		t.Fatalf("update status before replay: %v", err)
+	}
+
+	replay, err := s.ReplayProjections(ctx)
+	if err != nil {
+		t.Fatalf("replay projections: %v", err)
+	}
+	if replay.EventsApplied != 2 {
+		t.Fatalf("expected 2 events applied in replay, got %d", replay.EventsApplied)
+	}
+
+	issue, err := s.GetIssue(ctx, "mem-3333333")
+	if err != nil {
+		t.Fatalf("get issue after replay: %v", err)
+	}
+	if issue.Status != "InProgress" {
+		t.Fatalf("expected replayed status InProgress, got %s", issue.Status)
+	}
+}
+
 func newTestStore(t *testing.T) *Store {
 	return newTestStoreWithPrefix(t, DefaultIssueKeyPrefix)
 }

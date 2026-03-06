@@ -20,9 +20,13 @@ Use `memori` for issue tracking in this repository.
 3. Inspect ticket context before making changes.
    - `memori issue show --key <issue_key> --json`
    - `memori event log --entity <issue_key> --json`
-4. Keep work decomposed.
+4. Move ticket status as work progresses.
+   - `memori issue update --key <issue_key> --status inprogress --command-id "<unique-id>" --json`
+   - `memori issue update --key <issue_key> --status blocked --command-id "<unique-id>" --json`
+   - `memori issue update --key <issue_key> --status done --command-id "<unique-id>" --json`
+5. Keep work decomposed.
    - If scope grows, create child tasks/bugs and link with `--parent` on creation.
-5. Rebuild projections from event ledger when validating consistency.
+6. Rebuild projections from event ledger when validating consistency.
    - `memori db replay --json`
 
 ## Command ID Convention
@@ -40,10 +44,33 @@ Use issue keys in `{prefix}-{shortSHA}` format.
 - Prefix is project-wide (set once via `memori init --issue-prefix ...`) and must be consistent for all new issues.
 
 ## During Bootstrap
-The CLI currently has early Slice 1 commands only. Until richer issue update flows exist:
-
-- Represent progress as additional linked tasks/bugs created in `memori`.
+- `issue link`, gates, and packet flows are still in progress.
+- Use `issue update` status transitions for day-to-day progress tracking.
 - Prefer more small issues over untracked status notes.
+
+## Land The Plane
+Before closing a task, run this checklist in order:
+
+1. Confirm scope is complete for the active issue key.
+2. Run validation for touched code (tests/build/lint as applicable) and ensure results are green.
+3. Recheck issue context and history:
+   - `memori issue show --key <issue_key> --json`
+   - `memori event log --entity <issue_key> --json`
+4. Ensure task status reflects reality:
+   - Set `inprogress` at start of work.
+   - Set `blocked` immediately if blocked.
+5. Stage and commit with a clear message:
+   - `git add <files>`
+   - `git commit -m "<message>"`
+6. Push commit(s) to remote:
+   - `git push origin <branch>`
+7. Verify remote push succeeded and local branch is clean:
+   - `git status --short`
+   - `git log -1 --oneline`
+8. Mark task `done` in memori only after push is successful:
+   - `memori issue update --key <issue_key> --status done --command-id "<unique-id>" --json`
+9. Share closeout summary with:
+   - Issue key, commit SHA, push target branch, validation run, and any follow-up tasks.
 
 ## Priority Rule
 If these instructions conflict with informal habits, follow this file: `memori` issue tracking is the default operating mode.

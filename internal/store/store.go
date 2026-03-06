@@ -64,6 +64,13 @@ type CreateIssueParams struct {
 	CommandID string
 }
 
+type UpdateIssueStatusParams struct {
+	IssueID   string
+	Status    string
+	Actor     string
+	CommandID string
+}
+
 type ListIssuesParams struct {
 	Type     string
 	Status   string
@@ -103,6 +110,13 @@ type issueCreatedPayload struct {
 	ParentID  string `json:"parent_id,omitempty"`
 	Status    string `json:"status"`
 	CreatedAt string `json:"created_at"`
+}
+
+type issueUpdatedPayload struct {
+	IssueID    string `json:"issue_id"`
+	StatusFrom string `json:"status_from"`
+	StatusTo   string `json:"status_to"`
+	UpdatedAt  string `json:"updated_at"`
 }
 
 func Open(path string) (*Store, error) {
@@ -393,6 +407,118 @@ func (s *Store) GetIssue(ctx context.Context, id string) (Issue, error) {
 	return issue, nil
 }
 
+func (s *Store) UpdateIssueStatus(ctx context.Context, p UpdateIssueStatusParams) (Issue, Event, bool, error) {
+	if p.Actor == "" {
+		p.Actor = defaultActor()
+	}
+	if p.CommandID == "" {
+		p.CommandID = newID("cmd")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Issue{}, Event{}, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if existingEvent, found, err := findEventByActorCommandTx(ctx, tx, p.Actor, p.CommandID); err != nil {
+		return Issue{}, Event{}, false, err
+	} else if found {
+		if existingEvent.EventType != "issue.updated" {
+			return Issue{}, Event{}, false, fmt.Errorf("command id already used by %q", existingEvent.EventType)
+		}
+		issue, err := getIssueTx(ctx, tx, existingEvent.EntityID)
+		if err != nil {
+			return Issue{}, Event{}, false, err
+		}
+		if err := tx.Commit(); err != nil {
+			return Issue{}, Event{}, false, fmt.Errorf("commit tx: %w", err)
+		}
+		return issue, existingEvent, true, nil
+	}
+
+	issueID, err := normalizeIssueKey(p.IssueID)
+	if err != nil {
+		return Issue{}, Event{}, false, err
+	}
+	targetStatus, err := normalizeIssueStatus(p.Status)
+	if err != nil {
+		return Issue{}, Event{}, false, err
+	}
+
+	currentIssue, err := getIssueTx(ctx, tx, issueID)
+	if err != nil {
+		return Issue{}, Event{}, false, err
+	}
+
+	if err := validateIssueStatusTransition(currentIssue.Status, targetStatus); err != nil {
+		return Issue{}, Event{}, false, err
+	}
+
+	payload := issueUpdatedPayload{
+		IssueID:    issueID,
+		StatusFrom: currentIssue.Status,
+		StatusTo:   targetStatus,
+		UpdatedAt:  nowUTC(),
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return Issue{}, Event{}, false, fmt.Errorf("marshal payload: %w", err)
+	}
+
+	appendRes, err := s.appendEventTx(ctx, tx, appendEventRequest{
+		EntityType:          "issue",
+		EntityID:            issueID,
+		EventType:           "issue.updated",
+		PayloadJSON:         string(payloadBytes),
+		Actor:               p.Actor,
+		CommandID:           p.CommandID,
+		EventPayloadVersion: 1,
+	})
+	if err != nil {
+		return Issue{}, Event{}, false, err
+	}
+	if appendRes.Event.EventType != "issue.updated" {
+		return Issue{}, Event{}, false, fmt.Errorf("command id already used by %q", appendRes.Event.EventType)
+	}
+
+	if !appendRes.AlreadyExists {
+		if err := applyIssueUpdatedProjectionTx(ctx, tx, appendRes.Event); err != nil {
+			return Issue{}, Event{}, false, err
+		}
+	}
+
+	issue, err := getIssueTx(ctx, tx, issueID)
+	if err != nil {
+		return Issue{}, Event{}, false, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Issue{}, Event{}, false, fmt.Errorf("commit tx: %w", err)
+	}
+
+	return issue, appendRes.Event, appendRes.AlreadyExists, nil
+}
+
+func findEventByActorCommandTx(ctx context.Context, tx *sql.Tx, actor, commandID string) (Event, bool, error) {
+	row := tx.QueryRowContext(ctx, `
+		SELECT
+			event_id, event_order, entity_type, entity_id, entity_seq,
+			event_type, payload_json, actor, command_id, causation_id,
+			correlation_id, created_at, hash, prev_hash, event_payload_version
+		FROM events
+		WHERE actor = ? AND command_id = ?
+	`, actor, commandID)
+	event, err := scanEvent(row)
+	if err == nil {
+		return event, true, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return Event{}, false, nil
+	}
+	return Event{}, false, fmt.Errorf("check command idempotency: %w", err)
+}
+
 func (s *Store) ListIssues(ctx context.Context, p ListIssuesParams) ([]Issue, error) {
 	args := make([]any, 0, 3)
 	clauses := make([]string, 0, 3)
@@ -538,6 +664,8 @@ func applyEventProjectionTx(ctx context.Context, tx *sql.Tx, event Event) error 
 	switch event.EventType {
 	case "issue.created":
 		return applyIssueCreatedProjectionTx(ctx, tx, event)
+	case "issue.updated":
+		return applyIssueUpdatedProjectionTx(ctx, tx, event)
 	default:
 		return nil
 	}
@@ -575,6 +703,37 @@ func applyIssueCreatedProjectionTx(ctx context.Context, tx *sql.Tx, event Event)
 	)
 	if err != nil {
 		return fmt.Errorf("upsert work_item from event %s: %w", event.EventID, err)
+	}
+
+	return nil
+}
+
+func applyIssueUpdatedProjectionTx(ctx context.Context, tx *sql.Tx, event Event) error {
+	var payload issueUpdatedPayload
+	if err := json.Unmarshal([]byte(event.PayloadJSON), &payload); err != nil {
+		return fmt.Errorf("decode issue.updated payload for event %s: %w", event.EventID, err)
+	}
+
+	issueStatus, err := normalizeIssueStatus(payload.StatusTo)
+	if err != nil {
+		return fmt.Errorf("decode issue.updated payload for event %s: %w", event.EventID, err)
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE work_items
+		SET status = ?, updated_at = ?, last_event_id = ?
+		WHERE id = ?
+	`, issueStatus, event.CreatedAt, event.EventID, payload.IssueID)
+	if err != nil {
+		return fmt.Errorf("update work_item from event %s: %w", event.EventID, err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check updated rows for event %s: %w", event.EventID, err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("update work_item from event %s: issue %q not found", event.EventID, payload.IssueID)
 	}
 
 	return nil
@@ -820,6 +979,31 @@ func normalizeIssueStatus(raw string) (string, error) {
 	default:
 		return "", fmt.Errorf("invalid --status %q (expected todo|inprogress|blocked|done)", raw)
 	}
+}
+
+func validateIssueStatusTransition(from, to string) error {
+	fromStatus, err := normalizeIssueStatus(from)
+	if err != nil {
+		return fmt.Errorf("invalid current status %q: %w", from, err)
+	}
+	toStatus, err := normalizeIssueStatus(to)
+	if err != nil {
+		return err
+	}
+	if fromStatus == toStatus {
+		return fmt.Errorf("issue is already in status %q", toStatus)
+	}
+
+	allowed := map[string]map[string]bool{
+		"Todo":       {"InProgress": true, "Blocked": true},
+		"InProgress": {"Blocked": true, "Done": true},
+		"Blocked":    {"InProgress": true},
+		"Done":       {},
+	}
+	if !allowed[fromStatus][toStatus] {
+		return fmt.Errorf("invalid status transition %q -> %q", fromStatus, toStatus)
+	}
+	return nil
 }
 
 func normalizeIssueKey(raw string) (string, error) {
