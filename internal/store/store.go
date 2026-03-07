@@ -50,6 +50,19 @@ type Issue struct {
 	LastEventID string   `json:"last_event_id"`
 }
 
+type IssueNextCandidate struct {
+	Issue   Issue    `json:"issue"`
+	Score   int      `json:"score"`
+	Reasons []string `json:"reasons"`
+}
+
+type IssueNextResult struct {
+	Agent      string               `json:"agent,omitempty"`
+	Candidate  IssueNextCandidate   `json:"candidate"`
+	Candidates []IssueNextCandidate `json:"candidates"`
+	Considered int                  `json:"considered"`
+}
+
 type Event struct {
 	EventID             string `json:"event_id"`
 	EventOrder          int64  `json:"event_order"`
@@ -2141,6 +2154,83 @@ func (s *Store) ListIssues(ctx context.Context, p ListIssuesParams) ([]Issue, er
 	return issues, nil
 }
 
+func (s *Store) NextIssue(ctx context.Context, agent string) (IssueNextResult, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			id, type, title, COALESCE(parent_id, ''), status,
+			COALESCE(description, ''), COALESCE(acceptance_criteria, ''), COALESCE(references_json, '[]'),
+			created_at, updated_at, last_event_id, COALESCE(priority, '')
+		FROM work_items
+		WHERE status IN ('Todo', 'InProgress')
+		ORDER BY id ASC
+	`)
+	if err != nil {
+		return IssueNextResult{}, fmt.Errorf("query next-issue candidates: %w", err)
+	}
+	defer rows.Close()
+
+	candidates := make([]IssueNextCandidate, 0)
+	for rows.Next() {
+		var (
+			issue          Issue
+			referencesJSON string
+			priority       string
+		)
+		if err := rows.Scan(
+			&issue.ID,
+			&issue.Type,
+			&issue.Title,
+			&issue.ParentID,
+			&issue.Status,
+			&issue.Description,
+			&issue.Acceptance,
+			&referencesJSON,
+			&issue.CreatedAt,
+			&issue.UpdatedAt,
+			&issue.LastEventID,
+			&priority,
+		); err != nil {
+			return IssueNextResult{}, fmt.Errorf("scan next-issue candidate row: %w", err)
+		}
+		references, err := parseReferencesJSON(referencesJSON)
+		if err != nil {
+			return IssueNextResult{}, fmt.Errorf("decode candidate references for issue %q: %w", issue.ID, err)
+		}
+		issue.References = references
+
+		score, reasons := scoreIssueCandidate(issue, priority)
+		candidates = append(candidates, IssueNextCandidate{
+			Issue:   issue,
+			Score:   score,
+			Reasons: reasons,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return IssueNextResult{}, fmt.Errorf("iterate next-issue candidate rows: %w", err)
+	}
+	if len(candidates) == 0 {
+		return IssueNextResult{}, errors.New("no actionable issues found (Todo/InProgress)")
+	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].Score != candidates[j].Score {
+			return candidates[i].Score > candidates[j].Score
+		}
+		if candidates[i].Issue.UpdatedAt != candidates[j].Issue.UpdatedAt {
+			return candidates[i].Issue.UpdatedAt < candidates[j].Issue.UpdatedAt
+		}
+		return candidates[i].Issue.ID < candidates[j].Issue.ID
+	})
+
+	result := IssueNextResult{
+		Agent:      strings.TrimSpace(agent),
+		Candidate:  candidates[0],
+		Candidates: candidates,
+		Considered: len(candidates),
+	}
+	return result, nil
+}
+
 func (s *Store) ListEventsForEntity(ctx context.Context, entityType, entityID string) ([]Event, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
@@ -3468,6 +3558,53 @@ func openLoopsToAny(loops []OpenLoop) []any {
 func deterministicLoopID(issueID string, cycleNo int, loopType, key string) string {
 	sum := sha256.Sum256([]byte(issueID + ":" + strconv.Itoa(cycleNo) + ":" + loopType + ":" + key))
 	return "loop_" + hex.EncodeToString(sum[:])[:12]
+}
+
+func scoreIssueCandidate(issue Issue, priority string) (int, []string) {
+	score := 0
+	reasons := make([]string, 0, 4)
+
+	switch issue.Status {
+	case "InProgress":
+		score += 100
+		reasons = append(reasons, "in-progress work is prioritized for continuity")
+	case "Todo":
+		score += 50
+		reasons = append(reasons, "todo work is actionable")
+	}
+
+	switch issue.Type {
+	case "Task":
+		score += 40
+		reasons = append(reasons, "task is implementation-ready")
+	case "Bug":
+		score += 35
+		reasons = append(reasons, "bug fix has high operational value")
+	case "Story":
+		score += 20
+		reasons = append(reasons, "story provides cross-task scope")
+	case "Epic":
+		score += 10
+		reasons = append(reasons, "epic is planning-level work")
+	}
+
+	switch strings.ToUpper(strings.TrimSpace(priority)) {
+	case "P0":
+		score += 30
+		reasons = append(reasons, "priority P0")
+	case "P1":
+		score += 20
+		reasons = append(reasons, "priority P1")
+	case "P2":
+		score += 10
+		reasons = append(reasons, "priority P2")
+	}
+
+	if issue.ParentID == "" && (issue.Type == "Task" || issue.Type == "Bug") {
+		score += 5
+		reasons = append(reasons, "standalone item can start immediately")
+	}
+	return score, reasons
 }
 
 func nullIfZero(value int) any {

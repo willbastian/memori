@@ -13,6 +13,7 @@ This repo now contains the first implementation slice for a local event-ledger-b
 - `memori issue link`
 - `memori issue update`
 - `memori issue show`
+- `memori issue next`
 - `memori gate template create`
 - `memori gate template list`
 - `memori gate set instantiate`
@@ -76,6 +77,9 @@ memori issue update \
 
 # re-link child to parent
 memori issue link --child <child-key> --parent <parent-key> --command-id "cli-link-01"
+
+# ask memori for the next actionable issue
+memori issue next --agent codex-1
 
 # inspect event ledger for the issue
 memori event log --entity <issue-key>

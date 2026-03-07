@@ -65,6 +65,7 @@ func runHelp(args []string, out io.Writer) error {
 			"memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] --command-id <id> [--json]",
 			"memori issue update --key <prefix-shortSHA> [--status todo|inprogress|blocked|done] [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--actor <actor>] --command-id <id> [--json]",
 			"memori issue show --key <prefix-shortSHA> [--json]",
+			"memori issue next [--agent <id>] [--json]",
 			"memori gate template create --id <template-id> --version <n> --applies-to epic|story|task|bug [--applies-to ...] --file <path> [--actor <actor>] [--json]",
 			"memori gate template list [--type epic|story|task|bug] [--json]",
 			"memori gate set instantiate --issue <prefix-shortSHA> --template <template-id@version> [--template ...] [--actor <actor>] [--json]",
@@ -145,7 +146,7 @@ func runInit(args []string, out io.Writer) error {
 
 func runIssue(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("issue subcommand required: create|link|update|show")
+		return errors.New("issue subcommand required: create|link|update|show|next")
 	}
 
 	switch args[0] {
@@ -157,6 +158,8 @@ func runIssue(args []string, out io.Writer) error {
 		return runIssueUpdate(args[1:], out)
 	case "show":
 		return runIssueShow(args[1:], out)
+	case "next":
+		return runIssueNext(args[1:], out)
 	default:
 		return fmt.Errorf("unknown issue subcommand %q", args[0])
 	}
@@ -456,6 +459,48 @@ func runIssueShow(args []string, out io.Writer) error {
 	}
 	_, _ = fmt.Fprintf(out, "Created: %s\n", issue.CreatedAt)
 	_, _ = fmt.Fprintf(out, "Updated: %s\n", issue.UpdatedAt)
+	return nil
+}
+
+func runIssueNext(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("issue next", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	agent := fs.String("agent", "", "optional agent id requesting next work")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	next, err := s.NextIssue(ctx, *agent)
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "issue next",
+			Data: issueNextData{
+				Next: next,
+			},
+		})
+	}
+
+	_, _ = fmt.Fprintf(out, "Next issue: %s [%s/%s] %s\n", next.Candidate.Issue.ID, next.Candidate.Issue.Type, next.Candidate.Issue.Status, next.Candidate.Issue.Title)
+	for _, reason := range next.Candidate.Reasons {
+		_, _ = fmt.Fprintf(out, "- %s\n", reason)
+	}
 	return nil
 }
 
@@ -1714,6 +1759,10 @@ type issueShowData struct {
 	Issue store.Issue `json:"issue"`
 }
 
+type issueNextData struct {
+	Next store.IssueNextResult `json:"next"`
+}
+
 type gateEvaluateData struct {
 	Evaluation store.GateEvaluation `json:"evaluation"`
 	Event      store.Event          `json:"event"`
@@ -1981,6 +2030,7 @@ func printHelp(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "  memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] --command-id <id> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori issue update --key <prefix-shortSHA> [--status todo|inprogress|blocked|done] [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--actor <actor>] --command-id <id> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori issue show --key <prefix-shortSHA> [--json]")
+	_, _ = fmt.Fprintln(out, "  memori issue next [--agent <id>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori gate template create --id <template-id> --version <n> --applies-to epic|story|task|bug [--applies-to ...] --file <path> [--actor <actor>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori gate template list [--type epic|story|task|bug] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori gate set instantiate --issue <prefix-shortSHA> --template <template-id@version> [--template ...] [--actor <actor>] [--json]")
