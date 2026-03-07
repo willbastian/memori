@@ -2,12 +2,14 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -80,6 +82,7 @@ func runHelp(args []string, out io.Writer) error {
 			"memori db status [--json]",
 			"memori db migrate [--to <version>] [--json]",
 			"memori db verify [--json]",
+			"memori db backup --out <path> [--json]",
 			"memori db replay [--json]",
 		}
 		sort.Strings(commands)
@@ -1325,7 +1328,7 @@ func runEvent(args []string, out io.Writer) error {
 
 func runDB(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("db subcommand required: status|migrate|verify|replay")
+		return errors.New("db subcommand required: status|migrate|verify|backup|replay")
 	}
 
 	switch args[0] {
@@ -1335,6 +1338,8 @@ func runDB(args []string, out io.Writer) error {
 		return runDBMigrate(args[1:], out)
 	case "verify":
 		return runDBVerify(args[1:], out)
+	case "backup":
+		return runDBBackup(args[1:], out)
 	case "replay":
 		return runDBReplay(args[1:], out)
 	default:
@@ -1535,6 +1540,75 @@ func runDBReplay(args []string, out io.Writer) error {
 	return nil
 }
 
+func runDBBackup(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("db backup", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	outPath := fs.String("out", "", "backup destination path")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*outPath) == "" {
+		return errors.New("--out is required")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	absSource, err := filepath.Abs(*dbPath)
+	if err != nil {
+		return fmt.Errorf("resolve --db path: %w", err)
+	}
+	absTarget, err := filepath.Abs(*outPath)
+	if err != nil {
+		return fmt.Errorf("resolve --out path: %w", err)
+	}
+	if absSource == absTarget {
+		return errors.New("--out must be different from --db path")
+	}
+	if _, err := os.Stat(absTarget); err == nil {
+		return fmt.Errorf("backup target already exists: %s", absTarget)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat backup target %s: %w", absTarget, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(absTarget), 0o755); err != nil {
+		return fmt.Errorf("create backup directory: %w", err)
+	}
+	if err := sqliteVacuumInto(ctx, s.DB(), absTarget); err != nil {
+		return fmt.Errorf("backup database to %s: %w", absTarget, err)
+	}
+
+	data := dbBackupData{
+		SourcePath: absSource,
+		TargetPath: absTarget,
+		Status:     "ok",
+	}
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "db backup",
+			Data:                  data,
+		})
+	}
+
+	_, _ = fmt.Fprintf(out, "Backed up %s -> %s\n", absSource, absTarget)
+	return nil
+}
+
+func sqliteVacuumInto(ctx context.Context, db *sql.DB, outPath string) error {
+	escapedOutPath := strings.ReplaceAll(outPath, "'", "''")
+	_, err := db.ExecContext(ctx, "VACUUM INTO '"+escapedOutPath+"'")
+	return err
+}
+
 func defaultDBPath() string {
 	if fromEnv := strings.TrimSpace(os.Getenv("MEMORI_DB_PATH")); fromEnv != "" {
 		return fromEnv
@@ -1717,6 +1791,12 @@ type dbMigrateData struct {
 	CurrentVersion    int `json:"current_version"`
 	HeadVersion       int `json:"head_version"`
 	PendingMigrations int `json:"pending_migrations"`
+}
+
+type dbBackupData struct {
+	SourcePath string `json:"source_path"`
+	TargetPath string `json:"target_path"`
+	Status     string `json:"status"`
 }
 
 type stringSliceFlag []string
@@ -1918,5 +1998,6 @@ func printHelp(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "  memori db status [--json]")
 	_, _ = fmt.Fprintln(out, "  memori db migrate [--to <version>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori db verify [--json]")
+	_, _ = fmt.Fprintln(out, "  memori db backup --out <path> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori db replay [--json]")
 }

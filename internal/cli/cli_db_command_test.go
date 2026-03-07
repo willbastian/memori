@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -20,6 +21,15 @@ type dbVerifyEnvelope struct {
 	Command string `json:"command"`
 	Data    struct {
 		OK bool `json:"ok"`
+	} `json:"data"`
+}
+
+type dbBackupEnvelope struct {
+	Command string `json:"command"`
+	Data    struct {
+		SourcePath string `json:"source_path"`
+		TargetPath string `json:"target_path"`
+		Status     string `json:"status"`
 	} `json:"data"`
 }
 
@@ -64,6 +74,26 @@ func TestDBStatusMigrateAndVerifyJSON(t *testing.T) {
 	}
 	if verify.Command != "db verify" || !verify.Data.OK {
 		t.Fatalf("expected db verify ok, got %+v", verify)
+	}
+
+	backupPath := filepath.Join(t.TempDir(), "memori-backup.db")
+	stdout, stderr, err = runMemoriForTest("db", "backup", "--db", dbPath, "--out", backupPath, "--json")
+	if err != nil {
+		t.Fatalf("run db backup: %v\nstderr: %s", err, stderr)
+	}
+	var backup dbBackupEnvelope
+	if err := json.Unmarshal([]byte(stdout), &backup); err != nil {
+		t.Fatalf("decode db backup json output: %v\nstdout: %s", err, stdout)
+	}
+	if backup.Command != "db backup" || backup.Data.Status != "ok" {
+		t.Fatalf("expected db backup ok, got %+v", backup)
+	}
+	info, err := os.Stat(backupPath)
+	if err != nil {
+		t.Fatalf("backup file missing: %v", err)
+	}
+	if info.Size() == 0 {
+		t.Fatalf("backup file should be non-empty")
 	}
 
 	_, stderr, err = runMemoriForTest(

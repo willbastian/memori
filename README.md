@@ -27,6 +27,7 @@ This repo now contains the first implementation slice for a local event-ledger-b
 - `memori db status`
 - `memori db migrate`
 - `memori db verify`
+- `memori db backup`
 - `memori db replay` (rebuild projections from the event ledger)
 
 ## Quick start
@@ -43,6 +44,9 @@ memori db migrate
 
 # verify version alignment
 memori db verify
+
+# write restorable snapshot
+memori db backup --out /tmp/memori-backup.db
 
 # create an issue
 memori issue create --type task --title "First ticket" --command-id "cli-create-01"
