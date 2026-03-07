@@ -1331,6 +1331,55 @@ func (s *Store) EvaluateGate(ctx context.Context, p EvaluateGateParams) (GateEva
 	}, appendRes.Event, appendRes.AlreadyExists, nil
 }
 
+func (s *Store) LookupGateEvaluationByCommand(ctx context.Context, actor, commandID string) (GateEvaluation, Event, bool, error) {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		return GateEvaluation{}, Event{}, false, errors.New("--actor is required")
+	}
+	commandID = strings.TrimSpace(commandID)
+	if commandID == "" {
+		return GateEvaluation{}, Event{}, false, errors.New("--command-id is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return GateEvaluation{}, Event{}, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	existingEvent, found, err := findEventByActorCommandTx(ctx, tx, actor, commandID)
+	if err != nil {
+		return GateEvaluation{}, Event{}, false, err
+	}
+	if !found {
+		if err := tx.Commit(); err != nil {
+			return GateEvaluation{}, Event{}, false, fmt.Errorf("commit tx: %w", err)
+		}
+		return GateEvaluation{}, Event{}, false, nil
+	}
+	if existingEvent.EventType != eventTypeGateEval {
+		return GateEvaluation{}, Event{}, false, fmt.Errorf("command id already used by %q", existingEvent.EventType)
+	}
+
+	payload, err := decodeGateEvaluatedPayload(existingEvent.PayloadJSON)
+	if err != nil {
+		return GateEvaluation{}, Event{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return GateEvaluation{}, Event{}, false, fmt.Errorf("commit tx: %w", err)
+	}
+
+	return GateEvaluation{
+		IssueID:      payload.IssueID,
+		GateSetID:    payload.GateSetID,
+		GateID:       payload.GateID,
+		Result:       payload.Result,
+		EvidenceRefs: payload.EvidenceRefs,
+		Proof:        payload.Proof,
+		EvaluatedAt:  payload.EvaluatedAt,
+	}, existingEvent, true, nil
+}
+
 func (s *Store) LookupGateVerificationSpec(ctx context.Context, issueID, gateID string) (GateVerificationSpec, error) {
 	normalizedIssueID, err := normalizeIssueKey(issueID)
 	if err != nil {

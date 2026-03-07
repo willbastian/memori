@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,8 +31,10 @@ type gateVerifyEnvelope struct {
 	Command string `json:"command"`
 	Data    struct {
 		Evaluation store.GateEvaluation `json:"evaluation"`
+		Command    string               `json:"command"`
 		ExitCode   int                  `json:"exit_code"`
 		OutputSHA  string               `json:"output_sha256"`
+		Idempotent bool                 `json:"idempotent"`
 	} `json:"data"`
 }
 
@@ -168,6 +172,9 @@ func TestGateVerifyExecutesCriteriaCommandAndRecordsProof(t *testing.T) {
 	if verifyResp.Data.ExitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d", verifyResp.Data.ExitCode)
 	}
+	if verifyResp.Data.Idempotent {
+		t.Fatalf("expected first gate verify to be non-idempotent")
+	}
 	if verifyResp.Data.Evaluation.Result != "PASS" {
 		t.Fatalf("expected PASS from verifier execution, got %q", verifyResp.Data.Evaluation.Result)
 	}
@@ -176,6 +183,83 @@ func TestGateVerifyExecutesCriteriaCommandAndRecordsProof(t *testing.T) {
 	}
 	if verifyResp.Data.OutputSHA == "" {
 		t.Fatalf("expected non-empty output hash from verifier command")
+	}
+}
+
+func TestGateVerifyIdempotentRetryReplaysPersistedResultWithoutRerunningCommand(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	counterPath := filepath.Join(tempDir, "verify-count.txt")
+	command := fmt.Sprintf(
+		`count_file=%q; count=0; if [ -f "$count_file" ]; then count=$(wc -c < "$count_file"); fi; next=$((count+1)); printf x >> "$count_file"; echo run-$next`,
+		counterPath,
+	)
+	dbPath := seedGateVerifyCommandTestDBWithCommand(t, command)
+
+	stdout, stderr, err := runMemoriForTest(
+		"gate", "verify",
+		"--db", dbPath,
+		"--issue", "mem-c111111",
+		"--gate", "build",
+		"--command-id", "cmd-cli-gate-verify-idempotent-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("first gate verify: %v\nstderr: %s", err, stderr)
+	}
+
+	var firstResp gateVerifyEnvelope
+	if err := json.Unmarshal([]byte(stdout), &firstResp); err != nil {
+		t.Fatalf("decode first gate verify json output: %v\nstdout: %s", err, stdout)
+	}
+	if firstResp.Data.Idempotent {
+		t.Fatalf("expected first gate verify to be non-idempotent")
+	}
+
+	counterBytes, err := os.ReadFile(counterPath)
+	if err != nil {
+		t.Fatalf("read verifier counter after first run: %v", err)
+	}
+	if got := len(counterBytes); got != 1 {
+		t.Fatalf("expected verifier command to run once, counter size=%d", got)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"gate", "verify",
+		"--db", dbPath,
+		"--issue", "mem-c111111",
+		"--gate", "build",
+		"--command-id", "cmd-cli-gate-verify-idempotent-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("second gate verify: %v\nstderr: %s", err, stderr)
+	}
+
+	var retryResp gateVerifyEnvelope
+	if err := json.Unmarshal([]byte(stdout), &retryResp); err != nil {
+		t.Fatalf("decode retry gate verify json output: %v\nstdout: %s", err, stdout)
+	}
+	if !retryResp.Data.Idempotent {
+		t.Fatalf("expected idempotent retry response")
+	}
+	if retryResp.Data.ExitCode != firstResp.Data.ExitCode {
+		t.Fatalf("expected replayed exit code %d, got %d", firstResp.Data.ExitCode, retryResp.Data.ExitCode)
+	}
+	if retryResp.Data.OutputSHA != firstResp.Data.OutputSHA {
+		t.Fatalf("expected replayed output sha %q, got %q", firstResp.Data.OutputSHA, retryResp.Data.OutputSHA)
+	}
+	if retryResp.Data.Command != firstResp.Data.Command {
+		t.Fatalf("expected replayed command %q, got %q", firstResp.Data.Command, retryResp.Data.Command)
+	}
+
+	counterBytes, err = os.ReadFile(counterPath)
+	if err != nil {
+		t.Fatalf("read verifier counter after retry: %v", err)
+	}
+	if got := len(counterBytes); got != 1 {
+		t.Fatalf("expected verifier command not to rerun on idempotent retry, counter size=%d", got)
 	}
 }
 
@@ -295,6 +379,11 @@ func seedGateCommandHistoricalCycle(t *testing.T, dbPath string) {
 
 func seedGateVerifyCommandTestDB(t *testing.T) string {
 	t.Helper()
+	return seedGateVerifyCommandTestDBWithCommand(t, "echo verified")
+}
+
+func seedGateVerifyCommandTestDBWithCommand(t *testing.T, command string) string {
+	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "memori-cli-gate-verify.db")
 	s, err := store.Open(dbPath)
@@ -333,10 +422,14 @@ func seedGateVerifyCommandTestDB(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("insert gate set: %v", err)
 	}
+	criteriaJSON, err := json.Marshal(map[string]string{"command": command})
+	if err != nil {
+		t.Fatalf("marshal gate verification criteria: %v", err)
+	}
 	_, err = s.DB().ExecContext(ctx, `
 		INSERT INTO gate_set_items(gate_set_id, gate_id, kind, required, criteria_json)
-		VALUES('gs_cli_verify_1', 'build', 'check', 1, '{"command":"echo verified"}')
-	`)
+		VALUES(?, ?, ?, ?, ?)
+	`, "gs_cli_verify_1", "build", "check", 1, string(criteriaJSON))
 	if err != nil {
 		t.Fatalf("insert gate set item: %v", err)
 	}

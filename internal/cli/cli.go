@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1560,6 +1561,16 @@ func runGateVerify(args []string, out io.Writer) error {
 		return err
 	}
 
+	if evaluation, event, found, err := s.LookupGateEvaluationByCommand(ctx, identity.Actor, identity.CommandID); err != nil {
+		return err
+	} else if found {
+		replay, err := gateVerifyReplayFromEvaluation(evaluation)
+		if err != nil {
+			return err
+		}
+		return printGateVerifyResult(out, dbVersion, evaluation, event, replay.Command, replay.ExitCode, replay.OutputSHA, true, *jsonOut)
+	}
+
 	spec, err := s.LookupGateVerificationSpec(ctx, *issue, *gate)
 	if err != nil {
 		return err
@@ -1612,30 +1623,15 @@ func runGateVerify(args []string, out io.Writer) error {
 		return err
 	}
 
-	if *jsonOut {
-		return printJSON(out, jsonEnvelope{
-			ResponseSchemaVersion: responseSchemaVersion,
-			DBSchemaVersion:       dbVersion,
-			Command:               "gate verify",
-			Data: gateVerifyData{
-				Evaluation: evaluation,
-				Event:      event,
-				Command:    spec.Command,
-				ExitCode:   exitCode,
-				OutputSHA:  outputHash,
-				Idempotent: idempotent,
-			},
-		})
+	if idempotent {
+		replay, err := gateVerifyReplayFromEvaluation(evaluation)
+		if err != nil {
+			return err
+		}
+		return printGateVerifyResult(out, dbVersion, evaluation, event, replay.Command, replay.ExitCode, replay.OutputSHA, true, *jsonOut)
 	}
 
-	if idempotent {
-		_, _ = fmt.Fprintf(out, "Gate verification already recorded for issue %s gate %s.\n", evaluation.IssueID, evaluation.GateID)
-	} else {
-		_, _ = fmt.Fprintf(out, "Verified gate %s for issue %s -> %s (exit=%d)\n", evaluation.GateID, evaluation.IssueID, evaluation.Result, exitCode)
-	}
-	_, _ = fmt.Fprintf(out, "Gate Set: %s\n", evaluation.GateSetID)
-	_, _ = fmt.Fprintf(out, "Output SHA256: %s\n", outputHash)
-	return nil
+	return printGateVerifyResult(out, dbVersion, evaluation, event, spec.Command, exitCode, outputHash, false, *jsonOut)
 }
 
 func runGateStatus(args []string, out io.Writer) error {
@@ -2282,6 +2278,82 @@ type gateVerifyData struct {
 	ExitCode   int                  `json:"exit_code"`
 	OutputSHA  string               `json:"output_sha256"`
 	Idempotent bool                 `json:"idempotent"`
+}
+
+type gateVerifyReplay struct {
+	Command   string
+	ExitCode  int
+	OutputSHA string
+}
+
+func gateVerifyReplayFromEvaluation(evaluation store.GateEvaluation) (gateVerifyReplay, error) {
+	replay := gateVerifyReplay{}
+	if evaluation.Proof != nil {
+		replay.ExitCode = evaluation.Proof.ExitCode
+	}
+
+	for _, ref := range evaluation.EvidenceRefs {
+		if value, ok := strings.CutPrefix(ref, "command:"); ok {
+			replay.Command = strings.TrimSpace(value)
+			continue
+		}
+		if value, ok := strings.CutPrefix(ref, "output_sha256:"); ok {
+			replay.OutputSHA = strings.TrimSpace(value)
+			continue
+		}
+		if value, ok := strings.CutPrefix(ref, "exit:"); ok && evaluation.Proof == nil {
+			exitCode, err := strconv.Atoi(strings.TrimSpace(value))
+			if err != nil {
+				return gateVerifyReplay{}, fmt.Errorf("decode persisted verifier exit code for gate %s: %w", evaluation.GateID, err)
+			}
+			replay.ExitCode = exitCode
+		}
+	}
+
+	if replay.Command == "" {
+		return gateVerifyReplay{}, fmt.Errorf("persisted verifier command is missing for gate %s", evaluation.GateID)
+	}
+	if replay.OutputSHA == "" {
+		return gateVerifyReplay{}, fmt.Errorf("persisted verifier output_sha256 is missing for gate %s", evaluation.GateID)
+	}
+	return replay, nil
+}
+
+func printGateVerifyResult(
+	out io.Writer,
+	dbVersion int,
+	evaluation store.GateEvaluation,
+	event store.Event,
+	command string,
+	exitCode int,
+	outputSHA string,
+	idempotent bool,
+	jsonOut bool,
+) error {
+	if jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "gate verify",
+			Data: gateVerifyData{
+				Evaluation: evaluation,
+				Event:      event,
+				Command:    command,
+				ExitCode:   exitCode,
+				OutputSHA:  outputSHA,
+				Idempotent: idempotent,
+			},
+		})
+	}
+
+	if idempotent {
+		_, _ = fmt.Fprintf(out, "Gate verification already recorded for issue %s gate %s.\n", evaluation.IssueID, evaluation.GateID)
+	} else {
+		_, _ = fmt.Fprintf(out, "Verified gate %s for issue %s -> %s (exit=%d)\n", evaluation.GateID, evaluation.IssueID, evaluation.Result, exitCode)
+	}
+	_, _ = fmt.Fprintf(out, "Gate Set: %s\n", evaluation.GateSetID)
+	_, _ = fmt.Fprintf(out, "Output SHA256: %s\n", outputSHA)
+	return nil
 }
 
 type gateTemplateCreateData struct {
