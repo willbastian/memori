@@ -856,6 +856,7 @@ func runContextCheckpoint(args []string, out io.Writer) error {
 	sessionID := fs.String("session", "", "session id")
 	trigger := fs.String("trigger", "manual", "checkpoint trigger reason")
 	actor := fs.String("actor", "", "actor id")
+	commandID := fs.String("command-id", "", "idempotency command id")
 	jsonOut := fs.Bool("json", false, "machine-readable output")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -870,7 +871,7 @@ func runContextCheckpoint(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
-	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "context-checkpoint", *actor, "", defaultMutationAuthDeps())
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "context-checkpoint", *actor, *commandID, defaultMutationAuthDeps())
 	if err != nil {
 		return err
 	}
@@ -879,6 +880,7 @@ func runContextCheckpoint(args []string, out io.Writer) error {
 		SessionID: *sessionID,
 		Trigger:   *trigger,
 		Actor:     identity.Actor,
+		CommandID: identity.CommandID,
 	})
 	if err != nil {
 		return err

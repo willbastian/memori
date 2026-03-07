@@ -25,11 +25,14 @@ import (
 const DefaultIssueKeyPrefix = "mem"
 
 const (
-	entityTypeIssue      = "issue"
-	eventTypeIssueCreate = "issue.created"
-	eventTypeIssueUpdate = "issue.updated"
-	eventTypeIssueLink   = "issue.linked"
-	eventTypeGateEval    = "gate.evaluated"
+	entityTypeIssue   = "issue"
+	entityTypeSession = "session"
+
+	eventTypeIssueCreate       = "issue.created"
+	eventTypeIssueUpdate       = "issue.updated"
+	eventTypeIssueLink         = "issue.linked"
+	eventTypeGateEval          = "gate.evaluated"
+	eventTypeSessionCheckpoint = "session.checkpointed"
 )
 
 type Store struct {
@@ -140,6 +143,7 @@ type CheckpointSessionParams struct {
 	SessionID string
 	Trigger   string
 	Actor     string
+	CommandID string
 }
 
 type RehydrateSessionParams struct {
@@ -256,6 +260,19 @@ type issueLinkedPayload struct {
 	ParentIDFrom string `json:"parent_id_from,omitempty"`
 	ParentIDTo   string `json:"parent_id_to"`
 	LinkedAt     string `json:"linked_at"`
+}
+
+type sessionCheckpointedPayload struct {
+	SessionID           string         `json:"session_id"`
+	Trigger             string         `json:"trigger"`
+	StartedAt           string         `json:"started_at"`
+	Checkpoint          map[string]any `json:"checkpoint"`
+	CheckpointedAt      string         `json:"checkpointed_at"`
+	ContextChunkID      string         `json:"context_chunk_id"`
+	ContextChunkKind    string         `json:"context_chunk_kind"`
+	ContextChunkContent string         `json:"context_chunk_content"`
+	ContextChunkMeta    map[string]any `json:"context_chunk_metadata"`
+	CreatedBy           string         `json:"created_by"`
 }
 
 type gateEvaluatedPayload struct {
@@ -472,10 +489,10 @@ func (s *Store) Initialize(ctx context.Context, p InitializeParams) error {
 		`CREATE TABLE IF NOT EXISTS events (
 			event_id TEXT PRIMARY KEY,
 			event_order INTEGER NOT NULL CHECK(event_order > 0),
-			entity_type TEXT NOT NULL CHECK(entity_type IN ('issue')),
+			entity_type TEXT NOT NULL CHECK(entity_type IN ('issue','session')),
 			entity_id TEXT NOT NULL,
 			entity_seq INTEGER NOT NULL CHECK(entity_seq > 0),
-			event_type TEXT NOT NULL CHECK(event_type IN ('issue.created','issue.updated','issue.linked','gate.evaluated')),
+			event_type TEXT NOT NULL CHECK(event_type IN ('issue.created','issue.updated','issue.linked','gate.evaluated','session.checkpointed')),
 			payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
 			actor TEXT NOT NULL,
 			command_id TEXT NOT NULL CHECK(length(command_id) > 0),
@@ -1573,6 +1590,10 @@ func (s *Store) CheckpointSession(ctx context.Context, p CheckpointSessionParams
 	if actor == "" {
 		actor = defaultActor()
 	}
+	commandID := strings.TrimSpace(p.CommandID)
+	if commandID == "" {
+		return Session{}, false, errors.New("--command-id is required")
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1580,9 +1601,10 @@ func (s *Store) CheckpointSession(ctx context.Context, p CheckpointSessionParams
 	}
 	defer tx.Rollback()
 
-	var exists int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM sessions WHERE session_id = ?`, sessionID).Scan(&exists); err != nil {
-		return Session{}, false, fmt.Errorf("query session %q: %w", sessionID, err)
+	existingSession, err := sessionByIDTx(ctx, tx, sessionID)
+	sessionExists := err == nil
+	if err != nil && !strings.Contains(err.Error(), "not found") {
+		return Session{}, false, err
 	}
 
 	now := nowUTC()
@@ -1598,47 +1620,51 @@ func (s *Store) CheckpointSession(ctx context.Context, p CheckpointSessionParams
 	if latestEventID != "" {
 		checkpoint["latest_event_id"] = latestEventID
 	}
-	checkpointJSON, err := json.Marshal(checkpoint)
-	if err != nil {
-		return Session{}, false, fmt.Errorf("encode checkpoint payload: %w", err)
-	}
 
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO sessions(
-			session_id, trigger, started_at, ended_at, summary_event_id, checkpoint_json, created_by
-		) VALUES(?, ?, ?, NULL, NULL, ?, ?)
-		ON CONFLICT(session_id) DO UPDATE SET
-			trigger=excluded.trigger,
-			ended_at=NULL,
-			checkpoint_json=excluded.checkpoint_json
-	`, sessionID, trigger, now, string(checkpointJSON), actor)
-	if err != nil {
-		return Session{}, false, fmt.Errorf("upsert session checkpoint for %q: %w", sessionID, err)
+	startedAt := now
+	createdBy := actor
+	if sessionExists {
+		startedAt = existingSession.StartedAt
+		createdBy = existingSession.CreatedBy
 	}
-
-	metadataBytes, err := json.Marshal(map[string]any{
+	chunkID := newID("chk")
+	chunkMetadata := map[string]any{
 		"trigger":         trigger,
 		"latest_event_id": latestEventID,
+	}
+	payloadBytes, err := json.Marshal(sessionCheckpointedPayload{
+		SessionID:           sessionID,
+		Trigger:             trigger,
+		StartedAt:           startedAt,
+		Checkpoint:          checkpoint,
+		CheckpointedAt:      now,
+		ContextChunkID:      chunkID,
+		ContextChunkKind:    "checkpoint",
+		ContextChunkContent: fmt.Sprintf("checkpoint for session %s", sessionID),
+		ContextChunkMeta:    chunkMetadata,
+		CreatedBy:           createdBy,
 	})
 	if err != nil {
-		return Session{}, false, fmt.Errorf("encode context chunk metadata: %w", err)
+		return Session{}, false, fmt.Errorf("marshal session checkpoint payload: %w", err)
 	}
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO context_chunks(
-			chunk_id, session_id, entity_type, entity_id, kind, content, metadata_json, embedding_ref, created_at
-		) VALUES(?, ?, ?, ?, ?, ?, ?, NULL, ?)
-	`,
-		newID("chk"),
-		sessionID,
-		"session",
-		sessionID,
-		"checkpoint",
-		fmt.Sprintf("checkpoint for session %s", sessionID),
-		string(metadataBytes),
-		now,
-	)
+
+	appendRes, err := s.appendEventTx(ctx, tx, appendEventRequest{
+		EntityType:          entityTypeSession,
+		EntityID:            sessionID,
+		EventType:           eventTypeSessionCheckpoint,
+		PayloadJSON:         string(payloadBytes),
+		Actor:               actor,
+		CommandID:           commandID,
+		EventPayloadVersion: 1,
+	})
 	if err != nil {
-		return Session{}, false, fmt.Errorf("insert context chunk for session %q: %w", sessionID, err)
+		return Session{}, false, err
+	}
+	if appendRes.Event.EventType != eventTypeSessionCheckpoint {
+		return Session{}, false, fmt.Errorf("command id already used by %q", appendRes.Event.EventType)
+	}
+	if err := applySessionCheckpointedProjectionTx(ctx, tx, appendRes.Event); err != nil {
+		return Session{}, false, err
 	}
 
 	session, err := sessionByIDTx(ctx, tx, sessionID)
@@ -1649,7 +1675,7 @@ func (s *Store) CheckpointSession(ctx context.Context, p CheckpointSessionParams
 	if err := tx.Commit(); err != nil {
 		return Session{}, false, fmt.Errorf("commit tx: %w", err)
 	}
-	return session, exists == 0, nil
+	return session, appendRes.Event.EntitySeq == 1, nil
 }
 
 func (s *Store) RehydrateSession(ctx context.Context, p RehydrateSessionParams) (SessionRehydrateResult, error) {
@@ -2582,6 +2608,12 @@ func (s *Store) ReplayProjections(ctx context.Context) (ReplayResult, error) {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM gate_status_projection`); err != nil {
 		return ReplayResult{}, fmt.Errorf("clear gate_status_projection: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM context_chunks`); err != nil {
+		return ReplayResult{}, fmt.Errorf("clear context_chunks: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions`); err != nil {
+		return ReplayResult{}, fmt.Errorf("clear sessions: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM work_items`); err != nil {
 		return ReplayResult{}, fmt.Errorf("clear work_items: %w", err)
 	}
@@ -2631,6 +2663,8 @@ func applyEventProjectionTx(ctx context.Context, tx *sql.Tx, event Event) error 
 		return applyIssueLinkedProjectionTx(ctx, tx, event)
 	case eventTypeGateEval:
 		return applyGateEvaluatedProjectionTx(ctx, tx, event)
+	case eventTypeSessionCheckpoint:
+		return applySessionCheckpointedProjectionTx(ctx, tx, event)
 	default:
 		return nil
 	}
@@ -2843,6 +2877,64 @@ func applyGateEvaluatedProjectionTx(ctx context.Context, tx *sql.Tx, event Event
 	if err != nil {
 		return fmt.Errorf("upsert gate status projection from event %s: %w", event.EventID, err)
 	}
+	return nil
+}
+
+func applySessionCheckpointedProjectionTx(ctx context.Context, tx *sql.Tx, event Event) error {
+	var payload sessionCheckpointedPayload
+	if err := json.Unmarshal([]byte(event.PayloadJSON), &payload); err != nil {
+		return fmt.Errorf("decode session.checkpointed payload for event %s: %w", event.EventID, err)
+	}
+	checkpointJSON, err := json.Marshal(payload.Checkpoint)
+	if err != nil {
+		return fmt.Errorf("encode session.checkpointed checkpoint payload for event %s: %w", event.EventID, err)
+	}
+	contextChunkMetaJSON, err := json.Marshal(payload.ContextChunkMeta)
+	if err != nil {
+		return fmt.Errorf("encode session.checkpointed context metadata for event %s: %w", event.EventID, err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO sessions(
+			session_id, trigger, started_at, ended_at, summary_event_id, checkpoint_json, created_by
+		) VALUES(?, ?, ?, NULL, NULL, ?, ?)
+		ON CONFLICT(session_id) DO UPDATE SET
+			trigger=excluded.trigger,
+			started_at=excluded.started_at,
+			ended_at=NULL,
+			checkpoint_json=excluded.checkpoint_json,
+			created_by=excluded.created_by
+	`, payload.SessionID, payload.Trigger, payload.StartedAt, string(checkpointJSON), payload.CreatedBy)
+	if err != nil {
+		return fmt.Errorf("upsert session from event %s: %w", event.EventID, err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO context_chunks(
+			chunk_id, session_id, entity_type, entity_id, kind, content, metadata_json, embedding_ref, created_at
+		) VALUES(?, ?, ?, ?, ?, ?, ?, NULL, ?)
+		ON CONFLICT(chunk_id) DO UPDATE SET
+			session_id=excluded.session_id,
+			entity_type=excluded.entity_type,
+			entity_id=excluded.entity_id,
+			kind=excluded.kind,
+			content=excluded.content,
+			metadata_json=excluded.metadata_json,
+			created_at=excluded.created_at
+	`,
+		payload.ContextChunkID,
+		payload.SessionID,
+		entityTypeSession,
+		payload.SessionID,
+		payload.ContextChunkKind,
+		payload.ContextChunkContent,
+		string(contextChunkMetaJSON),
+		payload.CheckpointedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert context chunk from event %s: %w", event.EventID, err)
+	}
+
 	return nil
 }
 

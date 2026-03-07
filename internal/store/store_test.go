@@ -314,7 +314,7 @@ func TestEnumCheckConstraintsRejectInvalidDirectWrites(t *testing.T) {
 			payload_json, actor, command_id, causation_id, correlation_id, created_at,
 			hash, prev_hash, event_payload_version
 		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, ?)
-	`, "evt_test_entity_type", 1, "session", "mem-d4d4d4d", 1, "issue.created", "{}", "agent-1", "cmd-enum-1", nowUTC(), "hash_test_1", 1)
+	`, "evt_test_entity_type", 1, "unknown", "mem-d4d4d4d", 1, "issue.created", "{}", "agent-1", "cmd-enum-1", nowUTC(), "hash_test_1", 1)
 	if err == nil {
 		t.Fatalf("expected invalid events.entity_type to fail check constraint")
 	}
@@ -1999,6 +1999,7 @@ func TestSessionCheckpointPacketAndRehydrateFlow(t *testing.T) {
 		SessionID: "sess-1",
 		Trigger:   "manual",
 		Actor:     "agent-1",
+		CommandID: "cmd-context-checkpoint-1",
 	})
 	if err != nil {
 		t.Fatalf("checkpoint session: %v", err)
@@ -2094,6 +2095,22 @@ func TestSessionCheckpointPacketAndRehydrateFlow(t *testing.T) {
 	}
 	if sessionPacket.Scope != "session" {
 		t.Fatalf("expected session scope packet, got %#v", sessionPacket)
+	}
+
+	if _, err := s.ReplayProjections(ctx); err != nil {
+		t.Fatalf("replay projections: %v", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM sessions WHERE session_id = ?`, "sess-1").Scan(&chunkCount); err != nil {
+		t.Fatalf("count replayed sessions: %v", err)
+	}
+	if chunkCount != 1 {
+		t.Fatalf("expected replay to rebuild session row, got %d", chunkCount)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM context_chunks WHERE session_id = ?`, "sess-1").Scan(&chunkCount); err != nil {
+		t.Fatalf("count replayed context chunks: %v", err)
+	}
+	if chunkCount == 0 {
+		t.Fatalf("expected replay to rebuild context chunks")
 	}
 
 	rehydratedPacket, err := s.RehydrateSession(ctx, RehydrateSessionParams{SessionID: "sess-1"})
