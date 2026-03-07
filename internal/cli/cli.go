@@ -84,9 +84,9 @@ func runHelp(args []string, out io.Writer) error {
 			"memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate verify --issue <prefix-shortSHA> --gate <gate-id> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate status --issue <prefix-shortSHA> [--cycle <n>] [--json]",
-			"memori context checkpoint --session <id> [--trigger <trigger>] [--actor <actor>] [--json]",
+			"memori context checkpoint --session <id> [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]",
 			"memori context rehydrate --session <id> [--json]",
-			"memori context packet build --scope issue|session --id <id> [--actor <actor>] [--json]",
+			"memori context packet build --scope issue|session --id <id> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori context packet show --packet <id> [--json]",
 			"memori context packet use --agent <id> --packet <id> [--json]",
 			"memori context loops [--issue <prefix-shortSHA>] [--cycle <n>] [--json]",
@@ -977,6 +977,7 @@ func runContextPacketBuild(args []string, out io.Writer) error {
 	scope := fs.String("scope", "", "packet scope: issue|session")
 	scopeID := fs.String("id", "", "scope id")
 	actor := fs.String("actor", "", "actor id")
+	commandID := fs.String("command-id", "", "idempotency command id")
 	jsonOut := fs.Bool("json", false, "machine-readable output")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -991,15 +992,16 @@ func runContextPacketBuild(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
-	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "context-packet-build", *actor, "", defaultMutationAuthDeps())
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "context-packet-build", *actor, *commandID, defaultMutationAuthDeps())
 	if err != nil {
 		return err
 	}
 
 	packet, err := s.BuildRehydratePacket(ctx, store.BuildPacketParams{
-		Scope:   *scope,
-		ScopeID: *scopeID,
-		Actor:   identity.Actor,
+		Scope:     *scope,
+		ScopeID:   *scopeID,
+		Actor:     identity.Actor,
+		CommandID: identity.CommandID,
 	})
 	if err != nil {
 		return err
@@ -2672,8 +2674,8 @@ func printHelp(out io.Writer) {
 	ui.blank()
 	ui.section("Agent Workflows")
 	ui.bullet("memori issue next [--agent <id>] [--json]")
-	ui.bullet("memori context checkpoint --session <id> [--trigger <trigger>] [--actor <actor>] [--json]")
-	ui.bullet("memori context packet build --scope issue|session --id <id> [--actor <actor>] [--json]")
+	ui.bullet("memori context checkpoint --session <id> [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]")
+	ui.bullet("memori context packet build --scope issue|session --id <id> [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori context packet show --packet <id> [--json]")
 	ui.bullet("memori context packet use --agent <id> --packet <id> [--json]")
 	ui.bullet("memori context rehydrate --session <id> [--json]")

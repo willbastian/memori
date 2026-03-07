@@ -2019,9 +2019,10 @@ func TestSessionCheckpointPacketAndRehydrateFlow(t *testing.T) {
 	}
 
 	issuePacket, err := s.BuildRehydratePacket(ctx, BuildPacketParams{
-		Scope:   "issue",
-		ScopeID: issueID,
-		Actor:   "agent-1",
+		Scope:     "issue",
+		ScopeID:   issueID,
+		Actor:     "agent-1",
+		CommandID: "cmd-context-packet-issue-1",
 	})
 	if err != nil {
 		t.Fatalf("build issue packet: %v", err)
@@ -2086,9 +2087,10 @@ func TestSessionCheckpointPacketAndRehydrateFlow(t *testing.T) {
 	}
 
 	sessionPacket, err := s.BuildRehydratePacket(ctx, BuildPacketParams{
-		Scope:   "session",
-		ScopeID: "sess-1",
-		Actor:   "agent-1",
+		Scope:     "session",
+		ScopeID:   "sess-1",
+		Actor:     "agent-1",
+		CommandID: "cmd-context-packet-session-1",
 	})
 	if err != nil {
 		t.Fatalf("build session packet: %v", err)
@@ -2122,6 +2124,82 @@ func TestSessionCheckpointPacketAndRehydrateFlow(t *testing.T) {
 	}
 	if rehydratedPacket.Packet.PacketID != sessionPacket.PacketID {
 		t.Fatalf("expected latest session packet %q, got %q", sessionPacket.PacketID, rehydratedPacket.Packet.PacketID)
+	}
+}
+
+func TestReplayRebuildsEventSourcedPacketsAndIssueSummaries(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-9191919"
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Replay packet test issue",
+		Actor:     "agent-1",
+		CommandID: "cmd-replay-packet-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-replay-packet-progress-1",
+	}); err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+	gateSetID := "gs_replay_packet_1"
+	seedLockedGateSetForTest(t, s, issueID, gateSetID)
+	seedGateSetItemForTest(t, s, gateSetID, "build", "check", 1)
+	if _, _, _, err := s.EvaluateGate(ctx, EvaluateGateParams{
+		IssueID:      issueID,
+		GateID:       "build",
+		Result:       "FAIL",
+		EvidenceRefs: []string{"ci://run/replay-packet-1"},
+		Actor:        "agent-1",
+		CommandID:    "cmd-replay-packet-gate-1",
+	}); err != nil {
+		t.Fatalf("evaluate gate for replay packet test: %v", err)
+	}
+
+	packet, err := s.BuildRehydratePacket(ctx, BuildPacketParams{
+		Scope:     "issue",
+		ScopeID:   issueID,
+		Actor:     "agent-1",
+		CommandID: "cmd-replay-packet-build-1",
+	})
+	if err != nil {
+		t.Fatalf("build issue packet: %v", err)
+	}
+
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM issue_summaries WHERE summary_level = 'packet'`); err != nil {
+		t.Fatalf("delete packet issue summaries: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM rehydrate_packets WHERE packet_id = ?`, packet.PacketID); err != nil {
+		t.Fatalf("delete packet row: %v", err)
+	}
+
+	if _, err := s.ReplayProjections(ctx); err != nil {
+		t.Fatalf("replay projections: %v", err)
+	}
+
+	var packetCount int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM rehydrate_packets WHERE packet_id = ?`, packet.PacketID).Scan(&packetCount); err != nil {
+		t.Fatalf("count replayed packet row: %v", err)
+	}
+	if packetCount != 1 {
+		t.Fatalf("expected replay to rebuild packet row, got %d", packetCount)
+	}
+
+	var summaryCount int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM issue_summaries WHERE summary_level = 'packet' AND issue_id = ?`, issueID).Scan(&summaryCount); err != nil {
+		t.Fatalf("count replayed packet issue summaries: %v", err)
+	}
+	if summaryCount == 0 {
+		t.Fatalf("expected replay to rebuild packet-derived issue summaries")
 	}
 }
 

@@ -27,12 +27,14 @@ const DefaultIssueKeyPrefix = "mem"
 const (
 	entityTypeIssue   = "issue"
 	entityTypeSession = "session"
+	entityTypePacket  = "packet"
 
 	eventTypeIssueCreate       = "issue.created"
 	eventTypeIssueUpdate       = "issue.updated"
 	eventTypeIssueLink         = "issue.linked"
 	eventTypeGateEval          = "gate.evaluated"
 	eventTypeSessionCheckpoint = "session.checkpointed"
+	eventTypePacketBuilt       = "packet.built"
 )
 
 type Store struct {
@@ -151,9 +153,10 @@ type RehydrateSessionParams struct {
 }
 
 type BuildPacketParams struct {
-	Scope   string
-	ScopeID string
-	Actor   string
+	Scope     string
+	ScopeID   string
+	Actor     string
+	CommandID string
 }
 
 type GetPacketParams struct {
@@ -273,6 +276,17 @@ type sessionCheckpointedPayload struct {
 	ContextChunkContent string         `json:"context_chunk_content"`
 	ContextChunkMeta    map[string]any `json:"context_chunk_metadata"`
 	CreatedBy           string         `json:"created_by"`
+}
+
+type packetBuiltPayload struct {
+	PacketID            string         `json:"packet_id"`
+	Scope               string         `json:"scope"`
+	Packet              map[string]any `json:"packet"`
+	PacketSchemaVersion int            `json:"packet_schema_version"`
+	BuiltFromEventID    string         `json:"built_from_event_id,omitempty"`
+	CreatedAt           string         `json:"created_at"`
+	IssueID             string         `json:"issue_id,omitempty"`
+	IssueCycleNo        int            `json:"issue_cycle_no,omitempty"`
 }
 
 type gateEvaluatedPayload struct {
@@ -489,10 +503,10 @@ func (s *Store) Initialize(ctx context.Context, p InitializeParams) error {
 		`CREATE TABLE IF NOT EXISTS events (
 			event_id TEXT PRIMARY KEY,
 			event_order INTEGER NOT NULL CHECK(event_order > 0),
-			entity_type TEXT NOT NULL CHECK(entity_type IN ('issue','session')),
+			entity_type TEXT NOT NULL CHECK(entity_type IN ('issue','session','packet')),
 			entity_id TEXT NOT NULL,
 			entity_seq INTEGER NOT NULL CHECK(entity_seq > 0),
-			event_type TEXT NOT NULL CHECK(event_type IN ('issue.created','issue.updated','issue.linked','gate.evaluated','session.checkpointed')),
+			event_type TEXT NOT NULL CHECK(event_type IN ('issue.created','issue.updated','issue.linked','gate.evaluated','session.checkpointed','packet.built')),
 			payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
 			actor TEXT NOT NULL,
 			command_id TEXT NOT NULL CHECK(length(command_id) > 0),
@@ -1755,6 +1769,10 @@ func (s *Store) BuildRehydratePacket(ctx context.Context, p BuildPacketParams) (
 	if actor == "" {
 		actor = defaultActor()
 	}
+	commandID := strings.TrimSpace(p.CommandID)
+	if commandID == "" {
+		return RehydratePacket{}, errors.New("--command-id is required")
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1830,36 +1848,49 @@ func (s *Store) BuildRehydratePacket(ctx context.Context, p BuildPacketParams) (
 		}
 		packetJSON["open_loops"] = openLoopsToAny(openLoops)
 	}
-	packetBytes, err := json.Marshal(packetJSON)
-	if err != nil {
-		return RehydratePacket{}, fmt.Errorf("encode packet json: %w", err)
-	}
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO rehydrate_packets(
-			packet_id, scope, packet_json, packet_schema_version, built_from_event_id, created_at
-		) VALUES(?, ?, ?, ?, ?, ?)
-	`, packetID, scope, string(packetBytes), 1, nullIfEmpty(latestEventID), createdAt)
-	if err != nil {
-		return RehydratePacket{}, fmt.Errorf("insert rehydrate packet %q: %w", packetID, err)
-	}
-	if issueIDForSummary != "" {
-		if err := insertIssueSummaryTx(ctx, tx, issueIDForSummary, issueCycleNo, string(packetBytes)); err != nil {
-			return RehydratePacket{}, err
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return RehydratePacket{}, fmt.Errorf("commit tx: %w", err)
-	}
-
-	return RehydratePacket{
+	payloadBytes, err := json.Marshal(packetBuiltPayload{
 		PacketID:            packetID,
 		Scope:               scope,
 		Packet:              packetJSON,
 		PacketSchemaVersion: 1,
 		BuiltFromEventID:    latestEventID,
 		CreatedAt:           createdAt,
-	}, nil
+		IssueID:             issueIDForSummary,
+		IssueCycleNo:        issueCycleNo,
+	})
+	if err != nil {
+		return RehydratePacket{}, fmt.Errorf("marshal packet.built payload: %w", err)
+	}
+
+	appendRes, err := s.appendEventTx(ctx, tx, appendEventRequest{
+		EntityType:          entityTypePacket,
+		EntityID:            packetID,
+		EventType:           eventTypePacketBuilt,
+		PayloadJSON:         string(payloadBytes),
+		Actor:               actor,
+		CommandID:           commandID,
+		EventPayloadVersion: 1,
+	})
+	if err != nil {
+		return RehydratePacket{}, err
+	}
+	if appendRes.Event.EventType != eventTypePacketBuilt {
+		return RehydratePacket{}, fmt.Errorf("command id already used by %q", appendRes.Event.EventType)
+	}
+	if err := applyPacketBuiltProjectionTx(ctx, tx, appendRes.Event); err != nil {
+		return RehydratePacket{}, err
+	}
+
+	packet, err := packetByIDTx(ctx, tx, appendRes.Event.EntityID)
+	if err != nil {
+		return RehydratePacket{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return RehydratePacket{}, fmt.Errorf("commit tx: %w", err)
+	}
+
+	return packet, nil
 }
 
 func (s *Store) GetRehydratePacket(ctx context.Context, p GetPacketParams) (RehydratePacket, error) {
@@ -2608,6 +2639,19 @@ func (s *Store) ReplayProjections(ctx context.Context) (ReplayResult, error) {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM gate_status_projection`); err != nil {
 		return ReplayResult{}, fmt.Errorf("clear gate_status_projection: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM rehydrate_packets
+		WHERE packet_id IN (
+			SELECT entity_id
+			FROM events
+			WHERE entity_type = ? AND event_type = ?
+		)
+	`, entityTypePacket, eventTypePacketBuilt); err != nil {
+		return ReplayResult{}, fmt.Errorf("clear event-sourced rehydrate_packets: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM issue_summaries WHERE summary_level = 'packet'`); err != nil {
+		return ReplayResult{}, fmt.Errorf("clear packet issue_summaries: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM context_chunks`); err != nil {
 		return ReplayResult{}, fmt.Errorf("clear context_chunks: %w", err)
 	}
@@ -2665,6 +2709,8 @@ func applyEventProjectionTx(ctx context.Context, tx *sql.Tx, event Event) error 
 		return applyGateEvaluatedProjectionTx(ctx, tx, event)
 	case eventTypeSessionCheckpoint:
 		return applySessionCheckpointedProjectionTx(ctx, tx, event)
+	case eventTypePacketBuilt:
+		return applyPacketBuiltProjectionTx(ctx, tx, event)
 	default:
 		return nil
 	}
@@ -2933,6 +2979,40 @@ func applySessionCheckpointedProjectionTx(ctx context.Context, tx *sql.Tx, event
 	)
 	if err != nil {
 		return fmt.Errorf("upsert context chunk from event %s: %w", event.EventID, err)
+	}
+
+	return nil
+}
+
+func applyPacketBuiltProjectionTx(ctx context.Context, tx *sql.Tx, event Event) error {
+	var payload packetBuiltPayload
+	if err := json.Unmarshal([]byte(event.PayloadJSON), &payload); err != nil {
+		return fmt.Errorf("decode packet.built payload for event %s: %w", event.EventID, err)
+	}
+	packetJSON, err := json.Marshal(payload.Packet)
+	if err != nil {
+		return fmt.Errorf("encode packet.built packet json for event %s: %w", event.EventID, err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO rehydrate_packets(
+			packet_id, scope, packet_json, packet_schema_version, built_from_event_id, created_at
+		) VALUES(?, ?, ?, ?, ?, ?)
+		ON CONFLICT(packet_id) DO UPDATE SET
+			scope=excluded.scope,
+			packet_json=excluded.packet_json,
+			packet_schema_version=excluded.packet_schema_version,
+			built_from_event_id=excluded.built_from_event_id,
+			created_at=excluded.created_at
+	`, payload.PacketID, payload.Scope, string(packetJSON), payload.PacketSchemaVersion, nullIfEmpty(payload.BuiltFromEventID), payload.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("upsert rehydrate packet from event %s: %w", event.EventID, err)
+	}
+
+	if strings.TrimSpace(payload.IssueID) != "" && payload.IssueCycleNo > 0 {
+		if err := upsertIssueSummaryForPacketTx(ctx, tx, payload.IssueID, payload.IssueCycleNo, string(packetJSON), payload.PacketID, payload.CreatedAt); err != nil {
+			return fmt.Errorf("upsert issue summary from event %s: %w", event.EventID, err)
+		}
 	}
 
 	return nil
@@ -3952,7 +4032,7 @@ func syncOpenLoopsForIssueFromGatesTx(
 	return loops, nil
 }
 
-func insertIssueSummaryTx(ctx context.Context, tx *sql.Tx, issueID string, cycleNo int, summaryJSON string) error {
+func upsertIssueSummaryForPacketTx(ctx context.Context, tx *sql.Tx, issueID string, cycleNo int, summaryJSON, packetID, createdAt string) error {
 	var maxSeq int64
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(MAX(entity_seq), 0)
@@ -3962,20 +4042,30 @@ func insertIssueSummaryTx(ctx context.Context, tx *sql.Tx, issueID string, cycle
 		return fmt.Errorf("query max entity_seq for issue %q summary: %w", issueID, err)
 	}
 
+	summaryID := "sum_" + strings.TrimSpace(packetID)
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO issue_summaries(
 			summary_id, issue_id, cycle_no, summary_level, summary_json,
 			from_entity_seq, to_entity_seq, parent_summary_id, created_at
 		) VALUES(?, ?, ?, ?, ?, ?, ?, NULL, ?)
+		ON CONFLICT(summary_id) DO UPDATE SET
+			issue_id=excluded.issue_id,
+			cycle_no=excluded.cycle_no,
+			summary_level=excluded.summary_level,
+			summary_json=excluded.summary_json,
+			from_entity_seq=excluded.from_entity_seq,
+			to_entity_seq=excluded.to_entity_seq,
+			parent_summary_id=excluded.parent_summary_id,
+			created_at=excluded.created_at
 	`,
-		newID("sum"),
+		summaryID,
 		issueID,
 		cycleNo,
 		"packet",
 		summaryJSON,
 		1,
 		maxSeq,
-		nowUTC(),
+		createdAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert issue summary for issue %q: %w", issueID, err)
