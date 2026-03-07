@@ -11,6 +11,19 @@ Use `memori` for issue tracking in this repository.
 - Default DB path: `.memori/memori.db`
 - You may override with `MEMORI_DB_PATH` when needed.
 - Run `memori init` before first use in a fresh clone/worktree.
+- If `memori` is not on `PATH`, use `go run ./cmd/memori` from the repo root for the same commands.
+
+## Non-Interactive Agent Setup
+When mutating state from an agent or automation context, export the LLM principal explicitly:
+
+```bash
+export MEMORI_PRINCIPAL=llm
+export MEMORI_LLM_PROVIDER=openai
+export MEMORI_LLM_MODEL=gpt-5
+export MEMORI_ALLOW_MANUAL_COMMAND_ID=1
+```
+
+Use the same environment for `go run ./cmd/memori ...` if the binary is not installed locally.
 
 ## Required Agent Workflow
 1. Confirm DB is initialized.
@@ -29,6 +42,7 @@ Use `memori` for issue tracking in this repository.
    - `memori issue link --child <child_key> --parent <parent_key> --command-id "<unique-id>" --json`
 6. Rebuild projections from event ledger when validating consistency.
    - `memori db replay --json`
+   - Use replay when you need to recompute derived state such as gate projections, packets, focus, summaries, or open loops from the append-only ledger.
 
 ## Command ID Convention
 For mutating commands, always pass a stable `--command-id`.
@@ -45,7 +59,7 @@ Use issue keys in `{prefix}-{shortSHA}` format.
 - Prefix is project-wide (set once via `memori init --issue-prefix ...`) and must be consistent for all new issues.
 
 ## During Bootstrap
-- Gates and packet flows are still in progress.
+- Gates, replay, and packet flows are real and should be used as the system of record, but the product remains CLI-first and local-only.
 - Use `issue update` status transitions for day-to-day progress tracking.
 - Prefer more small issues over untracked status notes.
 
@@ -68,10 +82,22 @@ Before closing a task, run this checklist in order:
 7. Verify remote push succeeded and local branch is clean:
    - `git status --short`
    - `git log -1 --oneline`
-8. Mark task `done` in memori only after push is successful:
+8. Satisfy close gates for the current cycle before marking `done`:
+   - Instantiate an approved close template for the issue type.
+   - `memori gate set instantiate --issue <issue_key> --template <template@version> --command-id "<unique-id>" --json`
+   - Lock the gate set.
+   - `memori gate set lock --issue <issue_key> --command-id "<unique-id>" --json`
+   - Verify required gates.
+   - `memori gate verify --issue <issue_key> --gate <gate_id> --command-id "<unique-id>" --json`
+9. Mark task `done` in memori only after push is successful and the close gates pass:
    - `memori issue update --key <issue_key> --status done --command-id "<unique-id>" --json`
-9. Share closeout summary with:
+10. Share closeout summary with:
    - Issue key, commit SHA, push target branch, validation run, and any follow-up tasks.
+
+## Governance Notes
+- Treat the event ledger as the authoritative write path; prefer commands that append events over manual database changes.
+- Use `issue next --agent <agent_id>` and context packet commands when resuming interrupted work rather than relying on memory alone.
+- New executable gate templates with `criteria.command` must come from a human-governed path. Agents may instantiate and verify approved templates, but should not create new arbitrary executable templates unless the workflow explicitly requires a human principal.
 
 ## Priority Rule
 If these instructions conflict with informal habits, follow this file: `memori` issue tracking is the default operating mode.

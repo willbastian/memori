@@ -1,20 +1,21 @@
 # memori
 
-`memori` is a local-first issue tracker and context ledger for teams exploring disciplined human-plus-agent workflows.
+`memori` is a local-first issue tracker and context ledger for disciplined human-plus-agent workflows.
 
-Today this repository is a CLI-only Slice 1 implementation: it stores work in a local SQLite database, records mutations as append-only events, and adds explicit close gates, provenance, and context handoff primitives on top of ordinary issue tracking.
+Today the repository provides a CLI-first event-sourced system: it stores work in a local SQLite database, records mutations as append-only events, rebuilds projections through replay, and adds explicit close gates, provenance, and context handoff primitives on top of issue tracking.
 
 ## What Exists Today
 
 - Local issue ledger backed by SQLite at `.memori/memori.db` by default
 - Issue create/show/update/link flows with rich context fields
-- `backlog` and `issue next` commands for human and agent triage
-- Append-only event log with replayable projections
+- `backlog` and continuity-aware `issue next` commands for human and agent triage
+- Append-only event log with replayable projections across issue, session, packet, focus, gate-template, and gate-set entities
 - Versioned gate templates plus gate-set instantiate, lock, evaluate, verify, and status flows
 - Close validation that blocks `done` until required gates pass and child issues are already closed
+- Close-proof capture that binds gate-set hash and verifier proof into `Done` transitions
 - Context checkpoint, packet build/show/use, rehydrate, and loop inspection commands
 - DB status, migrate, verify, backup, and replay operations
-- Provenance controls for human and LLM mutations
+- Provenance controls for human and LLM mutations, including governance for executable gate criteria
 
 ## Good Fit
 
@@ -33,9 +34,10 @@ Today this repository is a CLI-only Slice 1 implementation: it stores work in a 
 ## Maturity Snapshot
 
 - The command surface is substantial and the automated test suite is broad.
-- The product shape is still early: this is a Slice 1 CLI, not a finished platform.
+- The product shape is still early: this is a local CLI, not a finished hosted platform.
 - Mutation provenance is intentionally strict.
-- Context rehydration supports a raw-events fallback path, which is useful but also a sign the context bridge is still maturing.
+- Context rehydration supports both packet reuse and a raw-events fallback path.
+- Replay is now expected to rebuild derived continuity state, not just core issue rows.
 
 ## Quick Evaluation From A Source Checkout
 
@@ -62,6 +64,7 @@ What to expect:
 - `init` creates `.memori/memori.db` and records the issue key prefix.
 - `auth set-password` is required before human-driven write commands succeed.
 - `backlog` gives you the current work list; `issue show` and `event log` let you inspect detail and provenance.
+- `issue next --agent <id>` can prefer active-focus and recovery-ready work instead of using status alone.
 
 ## Non-Interactive Evaluation Flow
 
@@ -101,13 +104,21 @@ go run ./cmd/memori issue update \
 go run ./cmd/memori backlog --db /tmp/memori-eval.db --json
 go run ./cmd/memori issue show --db /tmp/memori-eval.db --key mem-a111111 --json
 go run ./cmd/memori event log --db /tmp/memori-eval.db --entity mem-a111111 --json
+go run ./cmd/memori issue next --db /tmp/memori-eval.db --agent evaluator-1 --json
 ```
 
-To close that issue, define and lock a gate set, then verify the required gate:
+You can also inspect non-issue entities directly from the event log:
+
+- `event log --entity packet:<packet_id>`
+- `event log --entity focus:<agent_id>`
+- `event log --entity gate-template:<template_id@version>`
+- `event log --entity gate-set:<gate_set_id>`
+
+To close that issue non-interactively, define a non-executable required gate, then evaluate it with evidence:
 
 ```bash
 cat >/tmp/memori-eval-gates.json <<'JSON'
-{"gates":[{"id":"review","kind":"check","required":true,"criteria":{"command":"echo ok"}}]}
+{"gates":[{"id":"review","kind":"check","required":true,"criteria":{"ref":"manual-review"}}]}
 JSON
 
 go run ./cmd/memori gate template create \
@@ -116,24 +127,29 @@ go run ./cmd/memori gate template create \
   --version 1 \
   --applies-to task \
   --file /tmp/memori-eval-gates.json \
+  --command-id eval-readme-template-01 \
   --json
 
 go run ./cmd/memori gate set instantiate \
   --db /tmp/memori-eval.db \
   --issue mem-a111111 \
   --template evaluator@1 \
+  --command-id eval-readme-instantiate-01 \
   --json
 
 go run ./cmd/memori gate set lock \
   --db /tmp/memori-eval.db \
   --issue mem-a111111 \
+  --command-id eval-readme-lock-01 \
   --json
 
-go run ./cmd/memori gate verify \
+go run ./cmd/memori gate evaluate \
   --db /tmp/memori-eval.db \
   --issue mem-a111111 \
   --gate review \
-  --command-id eval-readme-verify-01 \
+  --result PASS \
+  --evidence docs://readme-review \
+  --command-id eval-readme-evaluate-01 \
   --json
 
 go run ./cmd/memori issue update \
@@ -143,6 +159,28 @@ go run ./cmd/memori issue update \
   --command-id eval-readme-done-01 \
   --json
 ```
+
+If you want to exercise `gate verify`, create the executable gate template through a human-governed path after `auth set-password`, then verify that approved gate set. LLM principals can instantiate and verify approved executable templates, but they should not author new arbitrary `criteria.command` templates.
+
+## Replay Vs Resume
+
+Use `db replay` when you want to rebuild database truth from the event ledger.
+
+- Projection tables look stale, inconsistent, or damaged.
+- Projection logic changed and you want derived state recomputed from events.
+- You want to validate that the ledger alone can reconstruct issue, gate, packet, focus, and loop state.
+
+Use the resume-oriented commands when you want to continue execution efficiently from existing context.
+
+- `issue next --agent <id>` selects the best continuity-aware work item for an agent.
+- `context packet build` snapshots current issue or session state into a reusable recovery packet.
+- `context packet use` restores agent focus to a packet and makes resume intent explicit.
+- `context rehydrate` returns the best available recovery payload, using packets first and raw-events fallback when needed.
+
+Short version:
+
+- Replay rebuilds system state.
+- Resume rebuilds worker momentum.
 
 ## Command Map
 
@@ -188,8 +226,10 @@ Create and update workflows:
 - Human mutations fail closed until a password is configured and verified interactively.
 - LLM mutations require `MEMORI_PRINCIPAL=llm` plus provider and model metadata.
 - Manual `--command-id` is reserved for automation and replay workflows and requires `MEMORI_ALLOW_MANUAL_COMMAND_ID=1`.
+- New executable gate templates must come from a human-governed path; LLM principals can use approved templates but should not author new arbitrary `criteria.command` definitions.
 - Marking an issue `done` requires a locked gate set for the current cycle.
 - Required locked gates must pass before `done` succeeds.
+- `done` captures close proof from the current locked gate set, including verifier evidence and gate-set hash.
 - Parent issues cannot close while any child issue is still open.
 - The default mode is local-only; operational durability comes from the SQLite DB and event ledger, not from a remote service.
 
@@ -208,7 +248,7 @@ Create and update workflows:
   Yes. Closing to `done` is contract-driven and requires a locked gate set for the current cycle, plus passing required gates.
 
 - Does it support agent handoff today?
-  Yes, in CLI form. Context checkpoints, packets, packet reuse, and rehydration are implemented, but the surrounding workflow is still maturing.
+  Yes, in CLI form. Context checkpoints, packets, packet reuse, focus tracking, continuity-aware `issue next`, and rehydration are implemented, but the surrounding workflow is still maturing.
 
 ## Decision Checklist
 
