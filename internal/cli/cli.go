@@ -2600,6 +2600,7 @@ func printHelp(out io.Writer) {
 	ui.bullet("memori issue next [--agent <id>] [--json]")
 	ui.bullet("memori context checkpoint --session <id> [--trigger <trigger>] [--actor <actor>] [--json]")
 	ui.bullet("memori context packet build --scope issue|session --id <id> [--actor <actor>] [--json]")
+	ui.bullet("memori context packet show --packet <id> [--json]")
 	ui.bullet("memori context packet use --agent <id> --packet <id> [--json]")
 	ui.bullet("memori context rehydrate --session <id> [--json]")
 	ui.bullet("memori context loops [--issue <prefix-shortSHA>] [--cycle <n>] [--json]")

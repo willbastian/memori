@@ -1,173 +1,217 @@
-# memori (Slice 1 scaffold)
+# memori
 
-This repo now contains the first implementation slice for a local event-ledger-backed issue CLI.
+`memori` is a local-first issue tracker and context ledger for teams exploring disciplined human-plus-agent workflows.
 
-## Implemented in this slice
+Today this repository is a CLI-only Slice 1 implementation: it stores work in a local SQLite database, records mutations as append-only events, and adds explicit close gates, provenance, and context handoff primitives on top of ordinary issue tracking.
+
+## What Exists Today
+
+- Local issue ledger backed by SQLite at `.memori/memori.db` by default
+- Issue create/show/update/link flows with rich context fields
+- `backlog` and `issue next` commands for human and agent triage
+- Append-only event log with replayable projections
+- Versioned gate templates plus gate-set instantiate, lock, evaluate, verify, and status flows
+- Close validation that blocks `done` until required gates pass and child issues are already closed
+- Context checkpoint, packet build/show/use, rehydrate, and loop inspection commands
+- DB status, migrate, verify, backup, and replay operations
+- Provenance controls for human and LLM mutations
+
+## Good Fit
+
+- You want a local, auditable issue system instead of a hosted tracker.
+- You care about append-only history, deterministic replay, and contract-style close checks.
+- You want agent workflows to use the same issue system as humans.
+- You are comfortable evaluating an early CLI from source.
+
+## Not A Fit Yet
+
+- You need a multi-user server, web UI, permissions model, or remote sync.
+- You want lightweight task tracking with minimal ceremony.
+- You need turnkey team onboarding without Go tooling or source checkout steps.
+- You want mature integrations beyond the local CLI and database.
+
+## Maturity Snapshot
+
+- The command surface is substantial and the automated test suite is broad.
+- The product shape is still early: this is a Slice 1 CLI, not a finished platform.
+- Mutation provenance is intentionally strict.
+- Context rehydration supports a raw-events fallback path, which is useful but also a sign the context bridge is still maturing.
+
+## Quick Evaluation From A Source Checkout
+
+Prerequisites:
+
+- Go 1.25+
+- A local clone of this repository
+
+Examples below use `go run ./cmd/memori`. If you build your own binary, replace that prefix with `memori`.
+
+Start with the human-oriented path:
+
+```bash
+go run ./cmd/memori help
+go run ./cmd/memori init --issue-prefix mem
+go run ./cmd/memori auth status
+go run ./cmd/memori auth set-password
+go run ./cmd/memori issue create --type task --title "Evaluate memori"
+go run ./cmd/memori backlog
+```
+
+What to expect:
+
+- `init` creates `.memori/memori.db` and records the issue key prefix.
+- `auth set-password` is required before human-driven write commands succeed.
+- `backlog` gives you the current work list; `issue show` and `event log` let you inspect detail and provenance.
+
+## Non-Interactive Evaluation Flow
+
+If you are validating the CLI in automation or from an agent environment, set an LLM principal explicitly:
+
+```bash
+export MEMORI_PRINCIPAL=llm
+export MEMORI_LLM_PROVIDER=openai
+export MEMORI_LLM_MODEL=gpt-5
+export MEMORI_ALLOW_MANUAL_COMMAND_ID=1
+```
+
+Then you can exercise an end-to-end flow from a clean temp DB:
+
+```bash
+go run ./cmd/memori init --db /tmp/memori-eval.db --issue-prefix mem
+
+go run ./cmd/memori issue create \
+  --db /tmp/memori-eval.db \
+  --key mem-a111111 \
+  --type task \
+  --title "Evaluate memori" \
+  --description "Validate the local event-ledger workflow" \
+  --acceptance-criteria "README examples match current behavior" \
+  --command-id eval-readme-create-01 \
+  --json
+
+go run ./cmd/memori issue update \
+  --db /tmp/memori-eval.db \
+  --key mem-a111111 \
+  --status inprogress \
+  --priority P1 \
+  --label evaluator \
+  --command-id eval-readme-progress-01 \
+  --json
+
+go run ./cmd/memori backlog --db /tmp/memori-eval.db --json
+go run ./cmd/memori issue show --db /tmp/memori-eval.db --key mem-a111111 --json
+go run ./cmd/memori event log --db /tmp/memori-eval.db --entity mem-a111111 --json
+```
+
+To close that issue, define and lock a gate set, then verify the required gate:
+
+```bash
+cat >/tmp/memori-eval-gates.json <<'JSON'
+{"gates":[{"id":"review","kind":"check","required":true,"criteria":{"command":"echo ok"}}]}
+JSON
+
+go run ./cmd/memori gate template create \
+  --db /tmp/memori-eval.db \
+  --id evaluator \
+  --version 1 \
+  --applies-to task \
+  --file /tmp/memori-eval-gates.json \
+  --json
+
+go run ./cmd/memori gate set instantiate \
+  --db /tmp/memori-eval.db \
+  --issue mem-a111111 \
+  --template evaluator@1 \
+  --json
+
+go run ./cmd/memori gate set lock \
+  --db /tmp/memori-eval.db \
+  --issue mem-a111111 \
+  --json
+
+go run ./cmd/memori gate verify \
+  --db /tmp/memori-eval.db \
+  --issue mem-a111111 \
+  --gate review \
+  --command-id eval-readme-verify-01 \
+  --json
+
+go run ./cmd/memori issue update \
+  --db /tmp/memori-eval.db \
+  --key mem-a111111 \
+  --status done \
+  --command-id eval-readme-done-01 \
+  --json
+```
+
+## Command Map
+
+Human workflows:
+
+- `memori auth status`
+- `memori backlog`
+- `memori issue show`
+- `memori gate status`
+- `memori event log`
+- `memori db status`
+
+Agent and handoff workflows:
+
+- `memori issue next`
+- `memori context checkpoint`
+- `memori context packet build`
+- `memori context packet show`
+- `memori context packet use`
+- `memori context rehydrate`
+- `memori context loops`
+
+Create and update workflows:
 
 - `memori init`
-- `memori auth status`
 - `memori auth set-password`
-- Event store foundation (`events` append-only, hash chain columns, idempotency key)
-- Immutable gate schema foundation (`gate_templates`, `gate_sets`, `gate_set_items` + immutability triggers)
-- Close-validator contract on `issue update --status done` (checks required locked gates from source-of-truth data)
-- Minimal projection table (`work_items`)
 - `memori issue create`
 - `memori issue link`
 - `memori issue update`
-- `memori issue show`
-- `memori issue next`
 - `memori gate template create`
 - `memori gate template list`
 - `memori gate set instantiate`
 - `memori gate set lock`
 - `memori gate evaluate`
 - `memori gate verify`
-- `memori gate status`
-- `memori context checkpoint`
-- `memori context rehydrate`
-- `memori context packet build|show|use`
-- `memori context loops`
-- `memori event log`
-- `memori db status`
 - `memori db migrate`
 - `memori db verify`
 - `memori db backup`
-- `memori db replay` (rebuild projections from the event ledger)
+- `memori db replay`
 
-## Quick start
+## Operational Caveats
 
-```bash
-# initialize DB
-memori init --issue-prefix mem
+- Human mutations fail closed until a password is configured and verified interactively.
+- LLM mutations require `MEMORI_PRINCIPAL=llm` plus provider and model metadata.
+- Manual `--command-id` is reserved for automation and replay workflows and requires `MEMORI_ALLOW_MANUAL_COMMAND_ID=1`.
+- Marking an issue `done` requires a locked gate set for the current cycle.
+- Required locked gates must pass before `done` succeeds.
+- Parent issues cannot close while any child issue is still open.
+- The default mode is local-only; operational durability comes from the SQLite DB and event ledger, not from a remote service.
 
-# inspect migration status
-memori db status
+## FAQ
 
-# apply pending migrations (uses goose)
-memori db migrate
+- Is this production-ready issue infrastructure?
+  Not yet. The core contracts are real and well tested, but the repo is still at an early slice and best suited to evaluation, prototyping, and workflow design.
 
-# verify version alignment
-memori db verify
+- What is the strongest reason to try it?
+  If you want issue state, provenance, and close validation to live in one local system that both humans and agents can use, this repo already demonstrates that shape.
 
-# write restorable snapshot
-memori db backup --out /tmp/memori-backup.db
+- What is the biggest adoption risk today?
+  Operational friction. Human writes are intentionally strict, and there is no hosted control plane, sync layer, or GUI to absorb that complexity.
 
-# configure human mutation auth once per DB
-memori auth set-password
+- Do I need gates to close work?
+  Yes. Closing to `done` is contract-driven and requires a locked gate set for the current cycle, plus passing required gates.
 
-# create an issue (command_id auto-generated)
-memori issue create --type task --title "First ticket"
+- Does it support agent handoff today?
+  Yes, in CLI form. Context checkpoints, packets, packet reuse, and rehydration are implemented, but the surrounding workflow is still maturing.
 
-# create with richer context
-memori issue create \
-  --type task \
-  --title "Improve issue context" \
-  --description "Add richer fields for agent/human handoff" \
-  --acceptance-criteria "Issue show returns context-rich payload" \
-  --reference "https://example.com/spec" \
-  --json
+## Decision Checklist
 
-# show issue
-memori issue show --key <issue-key>
-
-# move issue to in-progress
-memori issue update --key <issue-key> --status inprogress
-
-# update context fields without changing status
-memori issue update \
-  --key <issue-key> \
-  --priority P1 \
-  --label backend \
-  --label ux \
-  --description "Updated context" \
-  --acceptance-criteria "Readable in issue show output" \
-  --reference "notes.md" \
-  --json
-
-# re-link child to parent
-memori issue link --child <child-key> --parent <parent-key>
-
-# ask memori for the next actionable issue
-memori issue next --agent codex-1
-
-# inspect event ledger for the issue
-memori event log --entity <issue-key>
-
-# evaluate a gate
-memori gate evaluate \
-  --issue <issue-key> \
-  --gate build \
-  --result PASS \
-  --evidence "ci://run/123"
-
-# verifier-executed gate evaluation (recommended)
-memori gate verify \
-  --issue <issue-key> \
-  --gate build
-
-# inspect gate status for current locked gate set (or a specific cycle)
-memori gate status --issue <issue-key> [--cycle <n>]
-
-# close validation requires:
-# - a locked gate set for the issue's current cycle
-# - PASS for every required gate
-# - proof-bearing evaluations from verifier execution (runner + exit_code + gate_set_hash)
-
-# create template definition file and register versioned gate template
-cat > /tmp/quality-gates.json <<'JSON'
-{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}},{"id":"lint","kind":"check","required":false}]}
-JSON
-memori gate template create \
-  --id quality \
-  --version 1 \
-  --applies-to task \
-  --file /tmp/quality-gates.json
-
-# instantiate and lock a gate set for the issue's current cycle
-memori gate set instantiate --issue <issue-key> --template quality@1
-memori gate set lock --issue <issue-key>
-
-# list templates (optionally filtered by issue type)
-memori gate template list --type task
-
-# checkpoint and rehydrate context
-memori context checkpoint --session sess-1 --trigger manual
-memori context packet build --scope issue --id <issue-key>
-memori context loops --issue <issue-key>
-memori context rehydrate --session sess-1
-
-# rebuild projections from events
-memori db replay
-```
-
-`--json` is supported on read/list commands in this slice and on write commands that return structured envelopes.
-
-## Provenance controls
-
-- Human principals must configure a password with `memori auth set-password` before mutating commands will write.
-- Human mutation verification is interactive and intentionally fails closed on non-terminal stdin.
-- Mutation actors are derived from trusted runtime principal context, not `--actor`.
-- Human actors use `human:<system-username>`.
-- LLM actors use `llm:<provider>:<model>` and require `MEMORI_PRINCIPAL=llm`, `MEMORI_LLM_PROVIDER`, and `MEMORI_LLM_MODEL`.
-- Event-backed mutating commands generate `command_id` automatically using `cmdv1-<operation>-<utcstamp>-<entropy>`.
-- Manual `--command-id` is reserved for automation/replay workflows and requires `MEMORI_ALLOW_MANUAL_COMMAND_ID=1`.
-- Existing event rows remain valid; the new controls apply to future writes only.
-
-Human-readable output is grouped around likely workflows:
-
-- `memori help` separates human workflows, agent workflows, and create/update commands.
-- Happy-path text output highlights the action that succeeded and includes suggested next commands when available.
-- `MEMORI_COLOR=auto|always|never` controls ANSI color in human-readable output.
-- `NO_COLOR`, `CLICOLOR=0`, `CLICOLOR_FORCE=1`, and `FORCE_COLOR=1` are also honored.
-
-Operational notes:
-
-- Password material is stored hashed at rest in `human_auth_credentials` using PBKDF2-HMAC-SHA256 with a per-credential salt and enforced minimum iteration count.
-- Rotating the password updates the single `default` credential row and preserves existing event history.
-- If human auth is not yet configured, mutation commands return an actionable setup error that points to `memori auth set-password`.
-
-Issue key format:
-
-- `{prefix}-{shortSHA}` (example: `wrk-a1b2c3d`)
-- Issue type is stored in `--type`; do not encode type names (`epic|story|task|bug`) into the key prefix.
-- Prefix is project-wide and set at init (`--issue-prefix`); all new issue keys must use that prefix.
+- Try `memori` now if you want a local-first CLI with auditable history, explicit completion rules, and agent-aware context flows.
+- Wait if you need collaboration features normally associated with a hosted tracker.
+- Expect to read the CLI help and tests while evaluating; they are part of the current product surface.
