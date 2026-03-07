@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"memori/internal/dbschema"
 )
 
 func TestCreateIssueIdempotencyByActorAndCommandID(t *testing.T) {
@@ -2402,6 +2404,23 @@ func TestSessionCheckpointPacketAndRehydrateFlow(t *testing.T) {
 	if issuePacket.PacketID == "" || issuePacket.Scope != "issue" {
 		t.Fatalf("expected issue packet metadata, got %#v", issuePacket)
 	}
+	stateRaw, ok := issuePacket.Packet["state"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected issue packet state map, got %#v", issuePacket.Packet["state"])
+	}
+	if cycleNo, ok := stateRaw["cycle_no"].(float64); !ok || int(cycleNo) != 1 {
+		t.Fatalf("expected issue packet cycle_no 1, got %#v", stateRaw["cycle_no"])
+	}
+	if builtFrom, ok := issuePacket.Packet["built_from_event_id"].(string); !ok || builtFrom == "" {
+		t.Fatalf("expected issue packet built_from_event_id, got %#v", issuePacket.Packet["built_from_event_id"])
+	}
+	provenanceRaw, ok := issuePacket.Packet["provenance"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected packet provenance map, got %#v", issuePacket.Packet["provenance"])
+	}
+	if provenanceCycle, ok := provenanceRaw["issue_cycle_no"].(float64); !ok || int(provenanceCycle) != 1 {
+		t.Fatalf("expected packet provenance issue_cycle_no 1, got %#v", provenanceRaw["issue_cycle_no"])
+	}
 	gatesRaw, ok := issuePacket.Packet["gates"].([]any)
 	if !ok || len(gatesRaw) == 0 {
 		t.Fatalf("expected issue packet to include gate health, got %#v", issuePacket.Packet["gates"])
@@ -2526,14 +2545,15 @@ func TestReplayRebuildsEventSourcedPacketsAndIssueSummaries(t *testing.T) {
 	gateSetID := "gs_replay_packet_1"
 	seedLockedGateSetForTest(t, s, issueID, gateSetID)
 	seedGateSetItemForTest(t, s, gateSetID, "build", "check", 1)
-	if _, _, _, err := s.EvaluateGate(ctx, EvaluateGateParams{
+	_, gateEvent, _, err := s.EvaluateGate(ctx, EvaluateGateParams{
 		IssueID:      issueID,
 		GateID:       "build",
 		Result:       "FAIL",
 		EvidenceRefs: []string{"ci://run/replay-packet-1"},
 		Actor:        "agent-1",
 		CommandID:    "cmd-replay-packet-gate-1",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("evaluate gate for replay packet test: %v", err)
 	}
 
@@ -2546,12 +2566,32 @@ func TestReplayRebuildsEventSourcedPacketsAndIssueSummaries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build issue packet: %v", err)
 	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO rehydrate_packets(packet_id, scope, packet_json, packet_schema_version, built_from_event_id, created_at)
+		VALUES(?, ?, ?, ?, ?, ?)
+	`, "pkt_stale_replay", "issue", `{"scope":"issue","scope_id":"mem-stale"}`, 1, "evt_stale", nowUTC()); err != nil {
+		t.Fatalf("insert stale packet row: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO agent_focus(agent_id, active_issue_id, active_cycle_no, last_packet_id, updated_at)
+		VALUES(?, ?, ?, ?, ?)
+	`, "agent-stale-replay", issueID, 1, "pkt_stale_replay", nowUTC()); err != nil {
+		t.Fatalf("insert stale agent focus: %v", err)
+	}
 
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM issue_summaries WHERE summary_level = 'packet'`); err != nil {
 		t.Fatalf("delete packet issue summaries: %v", err)
 	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM rehydrate_packets WHERE packet_id = ?`, packet.PacketID); err != nil {
 		t.Fatalf("delete packet row: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO issue_summaries(
+			summary_id, issue_id, cycle_no, summary_level, summary_json,
+			from_entity_seq, to_entity_seq, parent_summary_id, created_at
+		) VALUES(?, ?, ?, ?, ?, ?, ?, NULL, ?)
+	`, "sum_stale_replay", issueID, 1, "packet", `{"stale":true}`, 1, 1, nowUTC()); err != nil {
+		t.Fatalf("insert stale issue summary: %v", err)
 	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM open_loops WHERE issue_id = ?`, issueID); err != nil {
 		t.Fatalf("delete open loops: %v", err)
@@ -2583,6 +2623,65 @@ func TestReplayRebuildsEventSourcedPacketsAndIssueSummaries(t *testing.T) {
 	}
 	if loopCount == 0 {
 		t.Fatalf("expected replay to rebuild open loops")
+	}
+	var stalePacketCount int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM rehydrate_packets WHERE packet_id = ?`, "pkt_stale_replay").Scan(&stalePacketCount); err != nil {
+		t.Fatalf("count stale packet rows after replay: %v", err)
+	}
+	if stalePacketCount != 0 {
+		t.Fatalf("expected replay to clear stale packet rows, got %d", stalePacketCount)
+	}
+	var staleSummaryCount int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM issue_summaries WHERE summary_id = ?`, "sum_stale_replay").Scan(&staleSummaryCount); err != nil {
+		t.Fatalf("count stale summary rows after replay: %v", err)
+	}
+	if staleSummaryCount != 0 {
+		t.Fatalf("expected replay to clear stale issue summaries, got %d", staleSummaryCount)
+	}
+	var staleFocusCount int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM agent_focus WHERE agent_id = ?`, "agent-stale-replay").Scan(&staleFocusCount); err != nil {
+		t.Fatalf("count stale agent focus rows after replay: %v", err)
+	}
+	if staleFocusCount != 0 {
+		t.Fatalf("expected replay to clear stale agent focus rows, got %d", staleFocusCount)
+	}
+	var loopSourceEventID string
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT source_event_id
+		FROM open_loops
+		WHERE issue_id = ? AND loop_type = 'gate' AND status = 'Open'
+		LIMIT 1
+	`, issueID).Scan(&loopSourceEventID); err != nil {
+		t.Fatalf("read replayed open loop source_event_id: %v", err)
+	}
+	if loopSourceEventID != gateEvent.EventID {
+		t.Fatalf("expected replayed loop source_event_id %q, got %q", gateEvent.EventID, loopSourceEventID)
+	}
+}
+
+func TestInitializeMatchesMigratedSchema(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	initStore := newTestStore(t)
+	initSchema := sqliteSchemaObjectsForTest(t, initStore.DB())
+
+	migratedPath := filepath.Join(t.TempDir(), "memori-migrated.db")
+	migratedStore, err := Open(migratedPath)
+	if err != nil {
+		t.Fatalf("open migrated store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = migratedStore.Close()
+	})
+	if _, err := dbschema.Migrate(ctx, migratedStore.DB(), nil); err != nil {
+		t.Fatalf("migrate schema: %v", err)
+	}
+	migratedSchema := sqliteSchemaObjectsForTest(t, migratedStore.DB())
+
+	if !reflect.DeepEqual(initSchema, migratedSchema) {
+		t.Fatalf("expected Initialize schema to match migrated schema\ninit=%v\nmigrate=%v", initSchema, migratedSchema)
 	}
 }
 
@@ -2622,6 +2721,35 @@ func seedLockedGateSetForTest(t *testing.T, s *Store, issueID, gateSetID string)
 	if err != nil {
 		t.Fatalf("insert locked gate set %s: %v", gateSetID, err)
 	}
+}
+
+func sqliteSchemaObjectsForTest(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+
+	rows, err := db.Query(`
+		SELECT type || ':' || name
+		FROM sqlite_master
+		WHERE type IN ('table', 'index', 'trigger')
+			AND name NOT LIKE 'sqlite_%'
+		ORDER BY type ASC, name ASC
+	`)
+	if err != nil {
+		t.Fatalf("query sqlite schema objects: %v", err)
+	}
+	defer rows.Close()
+
+	items := make([]string, 0)
+	for rows.Next() {
+		var item string
+		if err := rows.Scan(&item); err != nil {
+			t.Fatalf("scan sqlite schema object: %v", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate sqlite schema objects: %v", err)
+	}
+	return items
 }
 
 func seedGateSetItemForTest(t *testing.T, s *Store, gateSetID, gateID, kind string, required int) {

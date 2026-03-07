@@ -522,8 +522,7 @@ func (s *Store) Initialize(ctx context.Context, p InitializeParams) error {
 	if err := validateIssueTypeNotEmbeddedInKeyPrefix(issueKeyPrefix + "-a1b2c3d"); err != nil {
 		return fmt.Errorf("invalid issue key prefix: %w", err)
 	}
-	migrationStatus, err := dbschema.Migrate(ctx, s.db, nil)
-	if err != nil {
+	if _, err := dbschema.Migrate(ctx, s.db, nil); err != nil {
 		return fmt.Errorf("migrate schema: %w", err)
 	}
 
@@ -533,195 +532,7 @@ func (s *Store) Initialize(ctx context.Context, p InitializeParams) error {
 	}
 	defer tx.Rollback()
 
-	schema := []string{
-		`CREATE TABLE IF NOT EXISTS schema_meta (
-			key TEXT PRIMARY KEY,
-			value TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		);`,
-		`CREATE TABLE IF NOT EXISTS events (
-			event_id TEXT PRIMARY KEY,
-			event_order INTEGER NOT NULL CHECK(event_order > 0),
-			entity_type TEXT NOT NULL CHECK(entity_type IN ('issue','session','packet')),
-			entity_id TEXT NOT NULL,
-			entity_seq INTEGER NOT NULL CHECK(entity_seq > 0),
-			event_type TEXT NOT NULL CHECK(event_type IN ('issue.created','issue.updated','issue.linked','gate.evaluated','session.checkpointed','packet.built')),
-			payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
-			actor TEXT NOT NULL,
-			command_id TEXT NOT NULL CHECK(length(command_id) > 0),
-			causation_id TEXT,
-			correlation_id TEXT,
-			created_at TEXT NOT NULL,
-			hash TEXT NOT NULL,
-			prev_hash TEXT,
-			event_payload_version INTEGER NOT NULL DEFAULT 1 CHECK(event_payload_version > 0),
-			UNIQUE(event_order),
-			UNIQUE(entity_type, entity_id, entity_seq),
-			UNIQUE(hash),
-			UNIQUE(actor, command_id)
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_events_entity_time ON events(entity_type, entity_id, created_at);`,
-		`CREATE INDEX IF NOT EXISTS idx_events_type_time ON events(event_type, created_at);`,
-		`CREATE INDEX IF NOT EXISTS idx_events_correlation_time ON events(correlation_id, created_at);`,
-		`CREATE TRIGGER IF NOT EXISTS events_no_update
-			BEFORE UPDATE ON events
-			BEGIN
-				SELECT RAISE(ABORT, 'events are append-only');
-			END;`,
-		`CREATE TRIGGER IF NOT EXISTS events_no_delete
-			BEFORE DELETE ON events
-			BEGIN
-				SELECT RAISE(ABORT, 'events are append-only');
-			END;`,
-		`CREATE TABLE IF NOT EXISTS work_items (
-			id TEXT PRIMARY KEY,
-			type TEXT NOT NULL CHECK(type IN ('Epic','Story','Task','Bug')),
-			title TEXT NOT NULL,
-			parent_id TEXT,
-			status TEXT NOT NULL CHECK(status IN ('Todo','InProgress','Blocked','Done')),
-			description TEXT NOT NULL DEFAULT '',
-			acceptance_criteria TEXT NOT NULL DEFAULT '',
-			references_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(references_json)),
-			priority TEXT,
-			labels_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(labels_json)),
-			current_cycle_no INTEGER NOT NULL DEFAULT 1,
-			active_gate_set_id TEXT,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL,
-			last_event_id TEXT NOT NULL
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_work_items_type_status ON work_items(type, status);`,
-		`CREATE INDEX IF NOT EXISTS idx_work_items_parent ON work_items(parent_id);`,
-		`CREATE TABLE IF NOT EXISTS human_auth_credentials (
-			credential_id TEXT PRIMARY KEY CHECK(credential_id = 'default'),
-			algorithm TEXT NOT NULL CHECK(algorithm = 'pbkdf2-sha256'),
-			iterations INTEGER NOT NULL CHECK(iterations >= 310000),
-			salt_hex TEXT NOT NULL CHECK(length(salt_hex) >= 32),
-			hash_hex TEXT NOT NULL CHECK(length(hash_hex) = 64),
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL,
-			rotated_by TEXT NOT NULL
-		);`,
-		`CREATE TABLE IF NOT EXISTS gate_templates (
-			template_id TEXT NOT NULL,
-			version INTEGER NOT NULL CHECK(version > 0),
-			applies_to_json TEXT NOT NULL CHECK(json_valid(applies_to_json)),
-			definition_json TEXT NOT NULL CHECK(json_valid(definition_json)),
-			definition_hash TEXT NOT NULL,
-			created_at TEXT NOT NULL,
-			created_by TEXT NOT NULL,
-			PRIMARY KEY(template_id, version),
-			UNIQUE(definition_hash)
-		);`,
-		`CREATE TRIGGER IF NOT EXISTS gate_templates_no_update
-			BEFORE UPDATE ON gate_templates
-			BEGIN
-				SELECT RAISE(ABORT, 'gate_templates are immutable');
-			END;`,
-		`CREATE TRIGGER IF NOT EXISTS gate_templates_no_delete
-			BEFORE DELETE ON gate_templates
-			BEGIN
-				SELECT RAISE(ABORT, 'gate_templates are immutable');
-			END;`,
-		`CREATE TABLE IF NOT EXISTS gate_sets (
-			gate_set_id TEXT PRIMARY KEY,
-			issue_id TEXT NOT NULL,
-			cycle_no INTEGER NOT NULL CHECK(cycle_no > 0),
-			template_refs_json TEXT NOT NULL CHECK(json_valid(template_refs_json)),
-			frozen_definition_json TEXT NOT NULL CHECK(json_valid(frozen_definition_json)),
-			gate_set_hash TEXT NOT NULL,
-			locked_at TEXT,
-			created_at TEXT NOT NULL,
-			created_by TEXT NOT NULL,
-			UNIQUE(issue_id, cycle_no),
-			FOREIGN KEY(issue_id) REFERENCES work_items(id)
-		);`,
-		`CREATE TRIGGER IF NOT EXISTS gate_sets_no_delete
-			BEFORE DELETE ON gate_sets
-			BEGIN
-				SELECT RAISE(ABORT, 'gate_sets are immutable');
-			END;`,
-		`CREATE TRIGGER IF NOT EXISTS gate_sets_frozen_definition_no_update
-			BEFORE UPDATE ON gate_sets
-			WHEN NEW.template_refs_json IS NOT OLD.template_refs_json
-				OR NEW.frozen_definition_json IS NOT OLD.frozen_definition_json
-				OR NEW.gate_set_hash IS NOT OLD.gate_set_hash
-			BEGIN
-				SELECT RAISE(ABORT, 'gate_set definitions are immutable');
-			END;`,
-		`CREATE TRIGGER IF NOT EXISTS gate_sets_lock_noop_rejected
-			BEFORE UPDATE OF locked_at ON gate_sets
-			WHEN OLD.locked_at IS NOT NULL
-			BEGIN
-				SELECT RAISE(ABORT, 'gate_set is already locked');
-			END;`,
-		`CREATE TRIGGER IF NOT EXISTS gate_sets_locked_row_no_update
-			BEFORE UPDATE ON gate_sets
-			WHEN OLD.locked_at IS NOT NULL
-				AND NEW.locked_at IS OLD.locked_at
-			BEGIN
-				SELECT RAISE(ABORT, 'locked gate_sets are immutable');
-			END;`,
-		`CREATE TABLE IF NOT EXISTS gate_set_items (
-			gate_set_id TEXT NOT NULL,
-			gate_id TEXT NOT NULL,
-			kind TEXT NOT NULL,
-			required INTEGER NOT NULL CHECK(required IN (0,1)),
-			criteria_json TEXT NOT NULL CHECK(json_valid(criteria_json)),
-			PRIMARY KEY(gate_set_id, gate_id),
-			FOREIGN KEY(gate_set_id) REFERENCES gate_sets(gate_set_id)
-		);`,
-		`CREATE TRIGGER IF NOT EXISTS gate_set_items_no_update
-			BEFORE UPDATE ON gate_set_items
-			BEGIN
-				SELECT RAISE(ABORT, 'gate_set_items are immutable');
-			END;`,
-		`CREATE TRIGGER IF NOT EXISTS gate_set_items_no_delete
-			BEFORE DELETE ON gate_set_items
-			BEGIN
-				SELECT RAISE(ABORT, 'gate_set_items are immutable');
-			END;`,
-		`CREATE TABLE IF NOT EXISTS gate_status_projection (
-			issue_id TEXT NOT NULL,
-			gate_set_id TEXT NOT NULL,
-			gate_id TEXT NOT NULL,
-			result TEXT NOT NULL CHECK(result IN ('PASS','FAIL','BLOCKED')),
-			evidence_refs_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(evidence_refs_json)),
-			evaluated_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL,
-			last_event_id TEXT NOT NULL,
-			PRIMARY KEY(issue_id, gate_set_id, gate_id),
-			FOREIGN KEY(issue_id) REFERENCES work_items(id),
-			FOREIGN KEY(gate_set_id, gate_id) REFERENCES gate_set_items(gate_set_id, gate_id)
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_gate_status_projection_issue ON gate_status_projection(issue_id, gate_set_id);`,
-	}
-
-	for _, stmt := range schema {
-		if _, err := tx.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("execute schema statement: %w", err)
-		}
-	}
-
 	now := nowUTC()
-	meta := []struct {
-		key   string
-		value string
-	}{
-		{key: "db_schema_version", value: strconv.Itoa(migrationStatus.CurrentVersion)},
-		{key: "min_supported_db_schema_version", value: strconv.Itoa(dbschema.MinSupportedVersion)},
-		{key: "last_migrated_at_utc", value: now},
-	}
-	for _, item := range meta {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO schema_meta(key, value, updated_at)
-			VALUES(?, ?, ?)
-			ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-		`, item.key, item.value, now); err != nil {
-			return fmt.Errorf("upsert schema_meta %s: %w", item.key, err)
-		}
-	}
-
 	var existingPrefix sql.NullString
 	err = tx.QueryRowContext(ctx, `SELECT value FROM schema_meta WHERE key = 'issue_key_prefix'`).Scan(&existingPrefix)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -1852,9 +1663,15 @@ func (s *Store) BuildRehydratePacket(ctx context.Context, p BuildPacketParams) (
 			"issue_id": issue.ID,
 			"type":     issue.Type,
 			"status":   issue.Status,
+			"cycle_no": 0,
 		}
 		if err := tx.QueryRowContext(ctx, `SELECT current_cycle_no FROM work_items WHERE id = ?`, issueID).Scan(&issueCycleNo); err != nil {
 			return RehydratePacket{}, fmt.Errorf("read current cycle for issue %q: %w", issueID, err)
+		}
+		state := packetJSON["state"].(map[string]any)
+		state["cycle_no"] = issueCycleNo
+		if strings.TrimSpace(issue.LastEventID) != "" {
+			state["last_event_id"] = issue.LastEventID
 		}
 		issueIDForSummary = issueID
 		gates, risks, nextActions, err := gateSnapshotForIssueTx(ctx, tx, issueID)
@@ -1882,6 +1699,19 @@ func (s *Store) BuildRehydratePacket(ctx context.Context, p BuildPacketParams) (
 	if err != nil {
 		return RehydratePacket{}, err
 	}
+	provenance := map[string]any{
+		"scope":    scope,
+		"scope_id": scopeID,
+	}
+	if latestEventID != "" {
+		packetJSON["built_from_event_id"] = latestEventID
+		provenance["built_from_event_id"] = latestEventID
+	}
+	if issueIDForSummary != "" && issueCycleNo > 0 {
+		provenance["issue_id"] = issueIDForSummary
+		provenance["issue_cycle_no"] = issueCycleNo
+	}
+	packetJSON["provenance"] = provenance
 	if issueIDForSummary != "" {
 		openLoops, err := listOpenLoopsForIssueCycleTx(ctx, tx, issueIDForSummary, issueCycleNo)
 		if err != nil {
@@ -2680,18 +2510,14 @@ func (s *Store) ReplayProjections(ctx context.Context) (ReplayResult, error) {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM gate_status_projection`); err != nil {
 		return ReplayResult{}, fmt.Errorf("clear gate_status_projection: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM rehydrate_packets
-		WHERE packet_id IN (
-			SELECT entity_id
-			FROM events
-			WHERE entity_type = ? AND event_type = ?
-		)
-	`, entityTypePacket, eventTypePacketBuilt); err != nil {
-		return ReplayResult{}, fmt.Errorf("clear event-sourced rehydrate_packets: %w", err)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_focus`); err != nil {
+		return ReplayResult{}, fmt.Errorf("clear agent_focus: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM issue_summaries WHERE summary_level = 'packet'`); err != nil {
-		return ReplayResult{}, fmt.Errorf("clear packet issue_summaries: %w", err)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM rehydrate_packets`); err != nil {
+		return ReplayResult{}, fmt.Errorf("clear rehydrate_packets: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM issue_summaries`); err != nil {
+		return ReplayResult{}, fmt.Errorf("clear issue_summaries: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM open_loops`); err != nil {
 		return ReplayResult{}, fmt.Errorf("clear open_loops: %w", err)
@@ -3904,7 +3730,8 @@ func gateSnapshotForIssueTx(ctx context.Context, tx *sql.Tx, issueID string) ([]
 			i.gate_id,
 			i.required,
 			COALESCE(gs.result, ''),
-			COALESCE(gs.evidence_refs_json, '[]')
+			COALESCE(gs.evidence_refs_json, '[]'),
+			COALESCE(gs.last_event_id, '')
 		FROM gate_set_items i
 		LEFT JOIN gate_status_projection gs
 			ON gs.issue_id = ?
@@ -3924,9 +3751,10 @@ func gateSnapshotForIssueTx(ctx context.Context, tx *sql.Tx, issueID string) ([]
 			requiredInt  int
 			result       string
 			evidenceJSON string
+			lastEventID  string
 			evidenceRefs []string
 		)
-		if err := rows.Scan(&gateID, &requiredInt, &result, &evidenceJSON); err != nil {
+		if err := rows.Scan(&gateID, &requiredInt, &result, &evidenceJSON, &lastEventID); err != nil {
 			return nil, nil, nil, fmt.Errorf("scan gate snapshot row for issue %q: %w", issueID, err)
 		}
 		if err := json.Unmarshal([]byte(evidenceJSON), &evidenceRefs); err != nil {
@@ -3942,6 +3770,7 @@ func gateSnapshotForIssueTx(ctx context.Context, tx *sql.Tx, issueID string) ([]
 			"required":      required,
 			"result":        normalized,
 			"evidence_refs": evidenceRefs,
+			"last_event_id": lastEventID,
 		})
 		if required && normalized != "PASS" {
 			risks = append(risks, fmt.Sprintf("Required gate %s is %s", gateID, normalized))
@@ -3967,6 +3796,41 @@ func syncOpenLoopsForIssueFromGatesTx(
 	sourceEventID string,
 ) ([]OpenLoop, error) {
 	now := nowUTC()
+	rows, err := tx.QueryContext(ctx, `
+		SELECT loop_id, status, COALESCE(source_event_id, '')
+		FROM open_loops
+		WHERE issue_id = ?
+			AND cycle_no = ?
+			AND loop_type = 'gate'
+	`, issueID, cycleNo)
+	if err != nil {
+		return nil, fmt.Errorf("query existing gate loops for issue %q: %w", issueID, err)
+	}
+	defer rows.Close()
+
+	type existingLoopState struct {
+		Status        string
+		SourceEventID string
+	}
+	existing := make(map[string]existingLoopState)
+	for rows.Next() {
+		var (
+			loopID      string
+			status      string
+			loopEventID string
+		)
+		if err := rows.Scan(&loopID, &status, &loopEventID); err != nil {
+			return nil, fmt.Errorf("scan existing gate loop row for issue %q: %w", issueID, err)
+		}
+		existing[loopID] = existingLoopState{
+			Status:        status,
+			SourceEventID: loopEventID,
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate existing gate loops for issue %q: %w", issueID, err)
+	}
+
 	expectedOpen := make(map[string]OpenLoop)
 	for _, rawGate := range gates {
 		gateMap, ok := rawGate.(map[string]any)
@@ -3982,10 +3846,21 @@ func syncOpenLoopsForIssueFromGatesTx(
 			continue
 		}
 		result, _ := gateMap["result"].(string)
-		if strings.EqualFold(strings.TrimSpace(result), "PASS") {
+		normalizedResult := strings.ToUpper(strings.TrimSpace(result))
+		if normalizedResult == "PASS" {
 			continue
 		}
 		loopID := deterministicLoopID(issueID, cycleNo, "gate", gateID)
+		loopEventID, _ := gateMap["last_event_id"].(string)
+		loopEventID = strings.TrimSpace(loopEventID)
+		if loopEventID == "" {
+			if existingState, ok := existing[loopID]; ok {
+				loopEventID = strings.TrimSpace(existingState.SourceEventID)
+			}
+		}
+		if loopEventID == "" && normalizedResult != "MISSING" {
+			loopEventID = strings.TrimSpace(sourceEventID)
+		}
 		expectedOpen[loopID] = OpenLoop{
 			LoopID:        loopID,
 			IssueID:       issueID,
@@ -3993,36 +3868,9 @@ func syncOpenLoopsForIssueFromGatesTx(
 			LoopType:      "gate",
 			Status:        "Open",
 			Priority:      "P1",
-			SourceEventID: sourceEventID,
+			SourceEventID: loopEventID,
 			UpdatedAt:     now,
 		}
-	}
-
-	rows, err := tx.QueryContext(ctx, `
-		SELECT loop_id, status
-		FROM open_loops
-		WHERE issue_id = ?
-			AND cycle_no = ?
-			AND loop_type = 'gate'
-	`, issueID, cycleNo)
-	if err != nil {
-		return nil, fmt.Errorf("query existing gate loops for issue %q: %w", issueID, err)
-	}
-	defer rows.Close()
-
-	existing := make(map[string]string)
-	for rows.Next() {
-		var (
-			loopID string
-			status string
-		)
-		if err := rows.Scan(&loopID, &status); err != nil {
-			return nil, fmt.Errorf("scan existing gate loop row for issue %q: %w", issueID, err)
-		}
-		existing[loopID] = status
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate existing gate loops for issue %q: %w", issueID, err)
 	}
 
 	for loopID, loop := range expectedOpen {
@@ -4045,11 +3893,11 @@ func syncOpenLoopsForIssueFromGatesTx(
 		}
 	}
 
-	for loopID, status := range existing {
+	for loopID, state := range existing {
 		if _, stillOpen := expectedOpen[loopID]; stillOpen {
 			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(status), "Resolved") {
+		if strings.EqualFold(strings.TrimSpace(state.Status), "Resolved") {
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, `
