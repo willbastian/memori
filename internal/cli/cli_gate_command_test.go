@@ -278,6 +278,24 @@ func TestGateVerifyIdempotentRetryReplaysPersistedResultWithoutRerunningCommand(
 	}
 }
 
+func TestGateVerifyRejectsExecutableCommandFromNonHumanTemplate(t *testing.T) {
+	t.Parallel()
+
+	dbPath := seedUnsafeGateVerifyCommandTestDB(t, "echo unsafe")
+
+	_, _, err := runMemoriForTest(
+		"gate", "verify",
+		"--db", dbPath,
+		"--issue", "mem-c111111",
+		"--gate", "build",
+		"--command-id", "cmd-cli-gate-verify-unsafe-1",
+		"--json",
+	)
+	if err == nil || !strings.Contains(err.Error(), "non-human template") {
+		t.Fatalf("expected governance rejection for unsafe executable template, got: %v", err)
+	}
+}
+
 func TestGateStatusSupportsCycleFlag(t *testing.T) {
 	t.Parallel()
 
@@ -341,6 +359,16 @@ func seedGateCommandTestDB(t *testing.T) string {
 	}); err != nil {
 		t.Fatalf("move issue to inprogress: %v", err)
 	}
+	if _, _, err := s.CreateGateTemplate(ctx, store.CreateGateTemplateParams{
+		TemplateID:     "tmpl-default",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"build","criteria":{"command":"go test ./..."}},{"id":"lint","criteria":{"command":"golangci-lint run"}}]}`,
+		Actor:          "human:alice",
+		CommandID:      "cmd-cli-gate-template-1",
+	}); err != nil {
+		t.Fatalf("create gate template: %v", err)
+	}
 
 	_, err = s.DB().ExecContext(ctx, `
 		INSERT INTO gate_sets(
@@ -374,6 +402,16 @@ func seedGateCommandHistoricalCycle(t *testing.T, dbPath string) {
 	defer s.Close()
 
 	ctx := context.Background()
+	if _, _, err := s.CreateGateTemplate(ctx, store.CreateGateTemplateParams{
+		TemplateID:     "tmpl-default",
+		Version:        2,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"security","criteria":{"command":"go test ./..."}}]}`,
+		Actor:          "human:alice",
+		CommandID:      "cmd-cli-gate-template-2",
+	}); err != nil {
+		t.Fatalf("create historical gate template: %v", err)
+	}
 	_, err = s.DB().ExecContext(ctx, `
 		INSERT INTO gate_sets(
 			gate_set_id, issue_id, cycle_no, template_refs_json, frozen_definition_json,
@@ -428,6 +466,31 @@ func seedGateVerifyCommandTestDBWithCommand(t *testing.T, command string) string
 	}); err != nil {
 		t.Fatalf("move issue to inprogress: %v", err)
 	}
+	criteriaJSON, err := json.Marshal(map[string]string{"command": command})
+	if err != nil {
+		t.Fatalf("marshal gate verification criteria: %v", err)
+	}
+	definitionJSON, err := json.Marshal(map[string]any{
+		"gates": []map[string]any{
+			{
+				"id":       "build",
+				"criteria": map[string]string{"command": command},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal gate verification template definition: %v", err)
+	}
+	if _, _, err := s.CreateGateTemplate(ctx, store.CreateGateTemplateParams{
+		TemplateID:     "tmpl-default",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: string(definitionJSON),
+		Actor:          "human:alice",
+		CommandID:      "cmd-cli-gate-verify-template-1",
+	}); err != nil {
+		t.Fatalf("create gate verify template: %v", err)
+	}
 	_, err = s.DB().ExecContext(ctx, `
 		INSERT INTO gate_sets(
 			gate_set_id, issue_id, cycle_no, template_refs_json, frozen_definition_json,
@@ -437,16 +500,87 @@ func seedGateVerifyCommandTestDBWithCommand(t *testing.T, command string) string
 	if err != nil {
 		t.Fatalf("insert gate set: %v", err)
 	}
-	criteriaJSON, err := json.Marshal(map[string]string{"command": command})
-	if err != nil {
-		t.Fatalf("marshal gate verification criteria: %v", err)
-	}
 	_, err = s.DB().ExecContext(ctx, `
 		INSERT INTO gate_set_items(gate_set_id, gate_id, kind, required, criteria_json)
 		VALUES(?, ?, ?, ?, ?)
 	`, "gs_cli_verify_1", "build", "check", 1, string(criteriaJSON))
 	if err != nil {
 		t.Fatalf("insert gate set item: %v", err)
+	}
+	return dbPath
+}
+
+func seedUnsafeGateVerifyCommandTestDB(t *testing.T, command string) string {
+	t.Helper()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-gate-verify-unsafe.db")
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	if err := s.Initialize(ctx, store.InitializeParams{IssueKeyPrefix: "mem"}); err != nil {
+		t.Fatalf("initialize store: %v", err)
+	}
+	if _, _, _, err := s.CreateIssue(ctx, store.CreateIssueParams{
+		IssueID:   "mem-c111111",
+		Type:      "task",
+		Title:     "Unsafe gate verify command issue",
+		Actor:     "test",
+		CommandID: "cmd-cli-gate-unsafe-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, store.UpdateIssueStatusParams{
+		IssueID:   "mem-c111111",
+		Status:    "inprogress",
+		Actor:     "test",
+		CommandID: "cmd-cli-gate-unsafe-progress-1",
+	}); err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+	definitionJSON, err := json.Marshal(map[string]any{
+		"gates": []map[string]any{
+			{
+				"id":       "build",
+				"criteria": map[string]string{"command": command},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal unsafe gate template definition: %v", err)
+	}
+	if _, _, err := s.CreateGateTemplate(ctx, store.CreateGateTemplateParams{
+		TemplateID:     "tmpl-unsafe",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: string(definitionJSON),
+		Actor:          "llm:openai:gpt-5",
+		CommandID:      "cmd-cli-gate-unsafe-template-1",
+	}); err != nil {
+		t.Fatalf("create unsafe gate template: %v", err)
+	}
+	criteriaJSON, err := json.Marshal(map[string]string{"command": command})
+	if err != nil {
+		t.Fatalf("marshal unsafe gate verification criteria: %v", err)
+	}
+	_, err = s.DB().ExecContext(ctx, `
+		INSERT INTO gate_sets(
+			gate_set_id, issue_id, cycle_no, template_refs_json, frozen_definition_json,
+			gate_set_hash, locked_at, created_at, created_by
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "gs_cli_verify_unsafe", "mem-c111111", 1, `["tmpl-unsafe@1"]`, string(definitionJSON), "gs_cli_verify_unsafe_hash", "2026-03-06T12:00:00Z", "2026-03-06T12:00:00Z", "llm:openai:gpt-5")
+	if err != nil {
+		t.Fatalf("insert unsafe gate set: %v", err)
+	}
+	_, err = s.DB().ExecContext(ctx, `
+		INSERT INTO gate_set_items(gate_set_id, gate_id, kind, required, criteria_json)
+		VALUES(?, ?, ?, ?, ?)
+	`, "gs_cli_verify_unsafe", "build", "check", 1, string(criteriaJSON))
+	if err != nil {
+		t.Fatalf("insert unsafe gate set item: %v", err)
 	}
 	return dbPath
 }

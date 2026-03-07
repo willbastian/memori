@@ -2016,6 +2016,7 @@ func TestLookupGateVerificationSpecReturnsLockedCriteriaCommand(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("move issue to inprogress: %v", err)
 	}
+	seedGateTemplateRowForTest(t, s, "tmpl-default", 1, []string{"Task"}, `{"gates":[{"id":"build","criteria":{"command":"go test ./..."}}]}`, "human:alice")
 
 	gateSetID := "gs_verify_spec_1"
 	seedLockedGateSetForTest(t, s, issueID, gateSetID)
@@ -2038,6 +2039,91 @@ func TestLookupGateVerificationSpecReturnsLockedCriteriaCommand(t *testing.T) {
 	}
 	if spec.GateSetHash == "" {
 		t.Fatalf("expected non-empty gate_set_hash in verification spec")
+	}
+}
+
+func TestInstantiateGateSetRejectsExecutableTemplateWithoutHumanGovernance(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-5858585"
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Unsafe template instantiate test",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-unsafe-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-unsafe-progress-1",
+	}); err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+	seedGateTemplateRowForTest(t, s, "unsafe", 1, []string{"Task"}, `{"gates":[{"id":"build","criteria":{"command":"go test ./..."}}]}`, "llm:openai:gpt-5")
+
+	_, _, err := s.InstantiateGateSet(ctx, InstantiateGateSetParams{
+		IssueID:      issueID,
+		TemplateRefs: []string{"unsafe@1"},
+		Actor:        "human:alice",
+		CommandID:    "cmd-gate-unsafe-instantiate-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not human-governed") {
+		t.Fatalf("expected human-governance rejection, got: %v", err)
+	}
+}
+
+func TestLookupGateVerificationSpecRejectsExecutableCommandFromNonHumanTemplate(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-5959595"
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Unsafe template verify test",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-unsafe-verify-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-unsafe-verify-progress-1",
+	}); err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+	seedGateTemplateRowForTest(t, s, "unsafe", 1, []string{"Task"}, `{"gates":[{"id":"build","criteria":{"command":"go test ./..."}}]}`, "llm:openai:gpt-5")
+
+	gateSetID := "gs_verify_spec_unsafe"
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO gate_sets(
+			gate_set_id, issue_id, cycle_no, template_refs_json, frozen_definition_json,
+			gate_set_hash, locked_at, created_at, created_by
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, gateSetID, issueID, 1, `["unsafe@1"]`, `{"templates":["unsafe@1"],"gates":[{"gate_id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}}]}`, gateSetID+"_hash", nowUTC(), nowUTC(), "llm:openai:gpt-5"); err != nil {
+		t.Fatalf("insert unsafe locked gate set: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO gate_set_items(gate_set_id, gate_id, kind, required, criteria_json)
+		VALUES(?, ?, ?, ?, ?)
+	`, gateSetID, "build", "check", 1, `{"command":"go test ./..."}`); err != nil {
+		t.Fatalf("insert gate_set_item with unsafe command criteria: %v", err)
+	}
+
+	_, err := s.LookupGateVerificationSpec(ctx, issueID, "build")
+	if err == nil || !strings.Contains(err.Error(), "non-human template") {
+		t.Fatalf("expected executable governance rejection, got: %v", err)
 	}
 }
 
@@ -2795,6 +2881,28 @@ func seedLockedGateSetForTest(t *testing.T, s *Store, issueID, gateSetID string)
 	`, gateSetID, issueID, 1, `["tmpl-default@1"]`, `{"gates":[{"id":"build"}]}`, gateSetID+"_hash", nowUTC(), nowUTC(), "agent-1")
 	if err != nil {
 		t.Fatalf("insert locked gate set %s: %v", gateSetID, err)
+	}
+}
+
+func seedGateTemplateRowForTest(t *testing.T, s *Store, templateID string, version int, appliesTo []string, definitionJSON, createdBy string) {
+	t.Helper()
+
+	ctx := context.Background()
+	canonicalDefinition, definitionHash, err := canonicalizeGateDefinition(definitionJSON)
+	if err != nil {
+		t.Fatalf("canonicalize gate template %s@%d: %v", templateID, version, err)
+	}
+	appliesToJSON, err := json.Marshal(appliesTo)
+	if err != nil {
+		t.Fatalf("marshal applies_to for gate template %s@%d: %v", templateID, version, err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO gate_templates(
+			template_id, version, applies_to_json, definition_json,
+			definition_hash, created_at, created_by
+		) VALUES(?, ?, ?, ?, ?, ?, ?)
+	`, templateID, version, string(appliesToJSON), canonicalDefinition, definitionHash, nowUTC(), createdBy); err != nil {
+		t.Fatalf("insert gate template %s@%d: %v", templateID, version, err)
 	}
 }
 

@@ -1339,6 +1339,13 @@ func (s *Store) LookupGateVerificationSpec(ctx context.Context, issueID, gateID 
 	if !found {
 		return GateVerificationSpec{}, fmt.Errorf("no locked gate set found for issue %q", normalizedIssueID)
 	}
+	fullGateSet, found, err := gateSetByIDTx(ctx, tx, gateSet.GateSetID)
+	if err != nil {
+		return GateVerificationSpec{}, err
+	}
+	if !found {
+		return GateVerificationSpec{}, fmt.Errorf("gate set %q not found", gateSet.GateSetID)
+	}
 
 	var criteriaJSON string
 	if err := tx.QueryRowContext(ctx, `
@@ -1360,6 +1367,9 @@ func (s *Store) LookupGateVerificationSpec(ctx context.Context, issueID, gateID 
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return GateVerificationSpec{}, fmt.Errorf("gate %q has no executable verifier command in criteria.command", normalizedGateID)
+	}
+	if err := validateExecutableGateVerificationGovernanceTx(ctx, tx, fullGateSet, normalizedGateID, command); err != nil {
+		return GateVerificationSpec{}, err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -3913,12 +3923,13 @@ func buildGateSetDefinitionsTx(ctx context.Context, tx *sql.Tx, issueType string
 		var (
 			appliesToJSON  string
 			definitionJSON string
+			createdBy      string
 		)
 		err := tx.QueryRowContext(ctx, `
-			SELECT applies_to_json, definition_json
+			SELECT applies_to_json, definition_json, created_by
 			FROM gate_templates
 			WHERE template_id = ? AND version = ?
-		`, ref.TemplateID, ref.Version).Scan(&appliesToJSON, &definitionJSON)
+		`, ref.TemplateID, ref.Version).Scan(&appliesToJSON, &definitionJSON, &createdBy)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("gate template %s@%d not found", ref.TemplateID, ref.Version)
 		}
@@ -3937,6 +3948,9 @@ func buildGateSetDefinitionsTx(ctx context.Context, tx *sql.Tx, issueType string
 		defs, err := extractGateDefinitions(definitionJSON)
 		if err != nil {
 			return nil, fmt.Errorf("invalid gate definition in template %s@%d: %w", ref.TemplateID, ref.Version, err)
+		}
+		if gateDefinitionsIncludeExecutableCommand(defs) && !actorIsHumanGoverned(createdBy) {
+			return nil, fmt.Errorf("gate template %s@%d contains executable criteria.command and is not human-governed", ref.TemplateID, ref.Version)
 		}
 		for _, gate := range defs {
 			if existing, exists := gatesByID[gate.GateID]; exists {
@@ -4015,6 +4029,32 @@ func extractGateDefinitions(definitionJSON string) ([]GateSetDefinition, error) 
 		return defs[i].GateID < defs[j].GateID
 	})
 	return defs, nil
+}
+
+func gateDefinitionsIncludeExecutableCommand(defs []GateSetDefinition) bool {
+	for _, def := range defs {
+		if gateCriteriaCommand(def.Criteria) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func gateCriteriaCommand(criteria any) string {
+	switch typed := criteria.(type) {
+	case map[string]any:
+		command, _ := typed["command"].(string)
+		return strings.TrimSpace(command)
+	case map[string]string:
+		return strings.TrimSpace(typed["command"])
+	default:
+		return ""
+	}
+}
+
+func actorIsHumanGoverned(actor string) bool {
+	actor = strings.TrimSpace(strings.ToLower(actor))
+	return actor != "" && !strings.HasPrefix(actor, "llm:")
 }
 
 func buildFrozenGateDefinition(templateRefs []string, gates []GateSetDefinition) (string, map[string]any, error) {
@@ -4202,6 +4242,75 @@ func gateTemplateByIDVersionTx(ctx context.Context, tx *sql.Tx, templateID strin
 	}
 	template.AppliesTo = appliesTo
 	return template, true, nil
+}
+
+func validateExecutableGateVerificationGovernanceTx(ctx context.Context, tx *sql.Tx, gateSet GateSet, gateID, command string) error {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return nil
+	}
+
+	if len(gateSet.TemplateRefs) == 0 {
+		if actorIsHumanGoverned(gateSet.CreatedBy) {
+			return nil
+		}
+		return fmt.Errorf("gate %q in gate_set %q has executable criteria.command without approved template provenance", gateID, gateSet.GateSetID)
+	}
+
+	sourceTemplate := ""
+	sourceCommand := ""
+	sourceCreator := ""
+	for _, rawRef := range gateSet.TemplateRefs {
+		ref, err := parseGateTemplateRef(rawRef)
+		if err != nil {
+			return fmt.Errorf("validate executable gate governance for %q: %w", gateID, err)
+		}
+
+		var (
+			definitionJSON string
+			createdBy      string
+		)
+		err = tx.QueryRowContext(ctx, `
+			SELECT definition_json, created_by
+			FROM gate_templates
+			WHERE template_id = ? AND version = ?
+		`, ref.TemplateID, ref.Version).Scan(&definitionJSON, &createdBy)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("gate %q in gate_set %q references missing template %s", gateID, gateSet.GateSetID, ref.Ref)
+		}
+		if err != nil {
+			return fmt.Errorf("lookup template provenance for gate %q in gate_set %q: %w", gateID, gateSet.GateSetID, err)
+		}
+
+		defs, err := extractGateDefinitions(definitionJSON)
+		if err != nil {
+			return fmt.Errorf("decode template provenance for gate %q in gate_set %q: %w", gateID, gateSet.GateSetID, err)
+		}
+		for _, def := range defs {
+			if def.GateID != gateID {
+				continue
+			}
+			if templateCommand := gateCriteriaCommand(def.Criteria); templateCommand != "" {
+				sourceTemplate = ref.Ref
+				sourceCommand = templateCommand
+				sourceCreator = createdBy
+			}
+		}
+	}
+
+	if sourceCommand == command && actorIsHumanGoverned(sourceCreator) {
+		return nil
+	}
+	if actorIsHumanGoverned(gateSet.CreatedBy) {
+		return nil
+	}
+	if sourceCommand == "" {
+		return fmt.Errorf("gate %q in gate_set %q has executable criteria.command without approved template provenance", gateID, gateSet.GateSetID)
+	}
+	if sourceCommand != command {
+		return fmt.Errorf("gate %q in gate_set %q command does not match approved template provenance", gateID, gateSet.GateSetID)
+	}
+	return fmt.Errorf("gate %q in gate_set %q uses executable criteria.command from non-human template %s", gateID, gateSet.GateSetID, sourceTemplate)
 }
 
 func latestEventIDTx(ctx context.Context, tx *sql.Tx) (string, error) {
