@@ -118,6 +118,31 @@ type GetGateStatusParams struct {
 	CycleNo *int
 }
 
+type CheckpointSessionParams struct {
+	SessionID string
+	Trigger   string
+	Actor     string
+}
+
+type RehydrateSessionParams struct {
+	SessionID string
+}
+
+type BuildPacketParams struct {
+	Scope   string
+	ScopeID string
+	Actor   string
+}
+
+type GetPacketParams struct {
+	PacketID string
+}
+
+type UsePacketParams struct {
+	AgentID  string
+	PacketID string
+}
+
 type CreateGateTemplateParams struct {
 	TemplateID     string
 	Version        int
@@ -240,6 +265,39 @@ type GateStatusItem struct {
 	EvidenceRefs []string `json:"evidence_refs,omitempty"`
 	EvaluatedAt  string   `json:"evaluated_at,omitempty"`
 	LastEventID  string   `json:"last_event_id,omitempty"`
+}
+
+type Session struct {
+	SessionID      string         `json:"session_id"`
+	Trigger        string         `json:"trigger"`
+	StartedAt      string         `json:"started_at"`
+	EndedAt        string         `json:"ended_at,omitempty"`
+	SummaryEventID string         `json:"summary_event_id,omitempty"`
+	Checkpoint     map[string]any `json:"checkpoint,omitempty"`
+	CreatedBy      string         `json:"created_by"`
+}
+
+type RehydratePacket struct {
+	PacketID            string         `json:"packet_id"`
+	Scope               string         `json:"scope"`
+	Packet              map[string]any `json:"packet"`
+	PacketSchemaVersion int            `json:"packet_schema_version"`
+	BuiltFromEventID    string         `json:"built_from_event_id,omitempty"`
+	CreatedAt           string         `json:"created_at"`
+}
+
+type AgentFocus struct {
+	AgentID       string `json:"agent_id"`
+	ActiveIssueID string `json:"active_issue_id,omitempty"`
+	ActiveCycleNo int    `json:"active_cycle_no,omitempty"`
+	LastPacketID  string `json:"last_packet_id"`
+	UpdatedAt     string `json:"updated_at"`
+}
+
+type SessionRehydrateResult struct {
+	SessionID string          `json:"session_id"`
+	Source    string          `json:"source"`
+	Packet    RehydratePacket `json:"packet"`
 }
 
 type GateTemplate struct {
@@ -1178,6 +1236,340 @@ func (s *Store) GetGateStatusForCycle(ctx context.Context, p GetGateStatusParams
 		LockedAt:  gateSet.LockedAt,
 		Gates:     gates,
 	}, nil
+}
+
+func (s *Store) CheckpointSession(ctx context.Context, p CheckpointSessionParams) (Session, bool, error) {
+	sessionID := strings.TrimSpace(p.SessionID)
+	if sessionID == "" {
+		return Session{}, false, errors.New("--session is required")
+	}
+	trigger := strings.TrimSpace(p.Trigger)
+	if trigger == "" {
+		trigger = "manual"
+	}
+	actor := strings.TrimSpace(p.Actor)
+	if actor == "" {
+		actor = defaultActor()
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Session{}, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM sessions WHERE session_id = ?`, sessionID).Scan(&exists); err != nil {
+		return Session{}, false, fmt.Errorf("query session %q: %w", sessionID, err)
+	}
+
+	now := nowUTC()
+	latestEventID, err := latestEventIDTx(ctx, tx)
+	if err != nil {
+		return Session{}, false, err
+	}
+	checkpoint := map[string]any{
+		"session_id":  sessionID,
+		"trigger":     trigger,
+		"captured_at": now,
+	}
+	if latestEventID != "" {
+		checkpoint["latest_event_id"] = latestEventID
+	}
+	checkpointJSON, err := json.Marshal(checkpoint)
+	if err != nil {
+		return Session{}, false, fmt.Errorf("encode checkpoint payload: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO sessions(
+			session_id, trigger, started_at, ended_at, summary_event_id, checkpoint_json, created_by
+		) VALUES(?, ?, ?, NULL, NULL, ?, ?)
+		ON CONFLICT(session_id) DO UPDATE SET
+			trigger=excluded.trigger,
+			ended_at=NULL,
+			checkpoint_json=excluded.checkpoint_json
+	`, sessionID, trigger, now, string(checkpointJSON), actor)
+	if err != nil {
+		return Session{}, false, fmt.Errorf("upsert session checkpoint for %q: %w", sessionID, err)
+	}
+
+	session, err := sessionByIDTx(ctx, tx, sessionID)
+	if err != nil {
+		return Session{}, false, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Session{}, false, fmt.Errorf("commit tx: %w", err)
+	}
+	return session, exists == 0, nil
+}
+
+func (s *Store) RehydrateSession(ctx context.Context, p RehydrateSessionParams) (SessionRehydrateResult, error) {
+	sessionID := strings.TrimSpace(p.SessionID)
+	if sessionID == "" {
+		return SessionRehydrateResult{}, errors.New("--session is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return SessionRehydrateResult{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := sessionByIDTx(ctx, tx, sessionID); err != nil {
+		return SessionRehydrateResult{}, err
+	}
+
+	packet, found, err := latestPacketForScopeIDTx(ctx, tx, "session", sessionID)
+	if err != nil {
+		return SessionRehydrateResult{}, err
+	}
+
+	result := SessionRehydrateResult{
+		SessionID: sessionID,
+	}
+	if found {
+		result.Source = "packet"
+		result.Packet = packet
+	} else {
+		latestEventID, err := latestEventIDTx(ctx, tx)
+		if err != nil {
+			return SessionRehydrateResult{}, err
+		}
+		packetJSON := map[string]any{
+			"scope":      "session",
+			"scope_id":   sessionID,
+			"goal":       "Resume session context",
+			"state":      map[string]any{"session_id": sessionID},
+			"gates":      []any{},
+			"open_loops": []any{},
+			"next_actions": []any{
+				"Build or select a packet for this session",
+			},
+			"risks":  []any{},
+			"source": "raw-events-fallback",
+		}
+		if latestEventID != "" {
+			packetJSON["latest_event_id"] = latestEventID
+		}
+		result.Source = "raw-events-fallback"
+		result.Packet = RehydratePacket{
+			Scope:               "session",
+			Packet:              packetJSON,
+			PacketSchemaVersion: 1,
+			BuiltFromEventID:    latestEventID,
+			CreatedAt:           nowUTC(),
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return SessionRehydrateResult{}, fmt.Errorf("commit tx: %w", err)
+	}
+	return result, nil
+}
+
+func (s *Store) BuildRehydratePacket(ctx context.Context, p BuildPacketParams) (RehydratePacket, error) {
+	scope := strings.ToLower(strings.TrimSpace(p.Scope))
+	if scope != "issue" && scope != "session" {
+		return RehydratePacket{}, errors.New("--scope must be issue|session")
+	}
+	scopeID := strings.TrimSpace(p.ScopeID)
+	if scopeID == "" {
+		return RehydratePacket{}, errors.New("--id is required")
+	}
+	actor := strings.TrimSpace(p.Actor)
+	if actor == "" {
+		actor = defaultActor()
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RehydratePacket{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	packetJSON := map[string]any{
+		"scope":      scope,
+		"scope_id":   scopeID,
+		"gates":      []any{},
+		"open_loops": []any{},
+		"next_actions": []any{
+			"Review current state and continue execution",
+		},
+		"risks": []any{},
+	}
+
+	switch scope {
+	case "issue":
+		issueID, err := normalizeIssueKey(scopeID)
+		if err != nil {
+			return RehydratePacket{}, err
+		}
+		issue, err := getIssueTx(ctx, tx, issueID)
+		if err != nil {
+			return RehydratePacket{}, err
+		}
+		packetJSON["scope_id"] = issueID
+		packetJSON["goal"] = issue.Title
+		packetJSON["state"] = map[string]any{
+			"issue_id": issue.ID,
+			"type":     issue.Type,
+			"status":   issue.Status,
+		}
+		gates, risks, nextActions, err := gateSnapshotForIssueTx(ctx, tx, issueID)
+		if err != nil {
+			return RehydratePacket{}, err
+		}
+		packetJSON["gates"] = gates
+		packetJSON["risks"] = risks
+		if len(nextActions) > 0 {
+			packetJSON["next_actions"] = nextActions
+		}
+	case "session":
+		if _, err := sessionByIDTx(ctx, tx, scopeID); err != nil {
+			return RehydratePacket{}, err
+		}
+		packetJSON["goal"] = "Resume session context"
+		packetJSON["state"] = map[string]any{
+			"session_id": scopeID,
+		}
+	}
+
+	packetID := newID("pkt")
+	createdAt := nowUTC()
+	latestEventID, err := latestEventIDTx(ctx, tx)
+	if err != nil {
+		return RehydratePacket{}, err
+	}
+	packetBytes, err := json.Marshal(packetJSON)
+	if err != nil {
+		return RehydratePacket{}, fmt.Errorf("encode packet json: %w", err)
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO rehydrate_packets(
+			packet_id, scope, packet_json, packet_schema_version, built_from_event_id, created_at
+		) VALUES(?, ?, ?, ?, ?, ?)
+	`, packetID, scope, string(packetBytes), 1, nullIfEmpty(latestEventID), createdAt)
+	if err != nil {
+		return RehydratePacket{}, fmt.Errorf("insert rehydrate packet %q: %w", packetID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return RehydratePacket{}, fmt.Errorf("commit tx: %w", err)
+	}
+
+	return RehydratePacket{
+		PacketID:            packetID,
+		Scope:               scope,
+		Packet:              packetJSON,
+		PacketSchemaVersion: 1,
+		BuiltFromEventID:    latestEventID,
+		CreatedAt:           createdAt,
+	}, nil
+}
+
+func (s *Store) GetRehydratePacket(ctx context.Context, p GetPacketParams) (RehydratePacket, error) {
+	packetID := strings.TrimSpace(p.PacketID)
+	if packetID == "" {
+		return RehydratePacket{}, errors.New("--packet is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RehydratePacket{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	packet, err := packetByIDTx(ctx, tx, packetID)
+	if err != nil {
+		return RehydratePacket{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return RehydratePacket{}, fmt.Errorf("commit tx: %w", err)
+	}
+	return packet, nil
+}
+
+func (s *Store) UseRehydratePacket(ctx context.Context, p UsePacketParams) (AgentFocus, RehydratePacket, error) {
+	agentID := strings.TrimSpace(p.AgentID)
+	if agentID == "" {
+		return AgentFocus{}, RehydratePacket{}, errors.New("--agent is required")
+	}
+	packetID := strings.TrimSpace(p.PacketID)
+	if packetID == "" {
+		return AgentFocus{}, RehydratePacket{}, errors.New("--packet is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return AgentFocus{}, RehydratePacket{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	packet, err := packetByIDTx(ctx, tx, packetID)
+	if err != nil {
+		return AgentFocus{}, RehydratePacket{}, err
+	}
+
+	activeIssueID := ""
+	activeCycleNo := 0
+	if packet.Scope == "issue" {
+		if rawScopeID, ok := packet.Packet["scope_id"].(string); ok && strings.TrimSpace(rawScopeID) != "" {
+			normalizedIssueID, err := normalizeIssueKey(rawScopeID)
+			if err == nil {
+				activeIssueID = normalizedIssueID
+				if err := tx.QueryRowContext(ctx, `SELECT current_cycle_no FROM work_items WHERE id = ?`, normalizedIssueID).Scan(&activeCycleNo); err != nil && !errors.Is(err, sql.ErrNoRows) {
+					return AgentFocus{}, RehydratePacket{}, fmt.Errorf("read issue cycle for %q: %w", normalizedIssueID, err)
+				}
+			}
+		}
+	}
+
+	now := nowUTC()
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO agent_focus(agent_id, active_issue_id, active_cycle_no, last_packet_id, updated_at)
+		VALUES(?, ?, ?, ?, ?)
+		ON CONFLICT(agent_id) DO UPDATE SET
+			active_issue_id=excluded.active_issue_id,
+			active_cycle_no=excluded.active_cycle_no,
+			last_packet_id=excluded.last_packet_id,
+			updated_at=excluded.updated_at
+	`, agentID, nullIfEmpty(activeIssueID), nullIfZero(activeCycleNo), packet.PacketID, now)
+	if err != nil {
+		return AgentFocus{}, RehydratePacket{}, fmt.Errorf("upsert agent_focus for %q: %w", agentID, err)
+	}
+
+	var (
+		focus          AgentFocus
+		activeIssueRaw sql.NullString
+		activeCycleRaw sql.NullInt64
+	)
+	if err := tx.QueryRowContext(ctx, `
+		SELECT agent_id, active_issue_id, active_cycle_no, last_packet_id, updated_at
+		FROM agent_focus
+		WHERE agent_id = ?
+	`, agentID).Scan(
+		&focus.AgentID,
+		&activeIssueRaw,
+		&activeCycleRaw,
+		&focus.LastPacketID,
+		&focus.UpdatedAt,
+	); err != nil {
+		return AgentFocus{}, RehydratePacket{}, fmt.Errorf("query agent_focus for %q: %w", agentID, err)
+	}
+	if activeIssueRaw.Valid {
+		focus.ActiveIssueID = activeIssueRaw.String
+	}
+	if activeCycleRaw.Valid {
+		focus.ActiveCycleNo = int(activeCycleRaw.Int64)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return AgentFocus{}, RehydratePacket{}, fmt.Errorf("commit tx: %w", err)
+	}
+	return focus, packet, nil
 }
 
 func (s *Store) CreateGateTemplate(ctx context.Context, p CreateGateTemplateParams) (GateTemplate, bool, error) {
@@ -2546,6 +2938,221 @@ func gateSetItemsTx(ctx context.Context, tx *sql.Tx, gateSetID string) ([]GateSe
 		return nil, fmt.Errorf("iterate gate set items for %q: %w", gateSetID, err)
 	}
 	return items, nil
+}
+
+func latestEventIDTx(ctx context.Context, tx *sql.Tx) (string, error) {
+	var latest sql.NullString
+	if err := tx.QueryRowContext(ctx, `
+		SELECT event_id
+		FROM events
+		ORDER BY event_order DESC
+		LIMIT 1
+	`).Scan(&latest); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("query latest event id: %w", err)
+	}
+	if latest.Valid {
+		return latest.String, nil
+	}
+	return "", nil
+}
+
+func sessionByIDTx(ctx context.Context, tx *sql.Tx, sessionID string) (Session, error) {
+	var (
+		session        Session
+		endedAt        sql.NullString
+		summaryEventID sql.NullString
+		checkpointJSON string
+	)
+	err := tx.QueryRowContext(ctx, `
+		SELECT
+			session_id,
+			trigger,
+			started_at,
+			ended_at,
+			summary_event_id,
+			COALESCE(checkpoint_json, '{}'),
+			created_by
+		FROM sessions
+		WHERE session_id = ?
+	`, sessionID).Scan(
+		&session.SessionID,
+		&session.Trigger,
+		&session.StartedAt,
+		&endedAt,
+		&summaryEventID,
+		&checkpointJSON,
+		&session.CreatedBy,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Session{}, fmt.Errorf("session %q not found", sessionID)
+	}
+	if err != nil {
+		return Session{}, fmt.Errorf("query session %q: %w", sessionID, err)
+	}
+	if endedAt.Valid {
+		session.EndedAt = endedAt.String
+	}
+	if summaryEventID.Valid {
+		session.SummaryEventID = summaryEventID.String
+	}
+	if strings.TrimSpace(checkpointJSON) != "" {
+		if err := json.Unmarshal([]byte(checkpointJSON), &session.Checkpoint); err != nil {
+			return Session{}, fmt.Errorf("decode session checkpoint_json for %q: %w", sessionID, err)
+		}
+	}
+	return session, nil
+}
+
+func packetByIDTx(ctx context.Context, tx *sql.Tx, packetID string) (RehydratePacket, error) {
+	var (
+		packet     RehydratePacket
+		packetJSON string
+		builtFrom  sql.NullString
+	)
+	err := tx.QueryRowContext(ctx, `
+		SELECT packet_id, scope, packet_json, packet_schema_version, built_from_event_id, created_at
+		FROM rehydrate_packets
+		WHERE packet_id = ?
+	`, packetID).Scan(
+		&packet.PacketID,
+		&packet.Scope,
+		&packetJSON,
+		&packet.PacketSchemaVersion,
+		&builtFrom,
+		&packet.CreatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RehydratePacket{}, fmt.Errorf("packet %q not found", packetID)
+	}
+	if err != nil {
+		return RehydratePacket{}, fmt.Errorf("query packet %q: %w", packetID, err)
+	}
+	if builtFrom.Valid {
+		packet.BuiltFromEventID = builtFrom.String
+	}
+	if err := json.Unmarshal([]byte(packetJSON), &packet.Packet); err != nil {
+		return RehydratePacket{}, fmt.Errorf("decode packet_json for %q: %w", packetID, err)
+	}
+	return packet, nil
+}
+
+func latestPacketForScopeIDTx(ctx context.Context, tx *sql.Tx, scope, scopeID string) (RehydratePacket, bool, error) {
+	var (
+		packet     RehydratePacket
+		packetJSON string
+		builtFrom  sql.NullString
+	)
+	err := tx.QueryRowContext(ctx, `
+		SELECT packet_id, scope, packet_json, packet_schema_version, built_from_event_id, created_at
+		FROM rehydrate_packets
+		WHERE scope = ?
+			AND json_extract(packet_json, '$.scope_id') = ?
+		ORDER BY created_at DESC, packet_id DESC
+		LIMIT 1
+	`, scope, scopeID).Scan(
+		&packet.PacketID,
+		&packet.Scope,
+		&packetJSON,
+		&packet.PacketSchemaVersion,
+		&builtFrom,
+		&packet.CreatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RehydratePacket{}, false, nil
+	}
+	if err != nil {
+		return RehydratePacket{}, false, fmt.Errorf("query latest packet for %s:%s: %w", scope, scopeID, err)
+	}
+	if builtFrom.Valid {
+		packet.BuiltFromEventID = builtFrom.String
+	}
+	if err := json.Unmarshal([]byte(packetJSON), &packet.Packet); err != nil {
+		return RehydratePacket{}, false, fmt.Errorf("decode packet_json for %q: %w", packet.PacketID, err)
+	}
+	return packet, true, nil
+}
+
+func gateSnapshotForIssueTx(ctx context.Context, tx *sql.Tx, issueID string) ([]any, []any, []any, error) {
+	gates := make([]any, 0)
+	risks := make([]any, 0)
+	nextActions := make([]any, 0)
+
+	gateSet, found, err := lockedGateSetForIssueTx(ctx, tx, issueID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if !found {
+		nextActions = append(nextActions, "Instantiate and lock a gate set for the current cycle")
+		return gates, risks, nextActions, nil
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT
+			i.gate_id,
+			i.required,
+			COALESCE(gs.result, ''),
+			COALESCE(gs.evidence_refs_json, '[]')
+		FROM gate_set_items i
+		LEFT JOIN gate_status_projection gs
+			ON gs.issue_id = ?
+			AND gs.gate_set_id = i.gate_set_id
+			AND gs.gate_id = i.gate_id
+		WHERE i.gate_set_id = ?
+		ORDER BY i.gate_id ASC
+	`, issueID, gateSet.GateSetID)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("query gate snapshot for issue %q: %w", issueID, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			gateID       string
+			requiredInt  int
+			result       string
+			evidenceJSON string
+			evidenceRefs []string
+		)
+		if err := rows.Scan(&gateID, &requiredInt, &result, &evidenceJSON); err != nil {
+			return nil, nil, nil, fmt.Errorf("scan gate snapshot row for issue %q: %w", issueID, err)
+		}
+		if err := json.Unmarshal([]byte(evidenceJSON), &evidenceRefs); err != nil {
+			return nil, nil, nil, fmt.Errorf("decode gate snapshot evidence for issue %q: %w", issueID, err)
+		}
+		normalized := "MISSING"
+		if strings.TrimSpace(result) != "" {
+			normalized = strings.ToUpper(strings.TrimSpace(result))
+		}
+		required := requiredInt == 1
+		gates = append(gates, map[string]any{
+			"gate_id":       gateID,
+			"required":      required,
+			"result":        normalized,
+			"evidence_refs": evidenceRefs,
+		})
+		if required && normalized != "PASS" {
+			risks = append(risks, fmt.Sprintf("Required gate %s is %s", gateID, normalized))
+			nextActions = append(nextActions, fmt.Sprintf("Resolve required gate %s (%s)", gateID, normalized))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, nil, fmt.Errorf("iterate gate snapshot rows for issue %q: %w", issueID, err)
+	}
+
+	if len(nextActions) == 0 {
+		nextActions = append(nextActions, "All required gates are passing")
+	}
+	return gates, risks, nextActions, nil
+}
+
+func nullIfZero(value int) any {
+	if value == 0 {
+		return nil
+	}
+	return value
 }
 
 func stringSliceContains(values []string, needle string) bool {

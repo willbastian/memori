@@ -34,6 +34,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return runIssue(args[1:], stdout)
 	case "gate":
 		return runGate(args[1:], stdout)
+	case "context":
+		return runContext(args[1:], stdout)
 	case "backlog":
 		return runBacklog(args[1:], stdout)
 	case "event":
@@ -67,6 +69,11 @@ func runHelp(args []string, out io.Writer) error {
 			"memori gate set lock --issue <prefix-shortSHA> [--cycle <n>] [--actor <actor>] [--json]",
 			"memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] --command-id <id> [--json]",
 			"memori gate status --issue <prefix-shortSHA> [--cycle <n>] [--json]",
+			"memori context checkpoint --session <id> [--trigger <trigger>] [--actor <actor>] [--json]",
+			"memori context rehydrate --session <id> [--json]",
+			"memori context packet build --scope issue|session --id <id> [--actor <actor>] [--json]",
+			"memori context packet show --packet <id> [--json]",
+			"memori context packet use --agent <id> --packet <id> [--json]",
 			"memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]",
 			"memori event log --entity <entityType:id|id> [--json]",
 			"memori db status [--json]",
@@ -514,6 +521,264 @@ func runGate(args []string, out io.Writer) error {
 	default:
 		return fmt.Errorf("unknown gate subcommand %q", args[0])
 	}
+}
+
+func runContext(args []string, out io.Writer) error {
+	if len(args) == 0 {
+		return errors.New("context subcommand required: checkpoint|rehydrate|packet")
+	}
+	switch args[0] {
+	case "checkpoint":
+		return runContextCheckpoint(args[1:], out)
+	case "rehydrate":
+		return runContextRehydrate(args[1:], out)
+	case "packet":
+		return runContextPacket(args[1:], out)
+	default:
+		return fmt.Errorf("unknown context subcommand %q", args[0])
+	}
+}
+
+func runContextCheckpoint(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("context checkpoint", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	sessionID := fs.String("session", "", "session id")
+	trigger := fs.String("trigger", "manual", "checkpoint trigger reason")
+	actor := fs.String("actor", "", "actor id")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	session, created, err := s.CheckpointSession(ctx, store.CheckpointSessionParams{
+		SessionID: *sessionID,
+		Trigger:   *trigger,
+		Actor:     *actor,
+	})
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "context checkpoint",
+			Data: contextCheckpointData{
+				Session: session,
+				Created: created,
+			},
+		})
+	}
+
+	if created {
+		_, _ = fmt.Fprintf(out, "Created session checkpoint %s\n", session.SessionID)
+	} else {
+		_, _ = fmt.Fprintf(out, "Updated session checkpoint %s\n", session.SessionID)
+	}
+	_, _ = fmt.Fprintf(out, "Trigger: %s\n", session.Trigger)
+	return nil
+}
+
+func runContextRehydrate(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("context rehydrate", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	sessionID := fs.String("session", "", "session id")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	result, err := s.RehydrateSession(ctx, store.RehydrateSessionParams{
+		SessionID: *sessionID,
+	})
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "context rehydrate",
+			Data: contextRehydrateData{
+				SessionID: result.SessionID,
+				Source:    result.Source,
+				Packet:    result.Packet,
+			},
+		})
+	}
+
+	_, _ = fmt.Fprintf(out, "Rehydrated session %s via %s\n", result.SessionID, result.Source)
+	_, _ = fmt.Fprintf(out, "Packet Scope: %s\n", result.Packet.Scope)
+	if strings.TrimSpace(result.Packet.PacketID) != "" {
+		_, _ = fmt.Fprintf(out, "Packet ID: %s\n", result.Packet.PacketID)
+	}
+	return nil
+}
+
+func runContextPacket(args []string, out io.Writer) error {
+	if len(args) == 0 {
+		return errors.New("context packet subcommand required: build|show|use")
+	}
+	switch args[0] {
+	case "build":
+		return runContextPacketBuild(args[1:], out)
+	case "show":
+		return runContextPacketShow(args[1:], out)
+	case "use":
+		return runContextPacketUse(args[1:], out)
+	default:
+		return fmt.Errorf("unknown context packet subcommand %q", args[0])
+	}
+}
+
+func runContextPacketBuild(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("context packet build", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	scope := fs.String("scope", "", "packet scope: issue|session")
+	scopeID := fs.String("id", "", "scope id")
+	actor := fs.String("actor", "", "actor id")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	packet, err := s.BuildRehydratePacket(ctx, store.BuildPacketParams{
+		Scope:   *scope,
+		ScopeID: *scopeID,
+		Actor:   *actor,
+	})
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "context packet build",
+			Data: contextPacketData{
+				Packet: packet,
+			},
+		})
+	}
+
+	_, _ = fmt.Fprintf(out, "Built packet %s (%s)\n", packet.PacketID, packet.Scope)
+	return nil
+}
+
+func runContextPacketShow(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("context packet show", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	packetID := fs.String("packet", "", "packet id")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	packet, err := s.GetRehydratePacket(ctx, store.GetPacketParams{PacketID: *packetID})
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "context packet show",
+			Data: contextPacketData{
+				Packet: packet,
+			},
+		})
+	}
+
+	_, _ = fmt.Fprintf(out, "Packet %s (%s)\n", packet.PacketID, packet.Scope)
+	return nil
+}
+
+func runContextPacketUse(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("context packet use", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	agentID := fs.String("agent", "", "agent id")
+	packetID := fs.String("packet", "", "packet id")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	focus, packet, err := s.UseRehydratePacket(ctx, store.UsePacketParams{
+		AgentID:  *agentID,
+		PacketID: *packetID,
+	})
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "context packet use",
+			Data: contextPacketUseData{
+				Focus:  focus,
+				Packet: packet,
+			},
+		})
+	}
+
+	_, _ = fmt.Fprintf(out, "Updated agent focus for %s using packet %s\n", focus.AgentID, packet.PacketID)
+	return nil
 }
 
 func runGateTemplate(args []string, out io.Writer) error {
@@ -1337,6 +1602,26 @@ type gateStatusData struct {
 	Status store.GateStatus `json:"status"`
 }
 
+type contextCheckpointData struct {
+	Session store.Session `json:"session"`
+	Created bool          `json:"created"`
+}
+
+type contextRehydrateData struct {
+	SessionID string                `json:"session_id"`
+	Source    string                `json:"source"`
+	Packet    store.RehydratePacket `json:"packet"`
+}
+
+type contextPacketData struct {
+	Packet store.RehydratePacket `json:"packet"`
+}
+
+type contextPacketUseData struct {
+	Focus  store.AgentFocus      `json:"focus"`
+	Packet store.RehydratePacket `json:"packet"`
+}
+
 type eventLogData struct {
 	EntityType string        `json:"entity_type"`
 	EntityID   string        `json:"entity_id"`
@@ -1549,6 +1834,11 @@ func printHelp(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "  memori gate set lock --issue <prefix-shortSHA> [--cycle <n>] [--actor <actor>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] --command-id <id> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori gate status --issue <prefix-shortSHA> [--cycle <n>] [--json]")
+	_, _ = fmt.Fprintln(out, "  memori context checkpoint --session <id> [--trigger <trigger>] [--actor <actor>] [--json]")
+	_, _ = fmt.Fprintln(out, "  memori context rehydrate --session <id> [--json]")
+	_, _ = fmt.Fprintln(out, "  memori context packet build --scope issue|session --id <id> [--actor <actor>] [--json]")
+	_, _ = fmt.Fprintln(out, "  memori context packet show --packet <id> [--json]")
+	_, _ = fmt.Fprintln(out, "  memori context packet use --agent <id> --packet <id> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori event log --entity <entityType:id|id> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori db status [--json]")

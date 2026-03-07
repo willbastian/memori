@@ -19,6 +19,9 @@ This repo now contains the first implementation slice for a local event-ledger-b
 - `memori gate set lock`
 - `memori gate evaluate`
 - `memori gate status`
+- `memori context checkpoint`
+- `memori context rehydrate`
+- `memori context packet build|show|use`
 - `memori event log`
 - `memori db status`
 - `memori db migrate`
@@ -104,6 +107,11 @@ memori gate set lock --issue <issue-key>
 
 # list templates (optionally filtered by issue type)
 memori gate template list --type task
+
+# checkpoint and rehydrate context
+memori context checkpoint --session sess-1 --trigger manual
+memori context packet build --scope issue --id <issue-key>
+memori context rehydrate --session sess-1
 
 # rebuild projections from events
 memori db replay

@@ -1,0 +1,203 @@
+package cli
+
+import (
+	"encoding/json"
+	"path/filepath"
+	"testing"
+)
+
+type contextCheckpointEnvelope struct {
+	Command string `json:"command"`
+	Data    struct {
+		Created bool `json:"created"`
+		Session struct {
+			SessionID string `json:"session_id"`
+		} `json:"session"`
+	} `json:"data"`
+}
+
+type contextPacketEnvelope struct {
+	Command string `json:"command"`
+	Data    struct {
+		Packet struct {
+			PacketID string `json:"packet_id"`
+			Scope    string `json:"scope"`
+		} `json:"packet"`
+	} `json:"data"`
+}
+
+type contextPacketUseEnvelope struct {
+	Command string `json:"command"`
+	Data    struct {
+		Focus struct {
+			AgentID       string `json:"agent_id"`
+			LastPacketID  string `json:"last_packet_id"`
+			ActiveIssueID string `json:"active_issue_id"`
+		} `json:"focus"`
+	} `json:"data"`
+}
+
+type contextRehydrateEnvelope struct {
+	Command string `json:"command"`
+	Data    struct {
+		SessionID string `json:"session_id"`
+		Source    string `json:"source"`
+		Packet    struct {
+			PacketID string `json:"packet_id"`
+			Scope    string `json:"scope"`
+		} `json:"packet"`
+	} `json:"data"`
+}
+
+func TestContextCheckpointPacketAndRehydrateCommands(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-context.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-ccccc11",
+		"--type", "task",
+		"--title", "Context CLI test issue",
+		"--command-id", "cmd-cli-context-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-ccccc11",
+		"--status", "inprogress",
+		"--command-id", "cmd-cli-context-progress-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue update inprogress: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"context", "checkpoint",
+		"--db", dbPath,
+		"--session", "sess-cli-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context checkpoint: %v\nstderr: %s", err, stderr)
+	}
+	var checkpoint contextCheckpointEnvelope
+	if err := json.Unmarshal([]byte(stdout), &checkpoint); err != nil {
+		t.Fatalf("decode context checkpoint json: %v\nstdout: %s", err, stdout)
+	}
+	if checkpoint.Command != "context checkpoint" || !checkpoint.Data.Created || checkpoint.Data.Session.SessionID != "sess-cli-1" {
+		t.Fatalf("unexpected checkpoint response: %+v", checkpoint)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "packet", "build",
+		"--db", dbPath,
+		"--scope", "issue",
+		"--id", "mem-ccccc11",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context packet build issue: %v\nstderr: %s", err, stderr)
+	}
+	var issuePacket contextPacketEnvelope
+	if err := json.Unmarshal([]byte(stdout), &issuePacket); err != nil {
+		t.Fatalf("decode issue packet json: %v\nstdout: %s", err, stdout)
+	}
+	if issuePacket.Command != "context packet build" || issuePacket.Data.Packet.PacketID == "" || issuePacket.Data.Packet.Scope != "issue" {
+		t.Fatalf("unexpected issue packet response: %+v", issuePacket)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "packet", "show",
+		"--db", dbPath,
+		"--packet", issuePacket.Data.Packet.PacketID,
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context packet show: %v\nstderr: %s", err, stderr)
+	}
+	var shownPacket contextPacketEnvelope
+	if err := json.Unmarshal([]byte(stdout), &shownPacket); err != nil {
+		t.Fatalf("decode shown packet json: %v\nstdout: %s", err, stdout)
+	}
+	if shownPacket.Data.Packet.PacketID != issuePacket.Data.Packet.PacketID {
+		t.Fatalf("expected shown packet id %q, got %q", issuePacket.Data.Packet.PacketID, shownPacket.Data.Packet.PacketID)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "packet", "use",
+		"--db", dbPath,
+		"--agent", "agent-cli-1",
+		"--packet", issuePacket.Data.Packet.PacketID,
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context packet use: %v\nstderr: %s", err, stderr)
+	}
+	var useResp contextPacketUseEnvelope
+	if err := json.Unmarshal([]byte(stdout), &useResp); err != nil {
+		t.Fatalf("decode context packet use json: %v\nstdout: %s", err, stdout)
+	}
+	if useResp.Command != "context packet use" || useResp.Data.Focus.AgentID != "agent-cli-1" || useResp.Data.Focus.LastPacketID != issuePacket.Data.Packet.PacketID {
+		t.Fatalf("unexpected packet use response: %+v", useResp)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "rehydrate",
+		"--db", dbPath,
+		"--session", "sess-cli-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context rehydrate fallback: %v\nstderr: %s", err, stderr)
+	}
+	var fallback contextRehydrateEnvelope
+	if err := json.Unmarshal([]byte(stdout), &fallback); err != nil {
+		t.Fatalf("decode context rehydrate fallback json: %v\nstdout: %s", err, stdout)
+	}
+	if fallback.Data.Source != "raw-events-fallback" {
+		t.Fatalf("expected raw-events-fallback source, got %+v", fallback)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "packet", "build",
+		"--db", dbPath,
+		"--scope", "session",
+		"--id", "sess-cli-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context packet build session: %v\nstderr: %s", err, stderr)
+	}
+	var sessionPacket contextPacketEnvelope
+	if err := json.Unmarshal([]byte(stdout), &sessionPacket); err != nil {
+		t.Fatalf("decode session packet json: %v\nstdout: %s", err, stdout)
+	}
+	if sessionPacket.Data.Packet.Scope != "session" {
+		t.Fatalf("expected session scope packet, got %+v", sessionPacket)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "rehydrate",
+		"--db", dbPath,
+		"--session", "sess-cli-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context rehydrate packet-first: %v\nstderr: %s", err, stderr)
+	}
+	var packetFirst contextRehydrateEnvelope
+	if err := json.Unmarshal([]byte(stdout), &packetFirst); err != nil {
+		t.Fatalf("decode context rehydrate packet-first json: %v\nstdout: %s", err, stdout)
+	}
+	if packetFirst.Data.Source != "packet" || packetFirst.Data.Packet.PacketID != sessionPacket.Data.Packet.PacketID {
+		t.Fatalf("expected packet-first source with latest packet, got %+v", packetFirst)
+	}
+}

@@ -1803,6 +1803,115 @@ func TestReplayProjectionsAppliesIssueLinkedEvents(t *testing.T) {
 	}
 }
 
+func TestSessionCheckpointPacketAndRehydrateFlow(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-9898989"
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Context packet test issue",
+		Actor:     "agent-1",
+		CommandID: "cmd-context-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-context-progress-1",
+	}); err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+
+	session, created, err := s.CheckpointSession(ctx, CheckpointSessionParams{
+		SessionID: "sess-1",
+		Trigger:   "manual",
+		Actor:     "agent-1",
+	})
+	if err != nil {
+		t.Fatalf("checkpoint session: %v", err)
+	}
+	if !created {
+		t.Fatalf("expected first checkpoint to create session")
+	}
+	if session.SessionID != "sess-1" {
+		t.Fatalf("expected session id sess-1, got %q", session.SessionID)
+	}
+
+	issuePacket, err := s.BuildRehydratePacket(ctx, BuildPacketParams{
+		Scope:   "issue",
+		ScopeID: issueID,
+		Actor:   "agent-1",
+	})
+	if err != nil {
+		t.Fatalf("build issue packet: %v", err)
+	}
+	if issuePacket.PacketID == "" || issuePacket.Scope != "issue" {
+		t.Fatalf("expected issue packet metadata, got %#v", issuePacket)
+	}
+
+	storedIssuePacket, err := s.GetRehydratePacket(ctx, GetPacketParams{PacketID: issuePacket.PacketID})
+	if err != nil {
+		t.Fatalf("get stored issue packet: %v", err)
+	}
+	if storedIssuePacket.PacketID != issuePacket.PacketID {
+		t.Fatalf("expected stored packet id %q, got %q", issuePacket.PacketID, storedIssuePacket.PacketID)
+	}
+
+	focus, usedPacket, err := s.UseRehydratePacket(ctx, UsePacketParams{
+		AgentID:  "agent-ctx-1",
+		PacketID: issuePacket.PacketID,
+	})
+	if err != nil {
+		t.Fatalf("use issue packet: %v", err)
+	}
+	if focus.AgentID != "agent-ctx-1" || focus.LastPacketID != issuePacket.PacketID {
+		t.Fatalf("unexpected agent focus after packet use: %#v", focus)
+	}
+	if focus.ActiveIssueID != issueID {
+		t.Fatalf("expected active issue %q, got %q", issueID, focus.ActiveIssueID)
+	}
+	if usedPacket.PacketID != issuePacket.PacketID {
+		t.Fatalf("expected used packet id %q, got %q", issuePacket.PacketID, usedPacket.PacketID)
+	}
+
+	rehydratedFallback, err := s.RehydrateSession(ctx, RehydrateSessionParams{SessionID: "sess-1"})
+	if err != nil {
+		t.Fatalf("rehydrate session (fallback): %v", err)
+	}
+	if rehydratedFallback.Source != "raw-events-fallback" {
+		t.Fatalf("expected fallback source, got %q", rehydratedFallback.Source)
+	}
+
+	sessionPacket, err := s.BuildRehydratePacket(ctx, BuildPacketParams{
+		Scope:   "session",
+		ScopeID: "sess-1",
+		Actor:   "agent-1",
+	})
+	if err != nil {
+		t.Fatalf("build session packet: %v", err)
+	}
+	if sessionPacket.Scope != "session" {
+		t.Fatalf("expected session scope packet, got %#v", sessionPacket)
+	}
+
+	rehydratedPacket, err := s.RehydrateSession(ctx, RehydrateSessionParams{SessionID: "sess-1"})
+	if err != nil {
+		t.Fatalf("rehydrate session (packet-first): %v", err)
+	}
+	if rehydratedPacket.Source != "packet" {
+		t.Fatalf("expected packet source, got %q", rehydratedPacket.Source)
+	}
+	if rehydratedPacket.Packet.PacketID != sessionPacket.PacketID {
+		t.Fatalf("expected latest session packet %q, got %q", sessionPacket.PacketID, rehydratedPacket.Packet.PacketID)
+	}
+}
+
 func newTestStore(t *testing.T) *Store {
 	return newTestStoreWithPrefix(t, DefaultIssueKeyPrefix)
 }
