@@ -28,6 +28,7 @@ const (
 	entityTypeIssue   = "issue"
 	entityTypeSession = "session"
 	entityTypePacket  = "packet"
+	entityTypeFocus   = "focus"
 
 	eventTypeIssueCreate       = "issue.created"
 	eventTypeIssueUpdate       = "issue.updated"
@@ -35,6 +36,7 @@ const (
 	eventTypeGateEval          = "gate.evaluated"
 	eventTypeSessionCheckpoint = "session.checkpointed"
 	eventTypePacketBuilt       = "packet.built"
+	eventTypeFocusUsed         = "focus.used"
 )
 
 type Store struct {
@@ -164,8 +166,10 @@ type GetPacketParams struct {
 }
 
 type UsePacketParams struct {
-	AgentID  string
-	PacketID string
+	AgentID   string
+	PacketID  string
+	Actor     string
+	CommandID string
 }
 
 type ListOpenLoopsParams struct {
@@ -288,6 +292,14 @@ type packetBuiltPayload struct {
 	CreatedAt           string         `json:"created_at"`
 	IssueID             string         `json:"issue_id,omitempty"`
 	IssueCycleNo        int            `json:"issue_cycle_no,omitempty"`
+}
+
+type focusUsedPayload struct {
+	AgentID       string `json:"agent_id"`
+	ActiveIssueID string `json:"active_issue_id,omitempty"`
+	ActiveCycleNo int    `json:"active_cycle_no,omitempty"`
+	LastPacketID  string `json:"last_packet_id"`
+	FocusedAt     string `json:"focused_at"`
 }
 
 type gateEvaluatedPayload struct {
@@ -1787,25 +1799,33 @@ func (s *Store) GetRehydratePacket(ctx context.Context, p GetPacketParams) (Rehy
 	return packet, nil
 }
 
-func (s *Store) UseRehydratePacket(ctx context.Context, p UsePacketParams) (AgentFocus, RehydratePacket, error) {
+func (s *Store) UseRehydratePacket(ctx context.Context, p UsePacketParams) (AgentFocus, RehydratePacket, bool, error) {
 	agentID := strings.TrimSpace(p.AgentID)
 	if agentID == "" {
-		return AgentFocus{}, RehydratePacket{}, errors.New("--agent is required")
+		return AgentFocus{}, RehydratePacket{}, false, errors.New("--agent is required")
 	}
 	packetID := strings.TrimSpace(p.PacketID)
 	if packetID == "" {
-		return AgentFocus{}, RehydratePacket{}, errors.New("--packet is required")
+		return AgentFocus{}, RehydratePacket{}, false, errors.New("--packet is required")
+	}
+	actor := strings.TrimSpace(p.Actor)
+	if actor == "" {
+		actor = defaultActor()
+	}
+	commandID := strings.TrimSpace(p.CommandID)
+	if commandID == "" {
+		return AgentFocus{}, RehydratePacket{}, false, errors.New("--command-id is required")
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return AgentFocus{}, RehydratePacket{}, fmt.Errorf("begin tx: %w", err)
+		return AgentFocus{}, RehydratePacket{}, false, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
 
 	packet, err := packetByIDTx(ctx, tx, packetID)
 	if err != nil {
-		return AgentFocus{}, RehydratePacket{}, err
+		return AgentFocus{}, RehydratePacket{}, false, err
 	}
 
 	activeIssueID := ""
@@ -1816,24 +1836,43 @@ func (s *Store) UseRehydratePacket(ctx context.Context, p UsePacketParams) (Agen
 			if err == nil {
 				activeIssueID = normalizedIssueID
 				if err := tx.QueryRowContext(ctx, `SELECT current_cycle_no FROM work_items WHERE id = ?`, normalizedIssueID).Scan(&activeCycleNo); err != nil && !errors.Is(err, sql.ErrNoRows) {
-					return AgentFocus{}, RehydratePacket{}, fmt.Errorf("read issue cycle for %q: %w", normalizedIssueID, err)
+					return AgentFocus{}, RehydratePacket{}, false, fmt.Errorf("read issue cycle for %q: %w", normalizedIssueID, err)
 				}
 			}
 		}
 	}
 
 	now := nowUTC()
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO agent_focus(agent_id, active_issue_id, active_cycle_no, last_packet_id, updated_at)
-		VALUES(?, ?, ?, ?, ?)
-		ON CONFLICT(agent_id) DO UPDATE SET
-			active_issue_id=excluded.active_issue_id,
-			active_cycle_no=excluded.active_cycle_no,
-			last_packet_id=excluded.last_packet_id,
-			updated_at=excluded.updated_at
-	`, agentID, nullIfEmpty(activeIssueID), nullIfZero(activeCycleNo), packet.PacketID, now)
+	payloadBytes, err := json.Marshal(focusUsedPayload{
+		AgentID:       agentID,
+		ActiveIssueID: activeIssueID,
+		ActiveCycleNo: activeCycleNo,
+		LastPacketID:  packet.PacketID,
+		FocusedAt:     now,
+	})
 	if err != nil {
-		return AgentFocus{}, RehydratePacket{}, fmt.Errorf("upsert agent_focus for %q: %w", agentID, err)
+		return AgentFocus{}, RehydratePacket{}, false, fmt.Errorf("marshal agent focus payload: %w", err)
+	}
+
+	appendRes, err := s.appendEventTx(ctx, tx, appendEventRequest{
+		EntityType:          entityTypeFocus,
+		EntityID:            agentID,
+		EventType:           eventTypeFocusUsed,
+		PayloadJSON:         string(payloadBytes),
+		Actor:               actor,
+		CommandID:           commandID,
+		EventPayloadVersion: 1,
+	})
+	if err != nil {
+		return AgentFocus{}, RehydratePacket{}, false, err
+	}
+	if appendRes.Event.EventType != eventTypeFocusUsed {
+		return AgentFocus{}, RehydratePacket{}, false, fmt.Errorf("command id already used by %q", appendRes.Event.EventType)
+	}
+	if !appendRes.AlreadyExists {
+		if err := applyFocusUsedProjectionTx(ctx, tx, appendRes.Event); err != nil {
+			return AgentFocus{}, RehydratePacket{}, false, err
+		}
 	}
 
 	var (
@@ -1852,7 +1891,7 @@ func (s *Store) UseRehydratePacket(ctx context.Context, p UsePacketParams) (Agen
 		&focus.LastPacketID,
 		&focus.UpdatedAt,
 	); err != nil {
-		return AgentFocus{}, RehydratePacket{}, fmt.Errorf("query agent_focus for %q: %w", agentID, err)
+		return AgentFocus{}, RehydratePacket{}, false, fmt.Errorf("query agent_focus for %q: %w", agentID, err)
 	}
 	if activeIssueRaw.Valid {
 		focus.ActiveIssueID = activeIssueRaw.String
@@ -1862,9 +1901,9 @@ func (s *Store) UseRehydratePacket(ctx context.Context, p UsePacketParams) (Agen
 	}
 
 	if err := tx.Commit(); err != nil {
-		return AgentFocus{}, RehydratePacket{}, fmt.Errorf("commit tx: %w", err)
+		return AgentFocus{}, RehydratePacket{}, false, fmt.Errorf("commit tx: %w", err)
 	}
-	return focus, packet, nil
+	return focus, packet, appendRes.AlreadyExists, nil
 }
 
 func (s *Store) ListOpenLoops(ctx context.Context, p ListOpenLoopsParams) ([]OpenLoop, error) {
@@ -2584,6 +2623,8 @@ func applyEventProjectionTx(ctx context.Context, tx *sql.Tx, event Event) error 
 		return applySessionCheckpointedProjectionTx(ctx, tx, event)
 	case eventTypePacketBuilt:
 		return applyPacketBuiltProjectionTx(ctx, tx, event)
+	case eventTypeFocusUsed:
+		return applyFocusUsedProjectionTx(ctx, tx, event)
 	default:
 		return nil
 	}
@@ -2905,6 +2946,39 @@ func applyPacketBuiltProjectionTx(ctx context.Context, tx *sql.Tx, event Event) 
 		if err := upsertIssueSummaryForPacketTx(ctx, tx, payload.IssueID, payload.IssueCycleNo, string(packetJSON), payload.PacketID, payload.CreatedAt); err != nil {
 			return fmt.Errorf("upsert issue summary from event %s: %w", event.EventID, err)
 		}
+	}
+
+	return nil
+}
+
+func applyFocusUsedProjectionTx(ctx context.Context, tx *sql.Tx, event Event) error {
+	var payload focusUsedPayload
+	if err := json.Unmarshal([]byte(event.PayloadJSON), &payload); err != nil {
+		return fmt.Errorf("decode focus.used payload for event %s: %w", event.EventID, err)
+	}
+	payload.AgentID = strings.TrimSpace(payload.AgentID)
+	if payload.AgentID == "" {
+		return fmt.Errorf("decode focus.used payload for event %s: agent_id is required", event.EventID)
+	}
+	payload.LastPacketID = strings.TrimSpace(payload.LastPacketID)
+	if payload.LastPacketID == "" {
+		return fmt.Errorf("decode focus.used payload for event %s: last_packet_id is required", event.EventID)
+	}
+	if _, err := packetByIDTx(ctx, tx, payload.LastPacketID); err != nil {
+		return fmt.Errorf("validate focus.used payload for event %s: %w", event.EventID, err)
+	}
+
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO agent_focus(agent_id, active_issue_id, active_cycle_no, last_packet_id, updated_at)
+		VALUES(?, ?, ?, ?, ?)
+		ON CONFLICT(agent_id) DO UPDATE SET
+			active_issue_id=excluded.active_issue_id,
+			active_cycle_no=excluded.active_cycle_no,
+			last_packet_id=excluded.last_packet_id,
+			updated_at=excluded.updated_at
+	`, payload.AgentID, nullIfEmpty(payload.ActiveIssueID), nullIfZero(payload.ActiveCycleNo), payload.LastPacketID, payload.FocusedAt)
+	if err != nil {
+		return fmt.Errorf("upsert agent_focus from event %s: %w", event.EventID, err)
 	}
 
 	return nil

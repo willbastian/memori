@@ -35,6 +35,11 @@ type contextPacketUseEnvelope struct {
 			LastPacketID  string `json:"last_packet_id"`
 			ActiveIssueID string `json:"active_issue_id"`
 		} `json:"focus"`
+		Packet struct {
+			PacketID string `json:"packet_id"`
+			Scope    string `json:"scope"`
+		} `json:"packet"`
+		Idempotent bool `json:"idempotent"`
 	} `json:"data"`
 }
 
@@ -209,6 +214,26 @@ func TestContextCheckpointPacketAndRehydrateCommands(t *testing.T) {
 	}
 
 	stdout, stderr, err = runMemoriForTest(
+		"event", "log",
+		"--db", dbPath,
+		"--entity", "packet:"+issuePacket.Data.Packet.PacketID,
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("event log packet: %v\nstderr: %s", err, stderr)
+	}
+	var packetEvents eventLogEnvelope
+	if err := json.Unmarshal([]byte(stdout), &packetEvents); err != nil {
+		t.Fatalf("decode event log packet json: %v\nstdout: %s", err, stdout)
+	}
+	if packetEvents.Command != "event log" || packetEvents.Data.EntityType != "packet" || packetEvents.Data.EntityID != issuePacket.Data.Packet.PacketID {
+		t.Fatalf("unexpected packet event log response: %+v", packetEvents)
+	}
+	if len(packetEvents.Data.Events) != 1 || packetEvents.Data.Events[0].EventType != "packet.built" {
+		t.Fatalf("expected packet.built event, got %+v", packetEvents)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
 		"context", "loops",
 		"--db", dbPath,
 		"--issue", "mem-ccccc11",
@@ -247,6 +272,7 @@ func TestContextCheckpointPacketAndRehydrateCommands(t *testing.T) {
 		"--db", dbPath,
 		"--agent", "agent-cli-1",
 		"--packet", issuePacket.Data.Packet.PacketID,
+		"--command-id", "cmd-cli-context-packet-use-1",
 		"--json",
 	)
 	if err != nil {
@@ -258,6 +284,51 @@ func TestContextCheckpointPacketAndRehydrateCommands(t *testing.T) {
 	}
 	if useResp.Command != "context packet use" || useResp.Data.Focus.AgentID != "agent-cli-1" || useResp.Data.Focus.LastPacketID != issuePacket.Data.Packet.PacketID {
 		t.Fatalf("unexpected packet use response: %+v", useResp)
+	}
+	if useResp.Data.Packet.PacketID != issuePacket.Data.Packet.PacketID || useResp.Data.Packet.Scope != "issue" {
+		t.Fatalf("expected packet use response to include packet metadata, got %+v", useResp)
+	}
+	if useResp.Data.Idempotent {
+		t.Fatalf("expected first packet use to be non-idempotent")
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"event", "log",
+		"--db", dbPath,
+		"--entity", "focus:agent-cli-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("event log focus: %v\nstderr: %s", err, stderr)
+	}
+	var focusEvents eventLogEnvelope
+	if err := json.Unmarshal([]byte(stdout), &focusEvents); err != nil {
+		t.Fatalf("decode event log focus json: %v\nstdout: %s", err, stdout)
+	}
+	if focusEvents.Command != "event log" || focusEvents.Data.EntityType != "focus" || focusEvents.Data.EntityID != "agent-cli-1" {
+		t.Fatalf("unexpected focus event log response: %+v", focusEvents)
+	}
+	if len(focusEvents.Data.Events) != 1 {
+		t.Fatalf("expected one focus event, got %+v", focusEvents)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "packet", "use",
+		"--db", dbPath,
+		"--agent", "agent-cli-1",
+		"--packet", issuePacket.Data.Packet.PacketID,
+		"--command-id", "cmd-cli-context-packet-use-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context packet use replay: %v\nstderr: %s", err, stderr)
+	}
+	var replayUseResp contextPacketUseEnvelope
+	if err := json.Unmarshal([]byte(stdout), &replayUseResp); err != nil {
+		t.Fatalf("decode replayed context packet use json: %v\nstdout: %s", err, stdout)
+	}
+	if !replayUseResp.Data.Idempotent {
+		t.Fatalf("expected replayed packet use to be idempotent")
 	}
 
 	stdout, stderr, err = runMemoriForTest(

@@ -2452,12 +2452,17 @@ func TestSessionCheckpointPacketAndRehydrateFlow(t *testing.T) {
 		t.Fatalf("expected stored packet id %q, got %q", issuePacket.PacketID, storedIssuePacket.PacketID)
 	}
 
-	focus, usedPacket, err := s.UseRehydratePacket(ctx, UsePacketParams{
-		AgentID:  "agent-ctx-1",
-		PacketID: issuePacket.PacketID,
+	focus, usedPacket, idempotent, err := s.UseRehydratePacket(ctx, UsePacketParams{
+		AgentID:   "agent-ctx-1",
+		PacketID:  issuePacket.PacketID,
+		Actor:     "agent-1",
+		CommandID: "cmd-context-packet-use-1",
 	})
 	if err != nil {
 		t.Fatalf("use issue packet: %v", err)
+	}
+	if idempotent {
+		t.Fatalf("expected first packet use to be non-idempotent")
 	}
 	if focus.AgentID != "agent-ctx-1" || focus.LastPacketID != issuePacket.PacketID {
 		t.Fatalf("unexpected agent focus after packet use: %#v", focus)
@@ -2467,6 +2472,28 @@ func TestSessionCheckpointPacketAndRehydrateFlow(t *testing.T) {
 	}
 	if usedPacket.PacketID != issuePacket.PacketID {
 		t.Fatalf("expected used packet id %q, got %q", issuePacket.PacketID, usedPacket.PacketID)
+	}
+	focusEvents, err := s.ListEventsForEntity(ctx, "focus", "agent-ctx-1")
+	if err != nil {
+		t.Fatalf("list focus events: %v", err)
+	}
+	if len(focusEvents) != 1 || focusEvents[0].EventType != "focus.used" {
+		t.Fatalf("expected one focus.used event, got %#v", focusEvents)
+	}
+	replayedFocus, _, idempotent, err := s.UseRehydratePacket(ctx, UsePacketParams{
+		AgentID:   "agent-ctx-1",
+		PacketID:  issuePacket.PacketID,
+		Actor:     "agent-1",
+		CommandID: "cmd-context-packet-use-1",
+	})
+	if err != nil {
+		t.Fatalf("replay use issue packet: %v", err)
+	}
+	if !idempotent {
+		t.Fatalf("expected replayed packet use to be idempotent")
+	}
+	if replayedFocus.LastPacketID != issuePacket.PacketID {
+		t.Fatalf("expected replayed focus to keep last packet %q, got %q", issuePacket.PacketID, replayedFocus.LastPacketID)
 	}
 
 	rehydratedFallback, err := s.RehydrateSession(ctx, RehydrateSessionParams{SessionID: "sess-1"})
@@ -2504,6 +2531,12 @@ func TestSessionCheckpointPacketAndRehydrateFlow(t *testing.T) {
 	}
 	if chunkCount == 0 {
 		t.Fatalf("expected replay to rebuild context chunks")
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM agent_focus WHERE agent_id = ?`, "agent-ctx-1").Scan(&chunkCount); err != nil {
+		t.Fatalf("count replayed agent focus rows: %v", err)
+	}
+	if chunkCount != 1 {
+		t.Fatalf("expected replay to rebuild agent focus row, got %d", chunkCount)
 	}
 
 	rehydratedPacket, err := s.RehydrateSession(ctx, RehydrateSessionParams{SessionID: "sess-1"})

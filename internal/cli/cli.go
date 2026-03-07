@@ -88,7 +88,7 @@ func runHelp(args []string, out io.Writer) error {
 			"memori context rehydrate --session <id> [--json]",
 			"memori context packet build --scope issue|session --id <id> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori context packet show --packet <id> [--json]",
-			"memori context packet use --agent <id> --packet <id> [--json]",
+			"memori context packet use --agent <id> --packet <id> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori context loops [--issue <prefix-shortSHA>] [--cycle <n>] [--json]",
 			"memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]",
 			"memori event log --entity <entityType:id|id> [--json]",
@@ -1067,6 +1067,8 @@ func runContextPacketUse(args []string, out io.Writer) error {
 	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
 	agentID := fs.String("agent", "", "agent id")
 	packetID := fs.String("packet", "", "packet id")
+	actor := fs.String("actor", "", "actor id (optional)")
+	commandID := fs.String("command-id", "", "command id (optional; requires MEMORI_ALLOW_MANUAL_COMMAND_ID=1)")
 	jsonOut := fs.Bool("json", false, "machine-readable output")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -1081,15 +1083,16 @@ func runContextPacketUse(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
-	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "context-packet-use", "", "", defaultMutationAuthDeps())
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "context-packet-use", *actor, *commandID, defaultMutationAuthDeps())
 	if err != nil {
 		return err
 	}
-	_ = identity
 
-	focus, packet, err := s.UseRehydratePacket(ctx, store.UsePacketParams{
-		AgentID:  *agentID,
-		PacketID: *packetID,
+	focus, packet, idempotent, err := s.UseRehydratePacket(ctx, store.UsePacketParams{
+		AgentID:   *agentID,
+		PacketID:  *packetID,
+		Actor:     identity.Actor,
+		CommandID: identity.CommandID,
 	})
 	if err != nil {
 		return err
@@ -1101,8 +1104,9 @@ func runContextPacketUse(args []string, out io.Writer) error {
 			DBSchemaVersion:       dbVersion,
 			Command:               "context packet use",
 			Data: contextPacketUseData{
-				Focus:  focus,
-				Packet: packet,
+				Focus:      focus,
+				Packet:     packet,
+				Idempotent: idempotent,
 			},
 		})
 	}
@@ -2194,10 +2198,10 @@ func parseEntityRef(raw string) (entityType, entityID string, err error) {
 	entityType = strings.ToLower(strings.TrimSpace(parts[0]))
 	entityID = strings.TrimSpace(parts[1])
 	switch entityType {
-	case "issue", "session":
+	case "issue", "session", "packet", "focus":
 		return entityType, entityID, nil
 	default:
-		return "", "", fmt.Errorf("invalid entity type %q (expected issue|session)", parts[0])
+		return "", "", fmt.Errorf("invalid entity type %q (expected issue|session|packet|focus)", parts[0])
 	}
 }
 
@@ -2402,8 +2406,9 @@ type contextPacketData struct {
 }
 
 type contextPacketUseData struct {
-	Focus  store.AgentFocus      `json:"focus"`
-	Packet store.RehydratePacket `json:"packet"`
+	Focus      store.AgentFocus      `json:"focus"`
+	Packet     store.RehydratePacket `json:"packet"`
+	Idempotent bool                  `json:"idempotent"`
 }
 
 type contextLoopsData struct {
@@ -2679,7 +2684,7 @@ func printHelp(out io.Writer) {
 	ui.bullet("memori context checkpoint --session <id> [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori context packet build --scope issue|session --id <id> [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori context packet show --packet <id> [--json]")
-	ui.bullet("memori context packet use --agent <id> --packet <id> [--json]")
+	ui.bullet("memori context packet use --agent <id> --packet <id> [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori context rehydrate --session <id> [--json]")
 	ui.bullet("memori context loops [--issue <prefix-shortSHA>] [--cycle <n>] [--json]")
 
