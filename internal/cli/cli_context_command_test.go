@@ -110,7 +110,7 @@ func TestContextCheckpointPacketAndRehydrateCommands(t *testing.T) {
 	}
 
 	gateDefPath := filepath.Join(t.TempDir(), "context-gates.json")
-	if err := os.WriteFile(gateDefPath, []byte(`{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}}]}`), 0o644); err != nil {
+	if err := os.WriteFile(gateDefPath, []byte(`{"gates":[{"id":"build","kind":"check","required":true}]}`), 0o644); err != nil {
 		t.Fatalf("write gate template file: %v", err)
 	}
 	if _, stderr, err := runMemoriForTest(

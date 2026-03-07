@@ -1236,6 +1236,9 @@ func runGateTemplateCreate(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if err := validateExecutableGateTemplatePolicy(string(definitionBytes), identity.Principal); err != nil {
+		return err
+	}
 
 	template, idempotent, err := s.CreateGateTemplate(ctx, store.CreateGateTemplateParams{
 		TemplateID:     *templateID,
@@ -2203,6 +2206,43 @@ func parseEntityRef(raw string) (entityType, entityID string, err error) {
 	default:
 		return "", "", fmt.Errorf("invalid entity type %q (expected issue|session|packet|focus)", parts[0])
 	}
+}
+
+func validateExecutableGateTemplatePolicy(definitionJSON string, principal provenance.Principal) error {
+	hasExecutableCommand, err := gateDefinitionHasExecutableCommand(definitionJSON)
+	if err != nil {
+		return err
+	}
+	if !hasExecutableCommand {
+		return nil
+	}
+	if principal.Kind == provenance.PrincipalHuman {
+		return nil
+	}
+	return errors.New("executable gate templates require a human principal")
+}
+
+func gateDefinitionHasExecutableCommand(definitionJSON string) (bool, error) {
+	raw := strings.TrimSpace(definitionJSON)
+	if raw == "" {
+		return false, errors.New("--file must contain JSON")
+	}
+
+	var parsed struct {
+		Gates []struct {
+			Criteria map[string]any `json:"criteria"`
+		} `json:"gates"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return false, fmt.Errorf("invalid gate definition JSON: %w", err)
+	}
+	for _, gate := range parsed.Gates {
+		command, _ := gate.Criteria["command"].(string)
+		if strings.TrimSpace(command) != "" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func hasFlag(args []string, name string) bool {

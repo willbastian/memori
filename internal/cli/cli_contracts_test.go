@@ -263,7 +263,7 @@ func TestIssueDoneRequiresChildIssuesClosed(t *testing.T) {
 	}
 
 	gateDefPath := filepath.Join(t.TempDir(), "story-close-gates.json")
-	if err := os.WriteFile(gateDefPath, []byte(`{"gates":[{"id":"review","kind":"check","required":true,"criteria":{"command":"echo ok"}}]}`), 0o644); err != nil {
+	if err := os.WriteFile(gateDefPath, []byte(`{"gates":[{"id":"review","kind":"check","required":true}]}`), 0o644); err != nil {
 		t.Fatalf("write gate definition: %v", err)
 	}
 	if _, stderr, err := runMemoriForTest(
@@ -295,14 +295,16 @@ func TestIssueDoneRequiresChildIssuesClosed(t *testing.T) {
 		t.Fatalf("gate set lock: %v\nstderr: %s", err, stderr)
 	}
 	if _, stderr, err := runMemoriForTest(
-		"gate", "verify",
+		"gate", "evaluate",
 		"--db", dbPath,
 		"--issue", "mem-a111111",
 		"--gate", "review",
-		"--command-id", "cmd-cli-done-children-parent-verify-1",
+		"--result", "PASS",
+		"--evidence", "test://story-close/review",
+		"--command-id", "cmd-cli-done-children-parent-eval-1",
 		"--json",
 	); err != nil {
-		t.Fatalf("gate verify: %v\nstderr: %s", err, stderr)
+		t.Fatalf("gate evaluate: %v\nstderr: %s", err, stderr)
 	}
 
 	_, _, err := runMemoriForTest(
