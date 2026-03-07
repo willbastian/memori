@@ -202,6 +202,68 @@ func TestVerifyFailsWhenEventsTableMissing(t *testing.T) {
 	}
 }
 
+func TestVerifyFailsWhenRequiredHeadSchemaTableMissing(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestDB(t)
+	if _, err := Migrate(ctx, db, nil); err != nil {
+		t.Fatalf("migrate to head: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx, `DROP TABLE work_items`); err != nil {
+		t.Fatalf("drop work_items table: %v", err)
+	}
+
+	verify, err := Verify(ctx, db)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if verify.OK {
+		t.Fatalf("expected verify to fail when work_items is missing")
+	}
+	if !containsCheck(verify.Checks, "required table missing: work_items") {
+		t.Fatalf("expected missing work_items check, got: %v", verify.Checks)
+	}
+}
+
+func TestVerifyChecksTablesForCurrentMigrationLevelOnly(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestDB(t)
+	targetVersion := 4
+	if _, err := Migrate(ctx, db, &targetVersion); err != nil {
+		t.Fatalf("migrate to version %d: %v", targetVersion, err)
+	}
+
+	verify, err := Verify(ctx, db)
+	if err != nil {
+		t.Fatalf("verify migrated db at version %d: %v", targetVersion, err)
+	}
+	if !verify.OK {
+		t.Fatalf("expected verify OK at version %d, got checks: %v", targetVersion, verify.Checks)
+	}
+
+	if _, err := db.ExecContext(ctx, `DROP TABLE sessions`); err != nil {
+		t.Fatalf("drop sessions table: %v", err)
+	}
+
+	verify, err = Verify(ctx, db)
+	if err != nil {
+		t.Fatalf("verify after dropping sessions: %v", err)
+	}
+	if verify.OK {
+		t.Fatalf("expected verify to fail when version %d table sessions is missing", targetVersion)
+	}
+	if !containsCheck(verify.Checks, "required table missing: sessions") {
+		t.Fatalf("expected missing sessions check, got: %v", verify.Checks)
+	}
+	if containsCheck(verify.Checks, "required table missing: context_chunks") {
+		t.Fatalf("did not expect version 5 tables to be required at version %d: %v", targetVersion, verify.Checks)
+	}
+}
+
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 

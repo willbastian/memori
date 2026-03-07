@@ -161,6 +161,41 @@ func TestDBVerifyFailsWhenEventsTableMissing(t *testing.T) {
 	}
 }
 
+func TestDBVerifyFailsWhenWorkItemsTableMissing(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-db-cli-missing-work-items.db")
+	if _, stderr, err := runMemoriForTest("db", "migrate", "--db", dbPath, "--json"); err != nil {
+		t.Fatalf("run db migrate: %v\nstderr: %s", err, stderr)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`DROP TABLE work_items`); err != nil {
+		t.Fatalf("drop work_items table: %v", err)
+	}
+
+	stdout, stderr, err := runMemoriForTest("db", "verify", "--db", dbPath, "--json")
+	if err == nil || !strings.Contains(err.Error(), "required table missing: work_items") {
+		t.Fatalf("expected missing work_items table error, got err=%v stderr=%s stdout=%s", err, stderr, stdout)
+	}
+
+	var verify dbVerifyEnvelope
+	if err := json.Unmarshal([]byte(stdout), &verify); err != nil {
+		t.Fatalf("decode db verify json output: %v\nstdout: %s", err, stdout)
+	}
+	if verify.Data.OK {
+		t.Fatalf("expected db verify to fail when work_items table is missing")
+	}
+	if !containsString(verify.Data.Checks, "required table missing: work_items") {
+		t.Fatalf("expected missing work_items check in JSON response, got %v", verify.Data.Checks)
+	}
+}
+
 func runDBStatusJSONForTest(t *testing.T, dbPath string) dbStatusEnvelope {
 	t.Helper()
 
