@@ -74,6 +74,7 @@ func runHelp(args []string, out io.Writer) error {
 			"memori context packet build --scope issue|session --id <id> [--actor <actor>] [--json]",
 			"memori context packet show --packet <id> [--json]",
 			"memori context packet use --agent <id> --packet <id> [--json]",
+			"memori context loops [--issue <prefix-shortSHA>] [--cycle <n>] [--json]",
 			"memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]",
 			"memori event log --entity <entityType:id|id> [--json]",
 			"memori db status [--json]",
@@ -525,7 +526,7 @@ func runGate(args []string, out io.Writer) error {
 
 func runContext(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("context subcommand required: checkpoint|rehydrate|packet")
+		return errors.New("context subcommand required: checkpoint|rehydrate|packet|loops")
 	}
 	switch args[0] {
 	case "checkpoint":
@@ -534,6 +535,8 @@ func runContext(args []string, out io.Writer) error {
 		return runContextRehydrate(args[1:], out)
 	case "packet":
 		return runContextPacket(args[1:], out)
+	case "loops":
+		return runContextLoops(args[1:], out)
 	default:
 		return fmt.Errorf("unknown context subcommand %q", args[0])
 	}
@@ -778,6 +781,71 @@ func runContextPacketUse(args []string, out io.Writer) error {
 	}
 
 	_, _ = fmt.Fprintf(out, "Updated agent focus for %s using packet %s\n", focus.AgentID, packet.PacketID)
+	return nil
+}
+
+func runContextLoops(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("context loops", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	issue := fs.String("issue", "", "optional issue key filter")
+	cycle := fs.Int("cycle", 0, "optional cycle filter (> 0)")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	var cyclePtr *int
+	if hasFlag(args, "cycle") {
+		if *cycle <= 0 {
+			return errors.New("--cycle must be > 0")
+		}
+		cyclePtr = cycle
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	loops, err := s.ListOpenLoops(ctx, store.ListOpenLoopsParams{
+		IssueID: *issue,
+		CycleNo: cyclePtr,
+	})
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "context loops",
+			Data: contextLoopsData{
+				Count: len(loops),
+				Loops: loops,
+			},
+		})
+	}
+
+	if len(loops) == 0 {
+		_, _ = fmt.Fprintln(out, "No context loops matched the filters.")
+		return nil
+	}
+	for _, loop := range loops {
+		_, _ = fmt.Fprintf(out, "- %s [%s/%s] issue=%s cycle=%d", loop.LoopID, loop.LoopType, loop.Status, loop.IssueID, loop.CycleNo)
+		if strings.TrimSpace(loop.Priority) != "" {
+			_, _ = fmt.Fprintf(out, " priority=%s", loop.Priority)
+		}
+		if strings.TrimSpace(loop.SourceEventID) != "" {
+			_, _ = fmt.Fprintf(out, " source=%s", loop.SourceEventID)
+		}
+		_, _ = fmt.Fprintln(out)
+	}
 	return nil
 }
 
@@ -1622,6 +1690,11 @@ type contextPacketUseData struct {
 	Packet store.RehydratePacket `json:"packet"`
 }
 
+type contextLoopsData struct {
+	Count int              `json:"count"`
+	Loops []store.OpenLoop `json:"loops"`
+}
+
 type eventLogData struct {
 	EntityType string        `json:"entity_type"`
 	EntityID   string        `json:"entity_id"`
@@ -1839,6 +1912,7 @@ func printHelp(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "  memori context packet build --scope issue|session --id <id> [--actor <actor>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori context packet show --packet <id> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori context packet use --agent <id> --packet <id> [--json]")
+	_, _ = fmt.Fprintln(out, "  memori context loops [--issue <prefix-shortSHA>] [--cycle <n>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori event log --entity <entityType:id|id> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori db status [--json]")

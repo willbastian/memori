@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -49,6 +50,17 @@ type contextRehydrateEnvelope struct {
 	} `json:"data"`
 }
 
+type contextLoopsEnvelope struct {
+	Command string `json:"command"`
+	Data    struct {
+		Count int `json:"count"`
+		Loops []struct {
+			IssueID string `json:"issue_id"`
+			Status  string `json:"status"`
+		} `json:"loops"`
+	} `json:"data"`
+}
+
 func TestContextCheckpointPacketAndRehydrateCommands(t *testing.T) {
 	t.Parallel()
 
@@ -77,6 +89,51 @@ func TestContextCheckpointPacketAndRehydrateCommands(t *testing.T) {
 		"--json",
 	); err != nil {
 		t.Fatalf("issue update inprogress: %v\nstderr: %s", err, stderr)
+	}
+
+	gateDefPath := filepath.Join(t.TempDir(), "context-gates.json")
+	if err := os.WriteFile(gateDefPath, []byte(`{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}}]}`), 0o644); err != nil {
+		t.Fatalf("write gate template file: %v", err)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"gate", "template", "create",
+		"--db", dbPath,
+		"--id", "context-ci",
+		"--version", "1",
+		"--applies-to", "task",
+		"--file", gateDefPath,
+		"--json",
+	); err != nil {
+		t.Fatalf("gate template create: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"gate", "set", "instantiate",
+		"--db", dbPath,
+		"--issue", "mem-ccccc11",
+		"--template", "context-ci@1",
+		"--json",
+	); err != nil {
+		t.Fatalf("gate set instantiate: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"gate", "set", "lock",
+		"--db", dbPath,
+		"--issue", "mem-ccccc11",
+		"--json",
+	); err != nil {
+		t.Fatalf("gate set lock: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"gate", "evaluate",
+		"--db", dbPath,
+		"--issue", "mem-ccccc11",
+		"--gate", "build",
+		"--result", "FAIL",
+		"--evidence", "ci://run/context-cli-1",
+		"--command-id", "cmd-cli-context-gate-fail-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("gate evaluate fail: %v\nstderr: %s", err, stderr)
 	}
 
 	stdout, stderr, err := runMemoriForTest(
@@ -112,6 +169,23 @@ func TestContextCheckpointPacketAndRehydrateCommands(t *testing.T) {
 	}
 	if issuePacket.Command != "context packet build" || issuePacket.Data.Packet.PacketID == "" || issuePacket.Data.Packet.Scope != "issue" {
 		t.Fatalf("unexpected issue packet response: %+v", issuePacket)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "loops",
+		"--db", dbPath,
+		"--issue", "mem-ccccc11",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context loops: %v\nstderr: %s", err, stderr)
+	}
+	var loopsResp contextLoopsEnvelope
+	if err := json.Unmarshal([]byte(stdout), &loopsResp); err != nil {
+		t.Fatalf("decode context loops json: %v\nstdout: %s", err, stdout)
+	}
+	if loopsResp.Command != "context loops" || loopsResp.Data.Count == 0 {
+		t.Fatalf("expected context loops to report persisted loops, got %+v", loopsResp)
 	}
 
 	stdout, stderr, err = runMemoriForTest(

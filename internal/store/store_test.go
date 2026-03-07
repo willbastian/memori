@@ -1827,6 +1827,19 @@ func TestSessionCheckpointPacketAndRehydrateFlow(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("move issue to inprogress: %v", err)
 	}
+	gateSetID := "gs_context_1"
+	seedLockedGateSetForTest(t, s, issueID, gateSetID)
+	seedGateSetItemForTest(t, s, gateSetID, "build", "check", 1)
+	if _, _, _, err := s.EvaluateGate(ctx, EvaluateGateParams{
+		IssueID:      issueID,
+		GateID:       "build",
+		Result:       "FAIL",
+		EvidenceRefs: []string{"ci://run/context-1"},
+		Actor:        "agent-1",
+		CommandID:    "cmd-context-gate-fail-1",
+	}); err != nil {
+		t.Fatalf("evaluate gate fail for context packet: %v", err)
+	}
 
 	session, created, err := s.CheckpointSession(ctx, CheckpointSessionParams{
 		SessionID: "sess-1",
@@ -1842,6 +1855,13 @@ func TestSessionCheckpointPacketAndRehydrateFlow(t *testing.T) {
 	if session.SessionID != "sess-1" {
 		t.Fatalf("expected session id sess-1, got %q", session.SessionID)
 	}
+	var chunkCount int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM context_chunks WHERE session_id = ?`, "sess-1").Scan(&chunkCount); err != nil {
+		t.Fatalf("count context chunks: %v", err)
+	}
+	if chunkCount == 0 {
+		t.Fatalf("expected checkpoint to persist context_chunks rows")
+	}
 
 	issuePacket, err := s.BuildRehydratePacket(ctx, BuildPacketParams{
 		Scope:   "issue",
@@ -1853,6 +1873,28 @@ func TestSessionCheckpointPacketAndRehydrateFlow(t *testing.T) {
 	}
 	if issuePacket.PacketID == "" || issuePacket.Scope != "issue" {
 		t.Fatalf("expected issue packet metadata, got %#v", issuePacket)
+	}
+	gatesRaw, ok := issuePacket.Packet["gates"].([]any)
+	if !ok || len(gatesRaw) == 0 {
+		t.Fatalf("expected issue packet to include gate health, got %#v", issuePacket.Packet["gates"])
+	}
+	openLoopsRaw, ok := issuePacket.Packet["open_loops"].([]any)
+	if !ok || len(openLoopsRaw) == 0 {
+		t.Fatalf("expected issue packet to include open loops, got %#v", issuePacket.Packet["open_loops"])
+	}
+	loops, err := s.ListOpenLoops(ctx, ListOpenLoopsParams{IssueID: issueID})
+	if err != nil {
+		t.Fatalf("list open loops: %v", err)
+	}
+	if len(loops) == 0 {
+		t.Fatalf("expected persisted open loops for issue %s", issueID)
+	}
+	var summaryCount int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM issue_summaries WHERE issue_id = ?`, issueID).Scan(&summaryCount); err != nil {
+		t.Fatalf("count issue summaries: %v", err)
+	}
+	if summaryCount == 0 {
+		t.Fatalf("expected issue summaries to persist after packet build")
 	}
 
 	storedIssuePacket, err := s.GetRehydratePacket(ctx, GetPacketParams{PacketID: issuePacket.PacketID})

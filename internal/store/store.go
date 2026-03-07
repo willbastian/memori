@@ -143,6 +143,11 @@ type UsePacketParams struct {
 	PacketID string
 }
 
+type ListOpenLoopsParams struct {
+	IssueID string
+	CycleNo *int
+}
+
 type CreateGateTemplateParams struct {
 	TemplateID     string
 	Version        int
@@ -298,6 +303,18 @@ type SessionRehydrateResult struct {
 	SessionID string          `json:"session_id"`
 	Source    string          `json:"source"`
 	Packet    RehydratePacket `json:"packet"`
+}
+
+type OpenLoop struct {
+	LoopID        string `json:"loop_id"`
+	IssueID       string `json:"issue_id"`
+	CycleNo       int    `json:"cycle_no"`
+	LoopType      string `json:"loop_type"`
+	Status        string `json:"status"`
+	Owner         string `json:"owner,omitempty"`
+	Priority      string `json:"priority,omitempty"`
+	SourceEventID string `json:"source_event_id,omitempty"`
+	UpdatedAt     string `json:"updated_at"`
 }
 
 type GateTemplate struct {
@@ -1294,6 +1311,31 @@ func (s *Store) CheckpointSession(ctx context.Context, p CheckpointSessionParams
 		return Session{}, false, fmt.Errorf("upsert session checkpoint for %q: %w", sessionID, err)
 	}
 
+	metadataBytes, err := json.Marshal(map[string]any{
+		"trigger":         trigger,
+		"latest_event_id": latestEventID,
+	})
+	if err != nil {
+		return Session{}, false, fmt.Errorf("encode context chunk metadata: %w", err)
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO context_chunks(
+			chunk_id, session_id, entity_type, entity_id, kind, content, metadata_json, embedding_ref, created_at
+		) VALUES(?, ?, ?, ?, ?, ?, ?, NULL, ?)
+	`,
+		newID("chk"),
+		sessionID,
+		"session",
+		sessionID,
+		"checkpoint",
+		fmt.Sprintf("checkpoint for session %s", sessionID),
+		string(metadataBytes),
+		now,
+	)
+	if err != nil {
+		return Session{}, false, fmt.Errorf("insert context chunk for session %q: %w", sessionID, err)
+	}
+
 	session, err := sessionByIDTx(ctx, tx, sessionID)
 	if err != nil {
 		return Session{}, false, err
@@ -1389,6 +1431,9 @@ func (s *Store) BuildRehydratePacket(ctx context.Context, p BuildPacketParams) (
 	}
 	defer tx.Rollback()
 
+	issueIDForSummary := ""
+	issueCycleNo := 0
+
 	packetJSON := map[string]any{
 		"scope":      scope,
 		"scope_id":   scopeID,
@@ -1417,6 +1462,10 @@ func (s *Store) BuildRehydratePacket(ctx context.Context, p BuildPacketParams) (
 			"type":     issue.Type,
 			"status":   issue.Status,
 		}
+		if err := tx.QueryRowContext(ctx, `SELECT current_cycle_no FROM work_items WHERE id = ?`, issueID).Scan(&issueCycleNo); err != nil {
+			return RehydratePacket{}, fmt.Errorf("read current cycle for issue %q: %w", issueID, err)
+		}
+		issueIDForSummary = issueID
 		gates, risks, nextActions, err := gateSnapshotForIssueTx(ctx, tx, issueID)
 		if err != nil {
 			return RehydratePacket{}, err
@@ -1442,6 +1491,14 @@ func (s *Store) BuildRehydratePacket(ctx context.Context, p BuildPacketParams) (
 	if err != nil {
 		return RehydratePacket{}, err
 	}
+	if issueIDForSummary != "" {
+		gatesAny, _ := packetJSON["gates"].([]any)
+		openLoops, err := syncOpenLoopsForIssueFromGatesTx(ctx, tx, issueIDForSummary, issueCycleNo, gatesAny, latestEventID)
+		if err != nil {
+			return RehydratePacket{}, err
+		}
+		packetJSON["open_loops"] = openLoopsToAny(openLoops)
+	}
 	packetBytes, err := json.Marshal(packetJSON)
 	if err != nil {
 		return RehydratePacket{}, fmt.Errorf("encode packet json: %w", err)
@@ -1453,6 +1510,11 @@ func (s *Store) BuildRehydratePacket(ctx context.Context, p BuildPacketParams) (
 	`, packetID, scope, string(packetBytes), 1, nullIfEmpty(latestEventID), createdAt)
 	if err != nil {
 		return RehydratePacket{}, fmt.Errorf("insert rehydrate packet %q: %w", packetID, err)
+	}
+	if issueIDForSummary != "" {
+		if err := insertIssueSummaryTx(ctx, tx, issueIDForSummary, issueCycleNo, string(packetBytes)); err != nil {
+			return RehydratePacket{}, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1570,6 +1632,72 @@ func (s *Store) UseRehydratePacket(ctx context.Context, p UsePacketParams) (Agen
 		return AgentFocus{}, RehydratePacket{}, fmt.Errorf("commit tx: %w", err)
 	}
 	return focus, packet, nil
+}
+
+func (s *Store) ListOpenLoops(ctx context.Context, p ListOpenLoopsParams) ([]OpenLoop, error) {
+	var (
+		args         []any
+		conditions   []string
+		normalizedID string
+	)
+	if strings.TrimSpace(p.IssueID) != "" {
+		issueID, err := normalizeIssueKey(p.IssueID)
+		if err != nil {
+			return nil, err
+		}
+		normalizedID = issueID
+		conditions = append(conditions, "issue_id = ?")
+		args = append(args, issueID)
+	}
+	if p.CycleNo != nil {
+		if *p.CycleNo <= 0 {
+			return nil, errors.New("--cycle must be > 0")
+		}
+		conditions = append(conditions, "cycle_no = ?")
+		args = append(args, *p.CycleNo)
+	}
+
+	query := `
+		SELECT loop_id, issue_id, cycle_no, loop_type, status,
+			COALESCE(owner, ''), COALESCE(priority, ''), COALESCE(source_event_id, ''), updated_at
+		FROM open_loops
+	`
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	query += " ORDER BY issue_id ASC, cycle_no ASC, updated_at DESC, loop_id ASC"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		if normalizedID != "" {
+			return nil, fmt.Errorf("list open loops for issue %q: %w", normalizedID, err)
+		}
+		return nil, fmt.Errorf("list open loops: %w", err)
+	}
+	defer rows.Close()
+
+	loops := make([]OpenLoop, 0)
+	for rows.Next() {
+		var item OpenLoop
+		if err := rows.Scan(
+			&item.LoopID,
+			&item.IssueID,
+			&item.CycleNo,
+			&item.LoopType,
+			&item.Status,
+			&item.Owner,
+			&item.Priority,
+			&item.SourceEventID,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan open loop row: %w", err)
+		}
+		loops = append(loops, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate open loops: %w", err)
+	}
+	return loops, nil
 }
 
 func (s *Store) CreateGateTemplate(ctx context.Context, p CreateGateTemplateParams) (GateTemplate, bool, error) {
@@ -3146,6 +3274,200 @@ func gateSnapshotForIssueTx(ctx context.Context, tx *sql.Tx, issueID string) ([]
 		nextActions = append(nextActions, "All required gates are passing")
 	}
 	return gates, risks, nextActions, nil
+}
+
+func syncOpenLoopsForIssueFromGatesTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	issueID string,
+	cycleNo int,
+	gates []any,
+	sourceEventID string,
+) ([]OpenLoop, error) {
+	now := nowUTC()
+	expectedOpen := make(map[string]OpenLoop)
+	for _, rawGate := range gates {
+		gateMap, ok := rawGate.(map[string]any)
+		if !ok {
+			continue
+		}
+		gateID, _ := gateMap["gate_id"].(string)
+		if strings.TrimSpace(gateID) == "" {
+			continue
+		}
+		required, _ := gateMap["required"].(bool)
+		if !required {
+			continue
+		}
+		result, _ := gateMap["result"].(string)
+		if strings.EqualFold(strings.TrimSpace(result), "PASS") {
+			continue
+		}
+		loopID := deterministicLoopID(issueID, cycleNo, "gate", gateID)
+		expectedOpen[loopID] = OpenLoop{
+			LoopID:        loopID,
+			IssueID:       issueID,
+			CycleNo:       cycleNo,
+			LoopType:      "gate",
+			Status:        "Open",
+			Priority:      "P1",
+			SourceEventID: sourceEventID,
+			UpdatedAt:     now,
+		}
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT loop_id, status
+		FROM open_loops
+		WHERE issue_id = ?
+			AND cycle_no = ?
+			AND loop_type = 'gate'
+	`, issueID, cycleNo)
+	if err != nil {
+		return nil, fmt.Errorf("query existing gate loops for issue %q: %w", issueID, err)
+	}
+	defer rows.Close()
+
+	existing := make(map[string]string)
+	for rows.Next() {
+		var (
+			loopID string
+			status string
+		)
+		if err := rows.Scan(&loopID, &status); err != nil {
+			return nil, fmt.Errorf("scan existing gate loop row for issue %q: %w", issueID, err)
+		}
+		existing[loopID] = status
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate existing gate loops for issue %q: %w", issueID, err)
+	}
+
+	for loopID, loop := range expectedOpen {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO open_loops(
+				loop_id, issue_id, cycle_no, loop_type, status, owner, priority, source_event_id, updated_at
+			) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(loop_id) DO UPDATE SET
+				issue_id=excluded.issue_id,
+				cycle_no=excluded.cycle_no,
+				loop_type=excluded.loop_type,
+				status=excluded.status,
+				owner=excluded.owner,
+				priority=excluded.priority,
+				source_event_id=excluded.source_event_id,
+				updated_at=excluded.updated_at
+		`, loopID, loop.IssueID, loop.CycleNo, loop.LoopType, loop.Status, nullIfEmpty(loop.Owner), nullIfEmpty(loop.Priority), nullIfEmpty(loop.SourceEventID), loop.UpdatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("upsert open loop %q: %w", loopID, err)
+		}
+	}
+
+	for loopID, status := range existing {
+		if _, stillOpen := expectedOpen[loopID]; stillOpen {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(status), "Resolved") {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE open_loops
+			SET status = 'Resolved', updated_at = ?
+			WHERE loop_id = ?
+		`, now, loopID); err != nil {
+			return nil, fmt.Errorf("resolve stale open loop %q: %w", loopID, err)
+		}
+	}
+
+	loopRows, err := tx.QueryContext(ctx, `
+		SELECT loop_id, issue_id, cycle_no, loop_type, status,
+			COALESCE(owner, ''), COALESCE(priority, ''), COALESCE(source_event_id, ''), updated_at
+		FROM open_loops
+		WHERE issue_id = ?
+			AND cycle_no = ?
+		ORDER BY status ASC, loop_id ASC
+	`, issueID, cycleNo)
+	if err != nil {
+		return nil, fmt.Errorf("query synchronized loops for issue %q: %w", issueID, err)
+	}
+	defer loopRows.Close()
+
+	loops := make([]OpenLoop, 0)
+	for loopRows.Next() {
+		var item OpenLoop
+		if err := loopRows.Scan(
+			&item.LoopID,
+			&item.IssueID,
+			&item.CycleNo,
+			&item.LoopType,
+			&item.Status,
+			&item.Owner,
+			&item.Priority,
+			&item.SourceEventID,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan synchronized loop row for issue %q: %w", issueID, err)
+		}
+		loops = append(loops, item)
+	}
+	if err := loopRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate synchronized loop rows for issue %q: %w", issueID, err)
+	}
+	return loops, nil
+}
+
+func insertIssueSummaryTx(ctx context.Context, tx *sql.Tx, issueID string, cycleNo int, summaryJSON string) error {
+	var maxSeq int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(entity_seq), 0)
+		FROM events
+		WHERE entity_type = ? AND entity_id = ?
+	`, entityTypeIssue, issueID).Scan(&maxSeq); err != nil {
+		return fmt.Errorf("query max entity_seq for issue %q summary: %w", issueID, err)
+	}
+
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO issue_summaries(
+			summary_id, issue_id, cycle_no, summary_level, summary_json,
+			from_entity_seq, to_entity_seq, parent_summary_id, created_at
+		) VALUES(?, ?, ?, ?, ?, ?, ?, NULL, ?)
+	`,
+		newID("sum"),
+		issueID,
+		cycleNo,
+		"packet",
+		summaryJSON,
+		1,
+		maxSeq,
+		nowUTC(),
+	)
+	if err != nil {
+		return fmt.Errorf("insert issue summary for issue %q: %w", issueID, err)
+	}
+	return nil
+}
+
+func openLoopsToAny(loops []OpenLoop) []any {
+	items := make([]any, 0, len(loops))
+	for _, loop := range loops {
+		items = append(items, map[string]any{
+			"loop_id":         loop.LoopID,
+			"issue_id":        loop.IssueID,
+			"cycle_no":        loop.CycleNo,
+			"loop_type":       loop.LoopType,
+			"status":          loop.Status,
+			"owner":           loop.Owner,
+			"priority":        loop.Priority,
+			"source_event_id": loop.SourceEventID,
+			"updated_at":      loop.UpdatedAt,
+		})
+	}
+	return items
+}
+
+func deterministicLoopID(issueID string, cycleNo int, loopType, key string) string {
+	sum := sha256.Sum256([]byte(issueID + ":" + strconv.Itoa(cycleNo) + ":" + loopType + ":" + key))
+	return "loop_" + hex.EncodeToString(sum[:])[:12]
 }
 
 func nullIfZero(value int) any {
