@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -1390,6 +1391,344 @@ func TestUpdateIssueStatusDoneRequiresChildIssuesClosed(t *testing.T) {
 	}
 	if closedParent.Status != "Done" {
 		t.Fatalf("expected parent status Done, got %s", closedParent.Status)
+	}
+}
+
+func TestUpdateIssueStatusReopenAdvancesCycleAndClearsActiveGateSet(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-6767676"
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Reopen cycle test",
+		Actor:     "agent-1",
+		CommandID: "cmd-reopen-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-reopen-progress-1",
+	}); err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+	if _, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "reopen",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}}]}`,
+		Actor:          "agent-1",
+	}); err != nil {
+		t.Fatalf("create gate template: %v", err)
+	}
+
+	gateSet, _, err := s.InstantiateGateSet(ctx, InstantiateGateSetParams{
+		IssueID:      issueID,
+		TemplateRefs: []string{"reopen@1"},
+		Actor:        "agent-1",
+	})
+	if err != nil {
+		t.Fatalf("instantiate gate set: %v", err)
+	}
+	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{IssueID: issueID}); err != nil {
+		t.Fatalf("lock gate set: %v", err)
+	}
+	appendGateEvaluationEventForTest(t, s, issueID, gateSet.GateSetID, "build", "PASS", "agent-1", "cmd-reopen-gate-pass-1")
+
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "done",
+		Actor:     "agent-1",
+		CommandID: "cmd-reopen-done-1",
+	}); err != nil {
+		t.Fatalf("close issue before reopen: %v", err)
+	}
+
+	reopened, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-reopen-inprogress-2",
+	})
+	if err != nil {
+		t.Fatalf("reopen issue: %v", err)
+	}
+	if reopened.Status != "InProgress" {
+		t.Fatalf("expected reopened status InProgress, got %s", reopened.Status)
+	}
+
+	var (
+		cycleNo         int
+		activeGateSetID sql.NullString
+	)
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT current_cycle_no, active_gate_set_id
+		FROM work_items
+		WHERE id = ?
+	`, issueID).Scan(&cycleNo, &activeGateSetID); err != nil {
+		t.Fatalf("read reopened work item state: %v", err)
+	}
+	if cycleNo != 2 {
+		t.Fatalf("expected reopened issue to advance to cycle 2, got %d", cycleNo)
+	}
+	if activeGateSetID.Valid {
+		t.Fatalf("expected reopened issue to clear active_gate_set_id, got %#v", activeGateSetID)
+	}
+}
+
+func TestReopenSupportsNewCycleGateSetAndReplay(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-6868686"
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Reopen replay test",
+		Actor:     "agent-1",
+		CommandID: "cmd-reopen-replay-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-reopen-replay-progress-1",
+	}); err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+	if _, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "reopen-replay",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}}]}`,
+		Actor:          "agent-1",
+	}); err != nil {
+		t.Fatalf("create gate template: %v", err)
+	}
+
+	cycle1, _, err := s.InstantiateGateSet(ctx, InstantiateGateSetParams{
+		IssueID:      issueID,
+		TemplateRefs: []string{"reopen-replay@1"},
+		Actor:        "agent-1",
+	})
+	if err != nil {
+		t.Fatalf("instantiate cycle 1 gate set: %v", err)
+	}
+	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{IssueID: issueID}); err != nil {
+		t.Fatalf("lock cycle 1 gate set: %v", err)
+	}
+	appendGateEvaluationEventForTest(t, s, issueID, cycle1.GateSetID, "build", "PASS", "agent-1", "cmd-reopen-replay-gate-pass-1")
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "done",
+		Actor:     "agent-1",
+		CommandID: "cmd-reopen-replay-done-1",
+	}); err != nil {
+		t.Fatalf("close issue before reopen: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-reopen-replay-inprogress-2",
+	}); err != nil {
+		t.Fatalf("reopen issue: %v", err)
+	}
+
+	cycle2, _, err := s.InstantiateGateSet(ctx, InstantiateGateSetParams{
+		IssueID:      issueID,
+		TemplateRefs: []string{"reopen-replay@1"},
+		Actor:        "agent-1",
+	})
+	if err != nil {
+		t.Fatalf("instantiate cycle 2 gate set: %v", err)
+	}
+	if cycle2.CycleNo != 2 {
+		t.Fatalf("expected cycle 2 gate set, got cycle %d", cycle2.CycleNo)
+	}
+	if cycle2.GateSetID == cycle1.GateSetID {
+		t.Fatalf("expected new gate set id for reopened cycle, got %q", cycle2.GateSetID)
+	}
+	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{IssueID: issueID}); err != nil {
+		t.Fatalf("lock cycle 2 gate set: %v", err)
+	}
+	evaluation, _, _, err := s.EvaluateGate(ctx, EvaluateGateParams{
+		IssueID:      issueID,
+		GateID:       "build",
+		Result:       "FAIL",
+		EvidenceRefs: []string{"ci://run/reopen-replay-2"},
+		Actor:        "agent-1",
+		CommandID:    "cmd-reopen-replay-gate-fail-2",
+	})
+	if err != nil {
+		t.Fatalf("evaluate cycle 2 gate: %v", err)
+	}
+	if evaluation.GateSetID != cycle2.GateSetID {
+		t.Fatalf("expected cycle 2 evaluation to bind gate set %q, got %q", cycle2.GateSetID, evaluation.GateSetID)
+	}
+
+	if _, err := s.ReplayProjections(ctx); err != nil {
+		t.Fatalf("replay projections: %v", err)
+	}
+
+	var (
+		cycleNo         int
+		activeGateSetID sql.NullString
+	)
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT current_cycle_no, active_gate_set_id
+		FROM work_items
+		WHERE id = ?
+	`, issueID).Scan(&cycleNo, &activeGateSetID); err != nil {
+		t.Fatalf("read replayed work item state: %v", err)
+	}
+	if cycleNo != 2 {
+		t.Fatalf("expected replayed current_cycle_no 2, got %d", cycleNo)
+	}
+	if activeGateSetID.Valid {
+		t.Fatalf("expected replay to leave active_gate_set_id unset until gate-set locking is event-sourced, got %#v", activeGateSetID)
+	}
+
+	status, err := s.GetGateStatus(ctx, issueID)
+	if err != nil {
+		t.Fatalf("get gate status after replay: %v", err)
+	}
+	if status.CycleNo != 2 {
+		t.Fatalf("expected replayed gate status cycle 2, got %d", status.CycleNo)
+	}
+	if len(status.Gates) != 1 || status.Gates[0].GateID != "build" || status.Gates[0].Result != "FAIL" {
+		t.Fatalf("unexpected replayed gate status: %#v", status.Gates)
+	}
+}
+
+func TestConcurrentCreateIssuePreservesEventOrdering(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	const writers = 12
+	start := make(chan struct{})
+	errCh := make(chan error, writers)
+	var wg sync.WaitGroup
+
+	for i := 0; i < writers; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+				IssueID:   fmt.Sprintf("mem-a%06x", i),
+				Type:      "task",
+				Title:     fmt.Sprintf("Concurrent %d", i),
+				Actor:     "agent-1",
+				CommandID: fmt.Sprintf("cmd-concur-create-%03d", i),
+			})
+			errCh <- err
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent create issue failed: %v", err)
+		}
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT event_order FROM events ORDER BY event_order ASC`)
+	if err != nil {
+		t.Fatalf("query event ordering after concurrency: %v", err)
+	}
+	defer rows.Close()
+
+	var (
+		prevOrder int64
+		count     int64
+	)
+	for rows.Next() {
+		var order int64
+		if err := rows.Scan(&order); err != nil {
+			t.Fatalf("scan concurrent event_order: %v", err)
+		}
+		if order != prevOrder+1 {
+			t.Fatalf("expected contiguous event_order under concurrency, prev=%d got=%d", prevOrder, order)
+		}
+		prevOrder = order
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate concurrent event_order rows: %v", err)
+	}
+	if count != writers {
+		t.Fatalf("expected %d events, got %d", writers, count)
+	}
+}
+
+func TestConcurrentDuplicateCreateIssueCommandIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	const callers = 8
+	start := make(chan struct{})
+	errCh := make(chan error, callers)
+	idempotentCh := make(chan bool, callers)
+	var wg sync.WaitGroup
+
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, _, idempotent, err := s.CreateIssue(ctx, CreateIssueParams{
+				IssueID:   "mem-a1d0e0f",
+				Type:      "task",
+				Title:     "Concurrent idempotent create",
+				Actor:     "agent-1",
+				CommandID: "cmd-concur-idem-1",
+			})
+			errCh <- err
+			idempotentCh <- idempotent
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(errCh)
+	close(idempotentCh)
+
+	idempotentCount := 0
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent idempotent create failed: %v", err)
+		}
+	}
+	for idempotent := range idempotentCh {
+		if idempotent {
+			idempotentCount++
+		}
+	}
+	if idempotentCount == 0 {
+		t.Fatalf("expected at least one concurrent duplicate create to return idempotent=true")
+	}
+
+	var eventCount int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM events WHERE entity_id = ?`, "mem-a1d0e0f").Scan(&eventCount); err != nil {
+		t.Fatalf("count idempotent concurrent events: %v", err)
+	}
+	if eventCount != 1 {
+		t.Fatalf("expected one event for concurrent duplicate command, got %d", eventCount)
 	}
 }
 

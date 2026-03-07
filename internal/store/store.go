@@ -461,10 +461,12 @@ func Open(path string) (*Store, error) {
 		}
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", sqliteDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	stmts := []string{
 		"PRAGMA journal_mode = WAL;",
@@ -479,6 +481,29 @@ func Open(path string) (*Store, error) {
 	}
 
 	return &Store{db: db}, nil
+}
+
+func sqliteDSN(path string) string {
+	dsn := path
+	dsn = appendSQLiteQueryParam(dsn, "_txlock=immediate")
+	dsn = appendSQLiteQueryParam(dsn, "_pragma=journal_mode(WAL)")
+	dsn = appendSQLiteQueryParam(dsn, "_pragma=foreign_keys(ON)")
+	dsn = appendSQLiteQueryParam(dsn, "_pragma=busy_timeout(5000)")
+	return dsn
+}
+
+func appendSQLiteQueryParam(dsn, param string) string {
+	key := param
+	if idx := strings.Index(param, "="); idx >= 0 {
+		key = param[:idx+1]
+	}
+	if strings.Contains(dsn, key) {
+		return dsn
+	}
+	if strings.Contains(dsn, "?") {
+		return dsn + "&" + param
+	}
+	return dsn + "?" + param
 }
 
 func (s *Store) Close() error {
@@ -609,7 +634,6 @@ func (s *Store) Initialize(ctx context.Context, p InitializeParams) error {
 			created_at TEXT NOT NULL,
 			created_by TEXT NOT NULL,
 			UNIQUE(issue_id, cycle_no),
-			UNIQUE(issue_id, gate_set_hash),
 			FOREIGN KEY(issue_id) REFERENCES work_items(id)
 		);`,
 		`CREATE TRIGGER IF NOT EXISTS gate_sets_no_delete
@@ -2795,6 +2819,7 @@ func applyIssueUpdatedProjectionTx(ctx context.Context, tx *sql.Tx, event Event)
 
 	setClauses := make([]string, 0, 8)
 	args := make([]any, 0, 10)
+	reopenTransition := false
 
 	if payload.StatusTo != nil {
 		issueStatus, err := normalizeIssueStatus(*payload.StatusTo)
@@ -2803,6 +2828,13 @@ func applyIssueUpdatedProjectionTx(ctx context.Context, tx *sql.Tx, event Event)
 		}
 		setClauses = append(setClauses, "status = ?")
 		args = append(args, issueStatus)
+		if payload.StatusFrom != nil {
+			statusFrom, err := normalizeIssueStatus(*payload.StatusFrom)
+			if err != nil {
+				return fmt.Errorf("decode issue.updated payload for event %s: %w", event.EventID, err)
+			}
+			reopenTransition = statusFrom == "Done" && issueStatus != "Done"
+		}
 	}
 	if payload.PriorityTo != nil {
 		setClauses = append(setClauses, "priority = ?")
@@ -2832,6 +2864,9 @@ func applyIssueUpdatedProjectionTx(ctx context.Context, tx *sql.Tx, event Event)
 		setClauses = append(setClauses, "references_json = ?")
 		args = append(args, string(referencesJSON))
 	}
+	if reopenTransition {
+		setClauses = append(setClauses, "current_cycle_no = current_cycle_no + 1", "active_gate_set_id = NULL")
+	}
 	if len(setClauses) == 0 {
 		return fmt.Errorf("decode issue.updated payload for event %s: no mutable fields provided", event.EventID)
 	}
@@ -2854,6 +2889,11 @@ func applyIssueUpdatedProjectionTx(ctx context.Context, tx *sql.Tx, event Event)
 	}
 	if rows == 0 {
 		return fmt.Errorf("update work_item from event %s: issue %q not found", event.EventID, payload.IssueID)
+	}
+	if reopenTransition {
+		if _, err := syncOpenLoopsForCurrentCycleTx(ctx, tx, payload.IssueID, event.EventID); err != nil {
+			return fmt.Errorf("sync reopened cycle open loops from event %s: %w", event.EventID, err)
+		}
 	}
 
 	return nil
@@ -4299,7 +4339,7 @@ func validateIssueStatusTransition(from, to string) error {
 		"Todo":       {"InProgress": true, "Blocked": true},
 		"InProgress": {"Blocked": true, "Done": true},
 		"Blocked":    {"InProgress": true},
-		"Done":       {},
+		"Done":       {"InProgress": true},
 	}
 	if !allowed[fromStatus][toStatus] {
 		return fmt.Errorf("invalid status transition %q -> %q", fromStatus, toStatus)
