@@ -273,6 +273,7 @@ func verifyEventHashChain(ctx context.Context, db *sql.DB) ([]string, error) {
 
 	failures := make([]string, 0)
 	expectedOrder := int64(1)
+	expectedEntitySeq := make(map[string]int64)
 	previousHash := ""
 
 	for rows.Next() {
@@ -319,6 +320,25 @@ func verifyEventHashChain(ctx context.Context, db *sql.DB) ([]string, error) {
 			expectedOrder = eventOrder
 		}
 
+		entityKey := entityType + "\x00" + entityID
+		expectedSeq := expectedEntitySeq[entityKey]
+		if expectedSeq == 0 {
+			expectedSeq = 1
+		}
+		if entitySeq != expectedSeq {
+			failures = append(
+				failures,
+				fmt.Sprintf(
+					"entity_seq mismatch for %s:%s at event_order %d: expected %d got %d",
+					entityType,
+					entityID,
+					eventOrder,
+					expectedSeq,
+					entitySeq,
+				),
+			)
+		}
+
 		if prevHash != previousHash {
 			failures = append(
 				failures,
@@ -354,6 +374,7 @@ func verifyEventHashChain(ctx context.Context, db *sql.DB) ([]string, error) {
 		}
 
 		previousHash = hash
+		expectedEntitySeq[entityKey] = entitySeq + 1
 		expectedOrder++
 	}
 
