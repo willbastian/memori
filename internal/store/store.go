@@ -77,6 +77,18 @@ type IssueNextResult struct {
 	Considered int                  `json:"considered"`
 }
 
+type issueNextContinuitySignals struct {
+	CurrentCycleNo       int
+	OpenLoopCount        int
+	FailingRequiredGates int
+	BlockedRequiredGates int
+	MissingRequiredGates int
+	HasFreshPacket       bool
+	HasStalePacket       bool
+	FocusMatch           bool
+	FocusPacketMatch     bool
+}
+
 type Event struct {
 	EventID             string `json:"event_id"`
 	EventOrder          int64  `json:"event_order"`
@@ -2620,12 +2632,27 @@ func (s *Store) ListIssues(ctx context.Context, p ListIssuesParams) ([]Issue, er
 }
 
 func (s *Store) NextIssue(ctx context.Context, agent string) (IssueNextResult, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return IssueNextResult{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	agent = strings.TrimSpace(agent)
+	focus, focusFound, err := agentFocusByAgentTx(ctx, tx, agent)
+	if err != nil {
+		return IssueNextResult{}, err
+	}
+	if !focusFound {
+		focus = AgentFocus{}
+	}
+
+	rows, err := tx.QueryContext(ctx, `
 		SELECT
 			id, type, title, COALESCE(parent_id, ''), status,
 			COALESCE(priority, ''), COALESCE(labels_json, '[]'),
 			COALESCE(description, ''), COALESCE(acceptance_criteria, ''), COALESCE(references_json, '[]'),
-			created_at, updated_at, last_event_id
+			created_at, updated_at, last_event_id, current_cycle_no
 		FROM work_items
 		WHERE status IN ('Todo', 'InProgress')
 		ORDER BY id ASC
@@ -2633,14 +2660,19 @@ func (s *Store) NextIssue(ctx context.Context, agent string) (IssueNextResult, e
 	if err != nil {
 		return IssueNextResult{}, fmt.Errorf("query next-issue candidates: %w", err)
 	}
-	defer rows.Close()
 
+	type nextIssueSeed struct {
+		Issue          Issue
+		CurrentCycleNo int
+	}
+	seeds := make([]nextIssueSeed, 0)
 	candidates := make([]IssueNextCandidate, 0)
 	for rows.Next() {
 		var (
 			issue          Issue
 			labelsJSON     string
 			referencesJSON string
+			currentCycleNo int
 		)
 		if err := rows.Scan(
 			&issue.ID,
@@ -2656,6 +2688,7 @@ func (s *Store) NextIssue(ctx context.Context, agent string) (IssueNextResult, e
 			&issue.CreatedAt,
 			&issue.UpdatedAt,
 			&issue.LastEventID,
+			&currentCycleNo,
 		); err != nil {
 			return IssueNextResult{}, fmt.Errorf("scan next-issue candidate row: %w", err)
 		}
@@ -2669,16 +2702,28 @@ func (s *Store) NextIssue(ctx context.Context, agent string) (IssueNextResult, e
 			return IssueNextResult{}, fmt.Errorf("decode candidate references for issue %q: %w", issue.ID, err)
 		}
 		issue.References = references
-
-		score, reasons := scoreIssueCandidate(issue, issue.Priority)
-		candidates = append(candidates, IssueNextCandidate{
-			Issue:   issue,
-			Score:   score,
-			Reasons: reasons,
+		seeds = append(seeds, nextIssueSeed{
+			Issue:          issue,
+			CurrentCycleNo: currentCycleNo,
 		})
+	}
+	if err := rows.Close(); err != nil {
+		return IssueNextResult{}, fmt.Errorf("close next-issue candidate rows: %w", err)
 	}
 	if err := rows.Err(); err != nil {
 		return IssueNextResult{}, fmt.Errorf("iterate next-issue candidate rows: %w", err)
+	}
+	for _, seed := range seeds {
+		signals, err := loadIssueNextContinuitySignalsTx(ctx, tx, seed.Issue.ID, seed.Issue.LastEventID, seed.CurrentCycleNo, focus)
+		if err != nil {
+			return IssueNextResult{}, err
+		}
+		score, reasons := scoreIssueCandidate(seed.Issue, seed.Issue.Priority, signals)
+		candidates = append(candidates, IssueNextCandidate{
+			Issue:   seed.Issue,
+			Score:   score,
+			Reasons: reasons,
+		})
 	}
 	if len(candidates) == 0 {
 		return IssueNextResult{}, errors.New("no actionable issues found (Todo/InProgress)")
@@ -2695,10 +2740,13 @@ func (s *Store) NextIssue(ctx context.Context, agent string) (IssueNextResult, e
 	})
 
 	result := IssueNextResult{
-		Agent:      strings.TrimSpace(agent),
+		Agent:      agent,
 		Candidate:  candidates[0],
 		Candidates: candidates,
 		Considered: len(candidates),
+	}
+	if err := tx.Commit(); err != nil {
+		return IssueNextResult{}, fmt.Errorf("commit tx: %w", err)
 	}
 	return result, nil
 }
@@ -4844,9 +4892,280 @@ func deterministicLoopID(issueID string, cycleNo int, loopType, key string) stri
 	return "loop_" + hex.EncodeToString(sum[:])[:12]
 }
 
-func scoreIssueCandidate(issue Issue, priority string) (int, []string) {
+func agentFocusByAgentTx(ctx context.Context, tx *sql.Tx, agent string) (AgentFocus, bool, error) {
+	agent = strings.TrimSpace(agent)
+	if agent == "" {
+		return AgentFocus{}, false, nil
+	}
+
+	var (
+		focus         AgentFocus
+		activeIssueID sql.NullString
+		activeCycleNo sql.NullInt64
+	)
+	err := tx.QueryRowContext(ctx, `
+		SELECT agent_id, active_issue_id, active_cycle_no, last_packet_id, updated_at
+		FROM agent_focus
+		WHERE agent_id = ?
+	`, agent).Scan(&focus.AgentID, &activeIssueID, &activeCycleNo, &focus.LastPacketID, &focus.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AgentFocus{}, false, nil
+	}
+	if err != nil {
+		return AgentFocus{}, false, fmt.Errorf("query agent focus for %q: %w", agent, err)
+	}
+	if activeIssueID.Valid {
+		focus.ActiveIssueID = activeIssueID.String
+	}
+	if activeCycleNo.Valid {
+		focus.ActiveCycleNo = int(activeCycleNo.Int64)
+	}
+	return focus, true, nil
+}
+
+func eventOrderByIDTx(ctx context.Context, tx *sql.Tx, eventID string) (int64, bool, error) {
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" {
+		return 0, false, nil
+	}
+
+	var order int64
+	err := tx.QueryRowContext(ctx, `
+		SELECT event_order
+		FROM events
+		WHERE event_id = ?
+	`, eventID).Scan(&order)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("query event order for %q: %w", eventID, err)
+	}
+	return order, true, nil
+}
+
+func latestContinuityEventOrderForIssueCycleTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	issueID string,
+	issueLastEventID string,
+	currentCycleNo int,
+) (int64, error) {
+	eventIDs := make([]string, 0, 8)
+	if strings.TrimSpace(issueLastEventID) != "" {
+		eventIDs = append(eventIDs, issueLastEventID)
+	}
+
+	lockedGateSet, found, err := lockedGateSetForIssueCycleTx(ctx, tx, issueID, currentCycleNo)
+	if err != nil {
+		return 0, err
+	}
+	if found {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT COALESCE(gs.last_event_id, '')
+			FROM gate_set_items i
+			LEFT JOIN gate_status_projection gs
+				ON gs.issue_id = ?
+				AND gs.gate_set_id = i.gate_set_id
+				AND gs.gate_id = i.gate_id
+			WHERE i.gate_set_id = ?
+		`, issueID, lockedGateSet.GateSetID)
+		if err != nil {
+			return 0, fmt.Errorf("query gate continuity events for issue %q: %w", issueID, err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var eventID string
+			if err := rows.Scan(&eventID); err != nil {
+				return 0, fmt.Errorf("scan gate continuity event for issue %q: %w", issueID, err)
+			}
+			if strings.TrimSpace(eventID) != "" {
+				eventIDs = append(eventIDs, eventID)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return 0, fmt.Errorf("iterate gate continuity events for issue %q: %w", issueID, err)
+		}
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT COALESCE(source_event_id, '')
+		FROM open_loops
+		WHERE issue_id = ?
+			AND cycle_no = ?
+	`, issueID, currentCycleNo)
+	if err != nil {
+		return 0, fmt.Errorf("query open-loop continuity events for issue %q cycle %d: %w", issueID, currentCycleNo, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var eventID string
+		if err := rows.Scan(&eventID); err != nil {
+			return 0, fmt.Errorf("scan open-loop continuity event for issue %q cycle %d: %w", issueID, currentCycleNo, err)
+		}
+		if strings.TrimSpace(eventID) != "" {
+			eventIDs = append(eventIDs, eventID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate open-loop continuity events for issue %q cycle %d: %w", issueID, currentCycleNo, err)
+	}
+
+	maxOrder := int64(0)
+	seen := make(map[string]struct{}, len(eventIDs))
+	for _, eventID := range eventIDs {
+		eventID = strings.TrimSpace(eventID)
+		if eventID == "" {
+			continue
+		}
+		if _, ok := seen[eventID]; ok {
+			continue
+		}
+		seen[eventID] = struct{}{}
+		order, found, err := eventOrderByIDTx(ctx, tx, eventID)
+		if err != nil {
+			return 0, err
+		}
+		if found && order > maxOrder {
+			maxOrder = order
+		}
+	}
+	return maxOrder, nil
+}
+
+func loadIssueNextContinuitySignalsTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	issueID string,
+	issueLastEventID string,
+	currentCycleNo int,
+	focus AgentFocus,
+) (issueNextContinuitySignals, error) {
+	signals := issueNextContinuitySignals{
+		CurrentCycleNo: currentCycleNo,
+	}
+	if focus.ActiveIssueID == issueID && (focus.ActiveCycleNo == 0 || focus.ActiveCycleNo == currentCycleNo) {
+		signals.FocusMatch = true
+	}
+
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(1)
+		FROM open_loops
+		WHERE issue_id = ?
+			AND cycle_no = ?
+			AND status = 'Open'
+	`, issueID, currentCycleNo).Scan(&signals.OpenLoopCount); err != nil {
+		return issueNextContinuitySignals{}, fmt.Errorf("query open loop count for issue %q cycle %d: %w", issueID, currentCycleNo, err)
+	}
+
+	lockedGateSet, found, err := lockedGateSetForIssueCycleTx(ctx, tx, issueID, currentCycleNo)
+	if err != nil {
+		return issueNextContinuitySignals{}, err
+	}
+	if found {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT COALESCE(gs.result, '')
+			FROM gate_set_items i
+			LEFT JOIN gate_status_projection gs
+				ON gs.issue_id = ?
+				AND gs.gate_set_id = i.gate_set_id
+				AND gs.gate_id = i.gate_id
+			WHERE i.gate_set_id = ?
+				AND i.required = 1
+		`, issueID, lockedGateSet.GateSetID)
+		if err != nil {
+			return issueNextContinuitySignals{}, fmt.Errorf("query gate health for issue %q: %w", issueID, err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var result string
+			if err := rows.Scan(&result); err != nil {
+				return issueNextContinuitySignals{}, fmt.Errorf("scan gate health for issue %q: %w", issueID, err)
+			}
+			switch strings.TrimSpace(result) {
+			case "FAIL":
+				signals.FailingRequiredGates++
+			case "BLOCKED":
+				signals.BlockedRequiredGates++
+			case "", "MISSING":
+				signals.MissingRequiredGates++
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return issueNextContinuitySignals{}, fmt.Errorf("iterate gate health for issue %q: %w", issueID, err)
+		}
+	}
+
+	packet, found, err := latestPacketForScopeIDTx(ctx, tx, "issue", issueID)
+	if err != nil {
+		return issueNextContinuitySignals{}, err
+	}
+	if found {
+		packetCycleNo := issuePacketCycleNo(packet)
+		if focus.LastPacketID != "" && focus.LastPacketID == packet.PacketID {
+			signals.FocusPacketMatch = true
+		}
+		packetEventOrder, packetEventFound, err := eventOrderByIDTx(ctx, tx, packet.BuiltFromEventID)
+		if err != nil {
+			return issueNextContinuitySignals{}, err
+		}
+		latestContinuityOrder, err := latestContinuityEventOrderForIssueCycleTx(ctx, tx, issueID, issueLastEventID, currentCycleNo)
+		if err != nil {
+			return issueNextContinuitySignals{}, err
+		}
+		if packetCycleNo == currentCycleNo && ((packetEventFound && packetEventOrder >= latestContinuityOrder) || (!packetEventFound && latestContinuityOrder == 0)) {
+			signals.HasFreshPacket = true
+		} else {
+			signals.HasStalePacket = true
+		}
+	}
+
+	return signals, nil
+}
+
+func issuePacketCycleNo(packet RehydratePacket) int {
+	if packet.Packet == nil {
+		return 0
+	}
+	if provenanceRaw, ok := packet.Packet["provenance"].(map[string]any); ok {
+		if cycleNo := anyToInt(provenanceRaw["issue_cycle_no"]); cycleNo > 0 {
+			return cycleNo
+		}
+	}
+	if stateRaw, ok := packet.Packet["state"].(map[string]any); ok {
+		return anyToInt(stateRaw["cycle_no"])
+	}
+	return 0
+}
+
+func anyToInt(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int32:
+		return int(typed)
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case json.Number:
+		if v, err := typed.Int64(); err == nil {
+			return int(v)
+		}
+	case string:
+		if v, err := strconv.Atoi(strings.TrimSpace(typed)); err == nil {
+			return v
+		}
+	}
+	return 0
+}
+
+func scoreIssueCandidate(issue Issue, priority string, signals issueNextContinuitySignals) (int, []string) {
 	score := 0
-	reasons := make([]string, 0, 4)
+	reasons := make([]string, 0, 8)
 
 	switch issue.Status {
 	case "InProgress":
@@ -4887,6 +5206,42 @@ func scoreIssueCandidate(issue Issue, priority string) (int, []string) {
 	if issue.ParentID == "" && (issue.Type == "Task" || issue.Type == "Bug") {
 		score += 5
 		reasons = append(reasons, "standalone item can start immediately")
+	}
+
+	if signals.FocusMatch {
+		score += 120
+		reasons = append(reasons, "matches the agent's active focus for resume")
+	}
+	if signals.FocusPacketMatch {
+		score += 35
+		reasons = append(reasons, "agent already holds the latest recovery packet")
+	}
+	if signals.OpenLoopCount > 0 {
+		boost := signals.OpenLoopCount * 15
+		if boost > 45 {
+			boost = 45
+		}
+		score += boost
+		reasons = append(reasons, fmt.Sprintf("has %d open loop(s) that need continuity", signals.OpenLoopCount))
+	}
+	if signals.FailingRequiredGates > 0 {
+		score += 40
+		reasons = append(reasons, fmt.Sprintf("%d required gate(s) are failing", signals.FailingRequiredGates))
+	}
+	if signals.BlockedRequiredGates > 0 {
+		score += 30
+		reasons = append(reasons, fmt.Sprintf("%d required gate(s) are blocked", signals.BlockedRequiredGates))
+	}
+	if signals.MissingRequiredGates > 0 {
+		score += 15
+		reasons = append(reasons, fmt.Sprintf("%d required gate(s) still need evaluation", signals.MissingRequiredGates))
+	}
+	if signals.HasFreshPacket {
+		score += 20
+		reasons = append(reasons, "fresh issue packet is ready for recovery")
+	} else if signals.HasStalePacket {
+		score -= 5
+		reasons = append(reasons, "available issue packet is stale")
 	}
 	return score, reasons
 }
