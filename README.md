@@ -141,6 +141,13 @@ memori db replay
 
 Mutating commands (`issue create`, `issue update`, `issue link`, `gate evaluate`) require `--command-id` for idempotency tracking.
 
+Human-readable output is grouped around likely workflows:
+
+- `memori help` separates human workflows, agent workflows, and create/update commands.
+- Happy-path text output highlights the action that succeeded and includes suggested next commands when available.
+- `MEMORI_COLOR=auto|always|never` controls ANSI color in human-readable output.
+- `NO_COLOR`, `CLICOLOR=0`, `CLICOLOR_FORCE=1`, and `FORCE_COLOR=1` are also honored.
+
 Issue key format:
 
 - `{prefix}-{shortSHA}` (example: `wrk-a1b2c3d`)

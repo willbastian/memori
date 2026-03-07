@@ -144,7 +144,15 @@ func runInit(args []string, out io.Writer) error {
 		})
 	}
 
-	_, _ = fmt.Fprintf(out, "Initialized memori database at %s (schema v%d, issue prefix %s)\n", *dbPath, dbVersion, *issuePrefix)
+	ui := newTextUI(out)
+	ui.success("Initialized memori database")
+	ui.field("DB Path", *dbPath)
+	ui.field("Schema", fmt.Sprintf("v%d", dbVersion))
+	ui.field("Issue Prefix", *issuePrefix)
+	ui.nextSteps(
+		`memori issue create --type task --title "First ticket" --command-id "cli-create-01"`,
+		"memori backlog",
+	)
 	return nil
 }
 
@@ -233,13 +241,23 @@ func runIssueCreate(args []string, out io.Writer) error {
 		})
 	}
 
+	ui := newTextUI(out)
 	if idempotent {
-		_, _ = fmt.Fprintf(out, "Issue %s already exists from previous command replay.\n", issue.ID)
+		ui.note(fmt.Sprintf("Command replay detected; reusing issue %s.", issue.ID))
 	} else {
-		_, _ = fmt.Fprintf(out, "Created issue %s (%s): %s\n", issue.ID, issue.Type, issue.Title)
+		ui.success(fmt.Sprintf("Created issue %s", issue.ID))
 	}
-	_, _ = fmt.Fprintf(out, "Status: %s\n", issue.Status)
-	_, _ = fmt.Fprintf(out, "Event: %s (%s #%d)\n", event.EventID, event.EventType, event.EventOrder)
+	ui.field("Type", issue.Type)
+	ui.field("Status", colorize(ui.colors, colorForStatus(issue.Status), issue.Status))
+	ui.field("Title", issue.Title)
+	if strings.TrimSpace(issue.ParentID) != "" {
+		ui.field("Parent", issue.ParentID)
+	}
+	ui.field("Event", fmt.Sprintf("%s (%s #%d)", event.EventID, event.EventType, event.EventOrder))
+	ui.nextSteps(
+		fmt.Sprintf("memori issue show --key %s", issue.ID),
+		fmt.Sprintf(`memori issue update --key %s --status inprogress --command-id "<new-id>"`, issue.ID),
+	)
 	return nil
 }
 
@@ -348,12 +366,21 @@ func runIssueUpdate(args []string, out io.Writer) error {
 		})
 	}
 
+	ui := newTextUI(out)
 	if idempotent {
-		_, _ = fmt.Fprintf(out, "Issue %s update already applied from previous command replay.\n", issue.ID)
+		ui.note(fmt.Sprintf("Command replay detected; issue %s is already up to date.", issue.ID))
 	} else {
-		_, _ = fmt.Fprintf(out, "Updated issue %s status -> %s\n", issue.ID, issue.Status)
+		if statusProvided {
+			ui.success(fmt.Sprintf("Updated issue %s -> %s", issue.ID, issue.Status))
+		} else {
+			ui.success(fmt.Sprintf("Updated issue %s", issue.ID))
+		}
 	}
-	_, _ = fmt.Fprintf(out, "Event: %s (%s #%d)\n", event.EventID, event.EventType, event.EventOrder)
+	ui.field("Event", fmt.Sprintf("%s (%s #%d)", event.EventID, event.EventType, event.EventOrder))
+	ui.nextSteps(
+		fmt.Sprintf("memori issue show --key %s", issue.ID),
+		fmt.Sprintf("memori event log --entity %s", issue.ID),
+	)
 	return nil
 }
 
@@ -461,30 +488,39 @@ func runIssueShow(args []string, out io.Writer) error {
 		})
 	}
 
-	_, _ = fmt.Fprintf(out, "ID: %s\n", issue.ID)
-	_, _ = fmt.Fprintf(out, "Type: %s\n", issue.Type)
-	_, _ = fmt.Fprintf(out, "Title: %s\n", issue.Title)
+	ui := newTextUI(out)
+	ui.heading(fmt.Sprintf("%s [%s/%s]", issue.ID, colorize(ui.colors, colorForType(issue.Type), issue.Type), colorize(ui.colors, colorForStatus(issue.Status), issue.Status)))
+	ui.field("Title", issue.Title)
 	if issue.ParentID != "" {
-		_, _ = fmt.Fprintf(out, "Parent: %s\n", issue.ParentID)
+		ui.field("Parent", issue.ParentID)
 	}
-	_, _ = fmt.Fprintf(out, "Status: %s\n", issue.Status)
 	if strings.TrimSpace(issue.Priority) != "" {
-		_, _ = fmt.Fprintf(out, "Priority: %s\n", issue.Priority)
+		ui.field("Priority", issue.Priority)
 	}
 	if len(issue.Labels) > 0 {
-		_, _ = fmt.Fprintf(out, "Labels: %s\n", strings.Join(issue.Labels, ", "))
+		ui.field("Labels", strings.Join(issue.Labels, ", "))
 	}
 	if strings.TrimSpace(issue.Description) != "" {
-		_, _ = fmt.Fprintf(out, "Description: %s\n", issue.Description)
+		ui.blank()
+		ui.section("Description")
+		_, _ = fmt.Fprintln(out, issue.Description)
 	}
 	if strings.TrimSpace(issue.Acceptance) != "" {
-		_, _ = fmt.Fprintf(out, "Acceptance Criteria: %s\n", issue.Acceptance)
+		ui.blank()
+		ui.section("Acceptance Criteria")
+		_, _ = fmt.Fprintln(out, issue.Acceptance)
 	}
 	if len(issue.References) > 0 {
-		_, _ = fmt.Fprintf(out, "References: %s\n", strings.Join(issue.References, ", "))
+		ui.blank()
+		ui.section("References")
+		for _, ref := range issue.References {
+			ui.bullet(ref)
+		}
 	}
-	_, _ = fmt.Fprintf(out, "Created: %s\n", issue.CreatedAt)
-	_, _ = fmt.Fprintf(out, "Updated: %s\n", issue.UpdatedAt)
+	ui.blank()
+	ui.section("Timeline")
+	ui.field("Created", issue.CreatedAt)
+	ui.field("Updated", issue.UpdatedAt)
 	return nil
 }
 
@@ -523,10 +559,19 @@ func runIssueNext(args []string, out io.Writer) error {
 		})
 	}
 
-	_, _ = fmt.Fprintf(out, "Next issue: %s [%s/%s] %s\n", next.Candidate.Issue.ID, next.Candidate.Issue.Type, next.Candidate.Issue.Status, next.Candidate.Issue.Title)
+	ui := newTextUI(out)
+	ui.heading("Recommended issue")
+	ui.field("Issue", formatIssueLine(next.Candidate.Issue, ui.colors))
+	ui.field("Title", next.Candidate.Issue.Title)
+	ui.blank()
+	ui.section("Why This Issue")
 	for _, reason := range next.Candidate.Reasons {
-		_, _ = fmt.Fprintf(out, "- %s\n", reason)
+		ui.bullet(reason)
 	}
+	ui.nextSteps(
+		fmt.Sprintf("memori issue show --key %s", next.Candidate.Issue.ID),
+		fmt.Sprintf(`memori issue update --key %s --status inprogress --command-id "<new-id>"`, next.Candidate.Issue.ID),
+	)
 	return nil
 }
 
@@ -576,6 +621,8 @@ func runBacklog(args []string, out io.Writer) error {
 		_, _ = fmt.Fprintln(out, "No issues matched the backlog filters.")
 		return nil
 	}
+	ui := newTextUI(out)
+	ui.heading("Backlog")
 	renderBacklogTree(out, issues, shouldUseColor(out))
 	return nil
 }
@@ -1422,11 +1469,16 @@ func runGateStatus(args []string, out io.Writer) error {
 		})
 	}
 
-	_, _ = fmt.Fprintf(out, "Gate status for %s\n", status.IssueID)
-	_, _ = fmt.Fprintf(out, "Gate Set: %s (cycle %d)\n", status.GateSetID, status.CycleNo)
+	ui := newTextUI(out)
+	ui.heading("Gate Status")
+	ui.field("Issue", status.IssueID)
+	ui.field("Gate Set", fmt.Sprintf("%s (cycle %d)", status.GateSetID, status.CycleNo))
 	if strings.TrimSpace(status.LockedAt) != "" {
-		_, _ = fmt.Fprintf(out, "Locked At: %s\n", status.LockedAt)
+		ui.field("Locked At", status.LockedAt)
 	}
+	ui.field("Summary", summarizeGateResults(status.Gates, ui.colors))
+	ui.blank()
+	ui.section("Checks")
 	for _, gate := range status.Gates {
 		required := "optional"
 		if gate.Required {
@@ -1441,6 +1493,11 @@ func runGateStatus(args []string, out io.Writer) error {
 			_, _ = fmt.Fprintf(out, " evidence=%s", strings.Join(gate.EvidenceRefs, ","))
 		}
 		_, _ = fmt.Fprintln(out)
+	}
+	if hasIncompleteRequiredGate(status.Gates) {
+		ui.nextSteps(
+			fmt.Sprintf(`memori gate evaluate --issue %s --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> --command-id "<new-id>"`, status.IssueID),
+		)
 	}
 	return nil
 }
@@ -2091,8 +2148,20 @@ func formatIssueLine(issue store.Issue, colors bool) string {
 }
 
 func shouldUseColor(out io.Writer) bool {
-	if os.Getenv("NO_COLOR") != "" {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MEMORI_COLOR"))) {
+	case "always":
+		return true
+	case "never":
 		return false
+	}
+	if os.Getenv("NO_COLOR") != "" || strings.TrimSpace(os.Getenv("CLICOLOR")) == "0" {
+		return false
+	}
+	if force := strings.TrimSpace(os.Getenv("CLICOLOR_FORCE")); force != "" && force != "0" {
+		return true
+	}
+	if force := strings.TrimSpace(os.Getenv("FORCE_COLOR")); force != "" && force != "0" {
+		return true
 	}
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("TERM")), "dumb") {
 		return false
@@ -2160,6 +2229,40 @@ func colorize(enabled bool, colorCode, value string) string {
 	return "\033[" + colorCode + "m" + value + "\033[0m"
 }
 
+func summarizeGateResults(gates []store.GateStatusItem, colors bool) string {
+	if len(gates) == 0 {
+		return "no gates"
+	}
+
+	counts := make(map[string]int, 4)
+	order := []string{"PASS", "FAIL", "BLOCKED", "MISSING"}
+	for _, gate := range gates {
+		counts[gate.Result]++
+	}
+
+	parts := make([]string, 0, len(order))
+	for _, result := range order {
+		if counts[result] == 0 {
+			continue
+		}
+		label := colorize(colors, colorForGateResult(result), result)
+		parts = append(parts, fmt.Sprintf("%s=%d", label, counts[result]))
+	}
+	if len(parts) == 0 {
+		return "no results"
+	}
+	return strings.Join(parts, ", ")
+}
+
+func hasIncompleteRequiredGate(gates []store.GateStatusItem) bool {
+	for _, gate := range gates {
+		if gate.Required && gate.Result != "PASS" {
+			return true
+		}
+	}
+	return false
+}
+
 func printJSON(out io.Writer, v any) error {
 	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")
@@ -2167,34 +2270,48 @@ func printJSON(out io.Writer, v any) error {
 }
 
 func printHelp(out io.Writer) {
-	_, _ = fmt.Fprintln(out, "memori - local context bridge + agile issue ledger")
-	_, _ = fmt.Fprintln(out, "")
-	_, _ = fmt.Fprintln(out, "Commands:")
-	_, _ = fmt.Fprintln(out, "  memori help [--json]")
-	_, _ = fmt.Fprintln(out, "  memori init [--db <path>] [--issue-prefix <prefix>] [--json]")
-	_, _ = fmt.Fprintln(out, "  memori issue create --type epic|story|task|bug --title <title> [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] --command-id <id> [--json]")
-	_, _ = fmt.Fprintln(out, "  memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] --command-id <id> [--json]")
-	_, _ = fmt.Fprintln(out, "  memori issue update --key <prefix-shortSHA> [--status todo|inprogress|blocked|done] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--actor <actor>] --command-id <id> [--json]")
-	_, _ = fmt.Fprintln(out, "  memori issue show --key <prefix-shortSHA> [--json]")
-	_, _ = fmt.Fprintln(out, "  memori issue next [--agent <id>] [--json]")
-	_, _ = fmt.Fprintln(out, "  memori gate template create --id <template-id> --version <n> --applies-to epic|story|task|bug [--applies-to ...] --file <path> [--actor <actor>] [--json]")
-	_, _ = fmt.Fprintln(out, "  memori gate template list [--type epic|story|task|bug] [--json]")
-	_, _ = fmt.Fprintln(out, "  memori gate set instantiate --issue <prefix-shortSHA> --template <template-id@version> [--template ...] [--actor <actor>] [--json]")
-	_, _ = fmt.Fprintln(out, "  memori gate set lock --issue <prefix-shortSHA> [--cycle <n>] [--actor <actor>] [--json]")
-	_, _ = fmt.Fprintln(out, "  memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] --command-id <id> [--json]")
-	_, _ = fmt.Fprintln(out, "  memori gate verify --issue <prefix-shortSHA> --gate <gate-id> [--actor <actor>] --command-id <id> [--json]")
-	_, _ = fmt.Fprintln(out, "  memori gate status --issue <prefix-shortSHA> [--cycle <n>] [--json]")
-	_, _ = fmt.Fprintln(out, "  memori context checkpoint --session <id> [--trigger <trigger>] [--actor <actor>] [--json]")
-	_, _ = fmt.Fprintln(out, "  memori context rehydrate --session <id> [--json]")
-	_, _ = fmt.Fprintln(out, "  memori context packet build --scope issue|session --id <id> [--actor <actor>] [--json]")
-	_, _ = fmt.Fprintln(out, "  memori context packet show --packet <id> [--json]")
-	_, _ = fmt.Fprintln(out, "  memori context packet use --agent <id> --packet <id> [--json]")
-	_, _ = fmt.Fprintln(out, "  memori context loops [--issue <prefix-shortSHA>] [--cycle <n>] [--json]")
-	_, _ = fmt.Fprintln(out, "  memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]")
-	_, _ = fmt.Fprintln(out, "  memori event log --entity <entityType:id|id> [--json]")
-	_, _ = fmt.Fprintln(out, "  memori db status [--json]")
-	_, _ = fmt.Fprintln(out, "  memori db migrate [--to <version>] [--json]")
-	_, _ = fmt.Fprintln(out, "  memori db verify [--json]")
-	_, _ = fmt.Fprintln(out, "  memori db backup --out <path> [--json]")
-	_, _ = fmt.Fprintln(out, "  memori db replay [--json]")
+	ui := newTextUI(out)
+	ui.heading("memori")
+	_, _ = fmt.Fprintln(out, "Local context bridge + agile issue ledger")
+	ui.blank()
+
+	ui.section("Human Workflows")
+	ui.bullet("memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]")
+	ui.bullet("memori issue show --key <prefix-shortSHA> [--json]")
+	ui.bullet("memori gate status --issue <prefix-shortSHA> [--cycle <n>] [--json]")
+	ui.bullet("memori event log --entity <entityType:id|id> [--json]")
+	ui.bullet("memori db status [--json]")
+
+	ui.blank()
+	ui.section("Agent Workflows")
+	ui.bullet("memori issue next [--agent <id>] [--json]")
+	ui.bullet("memori context checkpoint --session <id> [--trigger <trigger>] [--actor <actor>] [--json]")
+	ui.bullet("memori context packet build --scope issue|session --id <id> [--actor <actor>] [--json]")
+	ui.bullet("memori context packet use --agent <id> --packet <id> [--json]")
+	ui.bullet("memori context rehydrate --session <id> [--json]")
+	ui.bullet("memori context loops [--issue <prefix-shortSHA>] [--cycle <n>] [--json]")
+
+	ui.blank()
+	ui.section("Create And Update Work")
+	ui.bullet("memori help [--json]")
+	ui.bullet("memori init [--db <path>] [--issue-prefix <prefix>] [--json]")
+	ui.bullet("memori issue create --type epic|story|task|bug --title <title> [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] --command-id <id> [--json]")
+	ui.bullet("memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] --command-id <id> [--json]")
+	ui.bullet("memori issue update --key <prefix-shortSHA> [--status todo|inprogress|blocked|done] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--actor <actor>] --command-id <id> [--json]")
+	ui.bullet("memori gate template create --id <template-id> --version <n> --applies-to epic|story|task|bug [--applies-to ...] --file <path> [--actor <actor>] [--json]")
+	ui.bullet("memori gate template list [--type epic|story|task|bug] [--json]")
+	ui.bullet("memori gate set instantiate --issue <prefix-shortSHA> --template <template-id@version> [--template ...] [--actor <actor>] [--json]")
+	ui.bullet("memori gate set lock --issue <prefix-shortSHA> [--cycle <n>] [--actor <actor>] [--json]")
+	ui.bullet("memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] --command-id <id> [--json]")
+	ui.bullet("memori gate verify --issue <prefix-shortSHA> --gate <gate-id> [--actor <actor>] --command-id <id> [--json]")
+	ui.bullet("memori db migrate [--to <version>] [--json]")
+	ui.bullet("memori db verify [--json]")
+	ui.bullet("memori db backup --out <path> [--json]")
+	ui.bullet("memori db replay [--json]")
+
+	ui.blank()
+	ui.section("Tips")
+	ui.bullet("Use --json for automation and contract-stable output.")
+	ui.bullet("Mutating commands require --command-id for idempotent replays.")
+	ui.bullet("Control ANSI color with MEMORI_COLOR=auto|always|never. NO_COLOR, CLICOLOR, CLICOLOR_FORCE, and FORCE_COLOR are also honored.")
 }
