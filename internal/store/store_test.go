@@ -1329,6 +1329,88 @@ func TestEvaluateGateAppendsEventAndUpdatesProjection(t *testing.T) {
 	}
 }
 
+func TestGetGateStatusSupportsCycleSelection(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-5858585"
+	_, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Gate status cycle selection test",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-cycle-create-1",
+	})
+	if err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-cycle-progress-1",
+	})
+	if err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO gate_sets(
+			gate_set_id, issue_id, cycle_no, template_refs_json, frozen_definition_json,
+			gate_set_hash, locked_at, created_at, created_by
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "gs_cycle_1", issueID, 1, `["tmpl-default@1"]`, `{"gates":[{"id":"build"}]}`, "gs_cycle_hash_1", nowUTC(), nowUTC(), "agent-1")
+	if err != nil {
+		t.Fatalf("insert cycle 1 gate set: %v", err)
+	}
+	seedGateSetItemForTest(t, s, "gs_cycle_1", "build", "check", 1)
+
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO gate_sets(
+			gate_set_id, issue_id, cycle_no, template_refs_json, frozen_definition_json,
+			gate_set_hash, locked_at, created_at, created_by
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "gs_cycle_2", issueID, 2, `["tmpl-default@2"]`, `{"gates":[{"id":"deploy"}]}`, "gs_cycle_hash_2", nowUTC(), nowUTC(), "agent-1")
+	if err != nil {
+		t.Fatalf("insert cycle 2 gate set: %v", err)
+	}
+	seedGateSetItemForTest(t, s, "gs_cycle_2", "deploy", "check", 1)
+
+	defaultStatus, err := s.GetGateStatus(ctx, issueID)
+	if err != nil {
+		t.Fatalf("get default gate status: %v", err)
+	}
+	if defaultStatus.CycleNo != 1 || defaultStatus.GateSetID != "gs_cycle_1" {
+		t.Fatalf("expected default gate status for current cycle 1, got cycle=%d gate_set_id=%q", defaultStatus.CycleNo, defaultStatus.GateSetID)
+	}
+
+	cycleTwo := 2
+	historicalStatus, err := s.GetGateStatusForCycle(ctx, GetGateStatusParams{
+		IssueID: issueID,
+		CycleNo: &cycleTwo,
+	})
+	if err != nil {
+		t.Fatalf("get historical gate status: %v", err)
+	}
+	if historicalStatus.CycleNo != 2 || historicalStatus.GateSetID != "gs_cycle_2" {
+		t.Fatalf("expected cycle 2 gate status, got cycle=%d gate_set_id=%q", historicalStatus.CycleNo, historicalStatus.GateSetID)
+	}
+	if len(historicalStatus.Gates) != 1 || historicalStatus.Gates[0].GateID != "deploy" {
+		t.Fatalf("expected deploy gate for cycle 2, got %#v", historicalStatus.Gates)
+	}
+
+	cycleThree := 3
+	_, err = s.GetGateStatusForCycle(ctx, GetGateStatusParams{
+		IssueID: issueID,
+		CycleNo: &cycleThree,
+	})
+	if err == nil || !strings.Contains(err.Error(), `no locked gate set found for issue "mem-5858585" cycle 3`) {
+		t.Fatalf("expected cycle not found error, got: %v", err)
+	}
+}
+
 func TestEvaluateGateRequiresEvidenceAndKnownGate(t *testing.T) {
 	t.Parallel()
 

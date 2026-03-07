@@ -80,8 +80,8 @@ memori gate evaluate \
   --evidence "ci://run/123" \
   --command-id "cli-gate-eval-01"
 
-# inspect gate status for current locked gate set
-memori gate status --issue <issue-key>
+# inspect gate status for current locked gate set (or a specific cycle)
+memori gate status --issue <issue-key> [--cycle <n>]
 
 # close validation requires:
 # - a locked gate set for the issue's current cycle

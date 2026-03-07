@@ -132,6 +132,38 @@ func TestGateStatusHumanOutputShowsResults(t *testing.T) {
 	}
 }
 
+func TestGateStatusSupportsCycleFlag(t *testing.T) {
+	t.Parallel()
+
+	dbPath := seedGateCommandTestDB(t)
+	seedGateCommandHistoricalCycle(t, dbPath)
+
+	stdout, stderr, err := runMemoriForTest(
+		"gate", "status",
+		"--db", dbPath,
+		"--issue", "mem-c111111",
+		"--cycle", "2",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("run gate status --cycle command: %v\nstderr: %s", err, stderr)
+	}
+
+	var statusResp gateStatusEnvelope
+	if err := json.Unmarshal([]byte(stdout), &statusResp); err != nil {
+		t.Fatalf("decode gate status --cycle json output: %v\nstdout: %s", err, stdout)
+	}
+	if statusResp.Data.Status.CycleNo != 2 {
+		t.Fatalf("expected cycle 2 status, got %d", statusResp.Data.Status.CycleNo)
+	}
+	if statusResp.Data.Status.GateSetID != "gs_cli_2" {
+		t.Fatalf("expected gate_set_id gs_cli_2, got %q", statusResp.Data.Status.GateSetID)
+	}
+	if len(statusResp.Data.Status.Gates) != 1 || statusResp.Data.Status.Gates[0].GateID != "security" {
+		t.Fatalf("expected security gate for cycle 2, got %#v", statusResp.Data.Status.Gates)
+	}
+}
+
 func seedGateCommandTestDB(t *testing.T) string {
 	t.Helper()
 
@@ -184,4 +216,32 @@ func seedGateCommandTestDB(t *testing.T) string {
 	}
 
 	return dbPath
+}
+
+func seedGateCommandHistoricalCycle(t *testing.T, dbPath string) {
+	t.Helper()
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	_, err = s.DB().ExecContext(ctx, `
+		INSERT INTO gate_sets(
+			gate_set_id, issue_id, cycle_no, template_refs_json, frozen_definition_json,
+			gate_set_hash, locked_at, created_at, created_by
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "gs_cli_2", "mem-c111111", 2, `["tmpl-default@2"]`, `{"gates":[{"id":"security"}]}`, "gs_cli_hash_2", "2026-03-06T13:00:00Z", "2026-03-06T13:00:00Z", "test")
+	if err != nil {
+		t.Fatalf("insert historical gate set: %v", err)
+	}
+	_, err = s.DB().ExecContext(ctx, `
+		INSERT INTO gate_set_items(gate_set_id, gate_id, kind, required, criteria_json)
+		VALUES('gs_cli_2', 'security', 'check', 1, '{"command":"go test ./..."}')
+	`)
+	if err != nil {
+		t.Fatalf("insert historical gate set item: %v", err)
+	}
 }

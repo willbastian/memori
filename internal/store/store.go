@@ -113,6 +113,11 @@ type EvaluateGateParams struct {
 	CommandID    string
 }
 
+type GetGateStatusParams struct {
+	IssueID string
+	CycleNo *int
+}
+
 type CreateGateTemplateParams struct {
 	TemplateID     string
 	Version        int
@@ -1057,9 +1062,16 @@ func (s *Store) EvaluateGate(ctx context.Context, p EvaluateGateParams) (GateEva
 }
 
 func (s *Store) GetGateStatus(ctx context.Context, issueID string) (GateStatus, error) {
-	normalizedIssueID, err := normalizeIssueKey(issueID)
+	return s.GetGateStatusForCycle(ctx, GetGateStatusParams{IssueID: issueID})
+}
+
+func (s *Store) GetGateStatusForCycle(ctx context.Context, p GetGateStatusParams) (GateStatus, error) {
+	normalizedIssueID, err := normalizeIssueKey(p.IssueID)
 	if err != nil {
 		return GateStatus{}, err
+	}
+	if p.CycleNo != nil && *p.CycleNo <= 0 {
+		return GateStatus{}, errors.New("--cycle must be > 0")
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -1072,11 +1084,26 @@ func (s *Store) GetGateStatus(ctx context.Context, issueID string) (GateStatus, 
 		return GateStatus{}, err
 	}
 
-	gateSet, found, err := lockedGateSetForIssueTx(ctx, tx, normalizedIssueID)
+	var (
+		gateSet lockedGateSet
+		found   bool
+	)
+	if p.CycleNo != nil {
+		gateSet, found, err = lockedGateSetForIssueCycleTx(ctx, tx, normalizedIssueID, *p.CycleNo)
+	} else {
+		gateSet, found, err = lockedGateSetForIssueTx(ctx, tx, normalizedIssueID)
+	}
 	if err != nil {
 		return GateStatus{}, err
 	}
 	if !found {
+		if p.CycleNo != nil {
+			return GateStatus{}, fmt.Errorf(
+				"no locked gate set found for issue %q cycle %d",
+				normalizedIssueID,
+				*p.CycleNo,
+			)
+		}
 		return GateStatus{}, fmt.Errorf("no locked gate set found for issue %q", normalizedIssueID)
 	}
 
@@ -2585,6 +2612,24 @@ func lockedGateSetForIssueTx(ctx context.Context, tx *sql.Tx, issueID string) (l
 	}
 	if err != nil {
 		return lockedGateSet{}, false, fmt.Errorf("query locked gate set for issue %q: %w", issueID, err)
+	}
+	return gateSet, true, nil
+}
+
+func lockedGateSetForIssueCycleTx(ctx context.Context, tx *sql.Tx, issueID string, cycleNo int) (lockedGateSet, bool, error) {
+	var gateSet lockedGateSet
+	err := tx.QueryRowContext(ctx, `
+		SELECT gate_set_id, cycle_no, locked_at
+		FROM gate_sets
+		WHERE issue_id = ?
+			AND cycle_no = ?
+			AND locked_at IS NOT NULL
+	`, issueID, cycleNo).Scan(&gateSet.GateSetID, &gateSet.CycleNo, &gateSet.LockedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return lockedGateSet{}, false, nil
+	}
+	if err != nil {
+		return lockedGateSet{}, false, fmt.Errorf("query locked gate set for issue %q cycle %d: %w", issueID, cycleNo, err)
 	}
 	return gateSet, true, nil
 }

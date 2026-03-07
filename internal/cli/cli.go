@@ -66,7 +66,7 @@ func runHelp(args []string, out io.Writer) error {
 			"memori gate set instantiate --issue <prefix-shortSHA> --template <template-id@version> [--template ...] [--actor <actor>] [--json]",
 			"memori gate set lock --issue <prefix-shortSHA> [--cycle <n>] [--actor <actor>] [--json]",
 			"memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] --command-id <id> [--json]",
-			"memori gate status --issue <prefix-shortSHA> [--json]",
+			"memori gate status --issue <prefix-shortSHA> [--cycle <n>] [--json]",
 			"memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]",
 			"memori event log --entity <entityType:id|id> [--json]",
 			"memori db status [--json]",
@@ -860,12 +860,20 @@ func runGateStatus(args []string, out io.Writer) error {
 	fs.SetOutput(io.Discard)
 	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
 	issue := fs.String("issue", "", "issue key")
+	cycle := fs.Int("cycle", 0, "issue cycle to inspect (defaults to current cycle)")
 	jsonOut := fs.Bool("json", false, "machine-readable output")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if strings.TrimSpace(*issue) == "" {
 		return errors.New("--issue is required")
+	}
+	var cyclePtr *int
+	if hasFlag(args, "cycle") {
+		if *cycle <= 0 {
+			return errors.New("--cycle must be > 0")
+		}
+		cyclePtr = cycle
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -877,7 +885,10 @@ func runGateStatus(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
-	status, err := s.GetGateStatus(ctx, *issue)
+	status, err := s.GetGateStatusForCycle(ctx, store.GetGateStatusParams{
+		IssueID: *issue,
+		CycleNo: cyclePtr,
+	})
 	if err != nil {
 		return err
 	}
@@ -1537,7 +1548,7 @@ func printHelp(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "  memori gate set instantiate --issue <prefix-shortSHA> --template <template-id@version> [--template ...] [--actor <actor>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori gate set lock --issue <prefix-shortSHA> [--cycle <n>] [--actor <actor>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] --command-id <id> [--json]")
-	_, _ = fmt.Fprintln(out, "  memori gate status --issue <prefix-shortSHA> [--json]")
+	_, _ = fmt.Fprintln(out, "  memori gate status --issue <prefix-shortSHA> [--cycle <n>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori event log --entity <entityType:id|id> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori db status [--json]")
