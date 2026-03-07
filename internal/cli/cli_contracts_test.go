@@ -6,47 +6,156 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"memori/internal/store"
 )
 
-func TestIssueCreateRequiresCommandID(t *testing.T) {
+type mutationEventEnvelope struct {
+	Command string `json:"command"`
+	Data    struct {
+		Event store.Event `json:"event"`
+	} `json:"data"`
+}
+
+func TestIssueCreateGeneratesCommandIDWhenOmitted(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := runMemoriForTest("issue", "create", "--type", "task", "--title", "missing command id")
-	if err == nil || !strings.Contains(err.Error(), "--command-id is required") {
-		t.Fatalf("expected missing command-id error, got: %v", err)
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-generate-create.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-a1b2c3d",
+		"--type", "task",
+		"--title", "generated command id",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+
+	var resp mutationEventEnvelope
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("decode issue create json: %v\nstdout: %s", err, stdout)
+	}
+	if !strings.HasPrefix(resp.Data.Event.CommandID, "cmdv1-issue-create-") {
+		t.Fatalf("expected generated command id, got %q", resp.Data.Event.CommandID)
 	}
 }
 
-func TestIssueUpdateRequiresCommandID(t *testing.T) {
+func TestIssueUpdateGeneratesCommandIDWhenOmitted(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := runMemoriForTest("issue", "update", "--key", "mem-a1b2c3d", "--status", "inprogress")
-	if err == nil || !strings.Contains(err.Error(), "--command-id is required") {
-		t.Fatalf("expected missing command-id error, got: %v", err)
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-generate-update.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-a1b2c3d",
+		"--type", "task",
+		"--title", "update target",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-a1b2c3d",
+		"--status", "inprogress",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("issue update: %v\nstderr: %s", err, stderr)
+	}
+
+	var resp mutationEventEnvelope
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("decode issue update json: %v\nstdout: %s", err, stdout)
+	}
+	if !strings.HasPrefix(resp.Data.Event.CommandID, "cmdv1-issue-update-") {
+		t.Fatalf("expected generated command id, got %q", resp.Data.Event.CommandID)
 	}
 }
 
-func TestIssueLinkRequiresCommandID(t *testing.T) {
+func TestIssueLinkGeneratesCommandIDWhenOmitted(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := runMemoriForTest("issue", "link", "--child", "mem-a1b2c3d", "--parent", "mem-b2c3d4e")
-	if err == nil || !strings.Contains(err.Error(), "--command-id is required") {
-		t.Fatalf("expected missing command-id error, got: %v", err)
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-generate-link.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-b2c3d4e",
+		"--type", "story",
+		"--title", "parent story",
+		"--json",
+	); err != nil {
+		t.Fatalf("parent create: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-a1b2c3d",
+		"--type", "task",
+		"--title", "child task",
+		"--json",
+	); err != nil {
+		t.Fatalf("child create: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"issue", "link",
+		"--db", dbPath,
+		"--child", "mem-a1b2c3d",
+		"--parent", "mem-b2c3d4e",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("issue link: %v\nstderr: %s", err, stderr)
+	}
+
+	var resp mutationEventEnvelope
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("decode issue link json: %v\nstdout: %s", err, stdout)
+	}
+	if !strings.HasPrefix(resp.Data.Event.CommandID, "cmdv1-issue-link-") {
+		t.Fatalf("expected generated command id, got %q", resp.Data.Event.CommandID)
 	}
 }
 
-func TestGateEvaluateRequiresCommandID(t *testing.T) {
+func TestGateEvaluateGeneratesCommandIDWhenOmitted(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := runMemoriForTest(
+	dbPath := seedGateCommandTestDB(t)
+
+	stdout, stderr, err := runMemoriForTest(
 		"gate", "evaluate",
-		"--issue", "mem-a1b2c3d",
+		"--db", dbPath,
+		"--issue", "mem-c111111",
 		"--gate", "build",
 		"--result", "PASS",
 		"--evidence", "ci://run/1",
+		"--json",
 	)
-	if err == nil || !strings.Contains(err.Error(), "--command-id is required") {
-		t.Fatalf("expected missing command-id error, got: %v", err)
+	if err != nil {
+		t.Fatalf("gate evaluate: %v\nstderr: %s", err, stderr)
+	}
+
+	var resp mutationEventEnvelope
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("decode gate evaluate json: %v\nstdout: %s", err, stdout)
+	}
+	if !strings.HasPrefix(resp.Data.Event.CommandID, "cmdv1-gate-evaluate-") {
+		t.Fatalf("expected generated command id, got %q", resp.Data.Event.CommandID)
 	}
 }
 

@@ -43,7 +43,7 @@ func TestIssueCreateHumanOutputShowsNextSteps(t *testing.T) {
 	mustContain(t, stdout, "OK Created issue mem-e111111")
 	mustContain(t, stdout, "Next:")
 	mustContain(t, stdout, "memori issue show --key mem-e111111")
-	mustContain(t, stdout, `memori issue update --key mem-e111111 --status inprogress --command-id "<new-id>"`)
+	mustContain(t, stdout, "memori issue update --key mem-e111111 --status inprogress")
 }
 
 func TestIssueNextHumanOutputShowsReasonSection(t *testing.T) {

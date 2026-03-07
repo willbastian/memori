@@ -18,10 +18,13 @@ import (
 	"time"
 
 	"memori/internal/dbschema"
+	"memori/internal/provenance"
 	"memori/internal/store"
 )
 
 const responseSchemaVersion = 1
+
+var passwordPrompter = readPasswordNoEcho
 
 func Run(args []string, stdout, stderr io.Writer) error {
 	_ = stderr
@@ -33,6 +36,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 	switch args[0] {
 	case "help", "--help", "-h":
 		return runHelp(args[1:], stdout)
+	case "auth":
+		return runAuth(args[1:], stdout)
 	case "init":
 		return runInit(args[1:], stdout)
 	case "issue":
@@ -62,19 +67,21 @@ func runHelp(args []string, out io.Writer) error {
 
 	if *jsonOut {
 		commands := []string{
+			"memori auth set-password [--db <path>] [--json]",
+			"memori auth status [--db <path>] [--json]",
 			"memori help [--json]",
 			"memori init [--db <path>] [--issue-prefix <prefix>] [--json]",
-			"memori issue create --type epic|story|task|bug --title <title> [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] --command-id <id> [--json]",
-			"memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] --command-id <id> [--json]",
-			"memori issue update --key <prefix-shortSHA> [--status todo|inprogress|blocked|done] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--actor <actor>] --command-id <id> [--json]",
+			"memori issue create --type epic|story|task|bug --title <title> [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] [--command-id <id>] [--json]",
+			"memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] [--command-id <id>] [--json]",
+			"memori issue update --key <prefix-shortSHA> [--status todo|inprogress|blocked|done] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--actor <actor>] [--command-id <id>] [--json]",
 			"memori issue show --key <prefix-shortSHA> [--json]",
 			"memori issue next [--agent <id>] [--json]",
 			"memori gate template create --id <template-id> --version <n> --applies-to epic|story|task|bug [--applies-to ...] --file <path> [--actor <actor>] [--json]",
 			"memori gate template list [--type epic|story|task|bug] [--json]",
 			"memori gate set instantiate --issue <prefix-shortSHA> --template <template-id@version> [--template ...] [--actor <actor>] [--json]",
 			"memori gate set lock --issue <prefix-shortSHA> [--cycle <n>] [--actor <actor>] [--json]",
-			"memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] --command-id <id> [--json]",
-			"memori gate verify --issue <prefix-shortSHA> --gate <gate-id> [--actor <actor>] --command-id <id> [--json]",
+			"memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] [--command-id <id>] [--json]",
+			"memori gate verify --issue <prefix-shortSHA> --gate <gate-id> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate status --issue <prefix-shortSHA> [--cycle <n>] [--json]",
 			"memori context checkpoint --session <id> [--trigger <trigger>] [--actor <actor>] [--json]",
 			"memori context rehydrate --session <id> [--json]",
@@ -150,9 +157,179 @@ func runInit(args []string, out io.Writer) error {
 	ui.field("Schema", fmt.Sprintf("v%d", dbVersion))
 	ui.field("Issue Prefix", *issuePrefix)
 	ui.nextSteps(
-		`memori issue create --type task --title "First ticket" --command-id "cli-create-01"`,
+		fmt.Sprintf("memori auth set-password --db %s", *dbPath),
+		`memori issue create --type task --title "First ticket"`,
 		"memori backlog",
 	)
+	return nil
+}
+
+func runAuth(args []string, out io.Writer) error {
+	if len(args) == 0 {
+		return errors.New("auth subcommand required: status|set-password")
+	}
+
+	switch args[0] {
+	case "status":
+		return runAuthStatus(args[1:], out)
+	case "set-password":
+		return runAuthSetPassword(args[1:], out)
+	default:
+		return fmt.Errorf("unknown auth subcommand %q", args[0])
+	}
+}
+
+func runAuthStatus(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("auth status", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	credential, configured, err := s.GetHumanAuthCredential(ctx)
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "auth status",
+			Data: authStatusData{
+				Configured: configured,
+				Algorithm:  credential.Algorithm,
+				Iterations: credential.Iterations,
+				UpdatedAt:  credential.UpdatedAt,
+				RotatedBy:  credential.RotatedBy,
+			},
+		})
+	}
+
+	if !configured {
+		_, _ = fmt.Fprintln(out, "Human auth: not configured")
+		_, _ = fmt.Fprintf(out, "Run: memori auth set-password --db %s\n", *dbPath)
+		return nil
+	}
+
+	_, _ = fmt.Fprintln(out, "Human auth: configured")
+	_, _ = fmt.Fprintf(out, "Algorithm: %s\n", credential.Algorithm)
+	_, _ = fmt.Fprintf(out, "Iterations: %d\n", credential.Iterations)
+	_, _ = fmt.Fprintf(out, "Updated: %s\n", credential.UpdatedAt)
+	_, _ = fmt.Fprintf(out, "Rotated By: %s\n", credential.RotatedBy)
+	return nil
+}
+
+func runAuthSetPassword(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("auth set-password", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	principal, err := provenance.ResolvePrincipal()
+	if err != nil {
+		return err
+	}
+	if principal.Kind != provenance.PrincipalHuman {
+		return errors.New("memori auth set-password requires a human principal")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	currentCredential, configured, err := s.GetHumanAuthCredential(ctx)
+	if err != nil {
+		return err
+	}
+	if configured {
+		currentPassword, err := passwordPrompter("Current password: ")
+		if err != nil {
+			return err
+		}
+		ok, err := provenance.VerifyPassword(currentPassword, provenance.PasswordCredential{
+			Algorithm:  currentCredential.Algorithm,
+			Iterations: currentCredential.Iterations,
+			SaltHex:    currentCredential.SaltHex,
+			HashHex:    currentCredential.HashHex,
+		})
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errors.New("current password verification failed")
+		}
+	}
+
+	password, err := passwordPrompter("New password: ")
+	if err != nil {
+		return err
+	}
+	confirm, err := passwordPrompter("Confirm password: ")
+	if err != nil {
+		return err
+	}
+	if password != confirm {
+		return errors.New("password confirmation does not match")
+	}
+
+	credential, err := provenance.DerivePasswordCredential(password)
+	if err != nil {
+		return err
+	}
+	storedCredential, rotated, err := s.UpsertHumanAuthCredential(ctx, store.UpsertHumanAuthCredentialParams{
+		Algorithm:  credential.Algorithm,
+		Iterations: credential.Iterations,
+		SaltHex:    credential.SaltHex,
+		HashHex:    credential.HashHex,
+		Actor:      principal.Actor,
+	})
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "auth set-password",
+			Data: authSetPasswordData{
+				Configured: true,
+				Rotated:    rotated,
+				Algorithm:  storedCredential.Algorithm,
+				Iterations: storedCredential.Iterations,
+				UpdatedAt:  storedCredential.UpdatedAt,
+				Actor:      storedCredential.RotatedBy,
+			},
+		})
+	}
+
+	if rotated {
+		_, _ = fmt.Fprintln(out, "Rotated human auth password")
+	} else {
+		_, _ = fmt.Fprintln(out, "Configured human auth password")
+	}
+	_, _ = fmt.Fprintf(out, "Actor: %s\n", storedCredential.RotatedBy)
+	_, _ = fmt.Fprintf(out, "Updated: %s\n", storedCredential.UpdatedAt)
 	return nil
 }
 
@@ -200,9 +377,6 @@ func runIssueCreate(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(*commandID) == "" {
-		return errors.New("--command-id is required")
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -213,6 +387,11 @@ func runIssueCreate(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "issue-create", *actor, *commandID, defaultMutationAuthDeps())
+	if err != nil {
+		return err
+	}
+
 	issue, event, idempotent, err := s.CreateIssue(ctx, store.CreateIssueParams{
 		IssueID:            issueKey,
 		Type:               *issueType,
@@ -221,8 +400,8 @@ func runIssueCreate(args []string, out io.Writer) error {
 		Description:        *description,
 		AcceptanceCriteria: *acceptance,
 		References:         references,
-		Actor:              *actor,
-		CommandID:          *commandID,
+		Actor:              identity.Actor,
+		CommandID:          identity.CommandID,
 	})
 	if err != nil {
 		return err
@@ -256,7 +435,7 @@ func runIssueCreate(args []string, out io.Writer) error {
 	ui.field("Event", fmt.Sprintf("%s (%s #%d)", event.EventID, event.EventType, event.EventOrder))
 	ui.nextSteps(
 		fmt.Sprintf("memori issue show --key %s", issue.ID),
-		fmt.Sprintf(`memori issue update --key %s --status inprogress --command-id "<new-id>"`, issue.ID),
+		fmt.Sprintf("memori issue update --key %s --status inprogress", issue.ID),
 	)
 	return nil
 }
@@ -288,9 +467,6 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	}
 	if strings.TrimSpace(issueKey) == "" {
 		return errors.New("--key is required")
-	}
-	if strings.TrimSpace(*commandID) == "" {
-		return errors.New("--command-id is required")
 	}
 	statusProvided := hasFlag(args, "status")
 	priorityProvided := hasFlag(args, "priority")
@@ -338,6 +514,11 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "issue-update", *actor, *commandID, defaultMutationAuthDeps())
+	if err != nil {
+		return err
+	}
+
 	issue, event, idempotent, err := s.UpdateIssue(ctx, store.UpdateIssueParams{
 		IssueID:            issueKey,
 		Status:             statusPtr,
@@ -346,8 +527,8 @@ func runIssueUpdate(args []string, out io.Writer) error {
 		Description:        descriptionPtr,
 		AcceptanceCriteria: acceptancePtr,
 		References:         referencesPtr,
-		Actor:              *actor,
-		CommandID:          *commandID,
+		Actor:              identity.Actor,
+		CommandID:          identity.CommandID,
 	})
 	if err != nil {
 		return err
@@ -402,9 +583,6 @@ func runIssueLink(args []string, out io.Writer) error {
 	if strings.TrimSpace(*parent) == "" {
 		return errors.New("--parent is required")
 	}
-	if strings.TrimSpace(*commandID) == "" {
-		return errors.New("--command-id is required")
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -415,11 +593,16 @@ func runIssueLink(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "issue-link", *actor, *commandID, defaultMutationAuthDeps())
+	if err != nil {
+		return err
+	}
+
 	issue, event, idempotent, err := s.LinkIssue(ctx, store.LinkIssueParams{
 		ChildIssueID:  *child,
 		ParentIssueID: *parent,
-		Actor:         *actor,
-		CommandID:     *commandID,
+		Actor:         identity.Actor,
+		CommandID:     identity.CommandID,
 	})
 	if err != nil {
 		return err
@@ -570,7 +753,7 @@ func runIssueNext(args []string, out io.Writer) error {
 	}
 	ui.nextSteps(
 		fmt.Sprintf("memori issue show --key %s", next.Candidate.Issue.ID),
-		fmt.Sprintf(`memori issue update --key %s --status inprogress --command-id "<new-id>"`, next.Candidate.Issue.ID),
+		fmt.Sprintf("memori issue update --key %s --status inprogress", next.Candidate.Issue.ID),
 	)
 	return nil
 }
@@ -686,10 +869,15 @@ func runContextCheckpoint(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "context-checkpoint", *actor, "", defaultMutationAuthDeps())
+	if err != nil {
+		return err
+	}
+
 	session, created, err := s.CheckpointSession(ctx, store.CheckpointSessionParams{
 		SessionID: *sessionID,
 		Trigger:   *trigger,
-		Actor:     *actor,
+		Actor:     identity.Actor,
 	})
 	if err != nil {
 		return err
@@ -800,10 +988,15 @@ func runContextPacketBuild(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "context-packet-build", *actor, "", defaultMutationAuthDeps())
+	if err != nil {
+		return err
+	}
+
 	packet, err := s.BuildRehydratePacket(ctx, store.BuildPacketParams{
 		Scope:   *scope,
 		ScopeID: *scopeID,
-		Actor:   *actor,
+		Actor:   identity.Actor,
 	})
 	if err != nil {
 		return err
@@ -882,6 +1075,12 @@ func runContextPacketUse(args []string, out io.Writer) error {
 		return err
 	}
 	defer s.Close()
+
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "context-packet-use", "", "", defaultMutationAuthDeps())
+	if err != nil {
+		return err
+	}
+	_ = identity
 
 	focus, packet, err := s.UseRehydratePacket(ctx, store.UsePacketParams{
 		AgentID:  *agentID,
@@ -1024,12 +1223,17 @@ func runGateTemplateCreate(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "gate-template-create", *actor, "", defaultMutationAuthDeps())
+	if err != nil {
+		return err
+	}
+
 	template, idempotent, err := s.CreateGateTemplate(ctx, store.CreateGateTemplateParams{
 		TemplateID:     *templateID,
 		Version:        *version,
 		AppliesTo:      appliesTo,
 		DefinitionJSON: string(definitionBytes),
-		Actor:          *actor,
+		Actor:          identity.Actor,
 	})
 	if err != nil {
 		return err
@@ -1149,10 +1353,15 @@ func runGateSetInstantiate(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "gate-set-instantiate", *actor, "", defaultMutationAuthDeps())
+	if err != nil {
+		return err
+	}
+
 	gateSet, idempotent, err := s.InstantiateGateSet(ctx, store.InstantiateGateSetParams{
 		IssueID:      *issue,
 		TemplateRefs: templates,
-		Actor:        *actor,
+		Actor:        identity.Actor,
 	})
 	if err != nil {
 		return err
@@ -1209,10 +1418,15 @@ func runGateSetLock(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "gate-set-lock", *actor, "", defaultMutationAuthDeps())
+	if err != nil {
+		return err
+	}
+
 	gateSet, lockedNow, err := s.LockGateSet(ctx, store.LockGateSetParams{
 		IssueID: *issue,
 		CycleNo: cyclePtr,
-		Actor:   *actor,
+		Actor:   identity.Actor,
 	})
 	if err != nil {
 		return err
@@ -1262,9 +1476,6 @@ func runGateEvaluate(args []string, out io.Writer) error {
 	if strings.TrimSpace(*result) == "" {
 		return errors.New("--result is required")
 	}
-	if strings.TrimSpace(*commandID) == "" {
-		return errors.New("--command-id is required")
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1275,13 +1486,18 @@ func runGateEvaluate(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "gate-evaluate", *actor, *commandID, defaultMutationAuthDeps())
+	if err != nil {
+		return err
+	}
+
 	evaluation, event, idempotent, err := s.EvaluateGate(ctx, store.EvaluateGateParams{
 		IssueID:      *issue,
 		GateID:       *gate,
 		Result:       *result,
 		EvidenceRefs: evidence,
-		Actor:        *actor,
-		CommandID:    *commandID,
+		Actor:        identity.Actor,
+		CommandID:    identity.CommandID,
 	})
 	if err != nil {
 		return err
@@ -1329,9 +1545,6 @@ func runGateVerify(args []string, out io.Writer) error {
 	if strings.TrimSpace(*gate) == "" {
 		return errors.New("--gate is required")
 	}
-	if strings.TrimSpace(*commandID) == "" {
-		return errors.New("--command-id is required")
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -1341,6 +1554,11 @@ func runGateVerify(args []string, out io.Writer) error {
 		return err
 	}
 	defer s.Close()
+
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "gate-verify", *actor, *commandID, defaultMutationAuthDeps())
+	if err != nil {
+		return err
+	}
 
 	spec, err := s.LookupGateVerificationSpec(ctx, *issue, *gate)
 	if err != nil {
@@ -1387,8 +1605,8 @@ func runGateVerify(args []string, out io.Writer) error {
 			FinishedAt:    finishedAt,
 			GateSetHash:   spec.GateSetHash,
 		},
-		Actor:     *actor,
-		CommandID: *commandID,
+		Actor:     identity.Actor,
+		CommandID: identity.CommandID,
 	})
 	if err != nil {
 		return err
@@ -1496,7 +1714,7 @@ func runGateStatus(args []string, out io.Writer) error {
 	}
 	if hasIncompleteRequiredGate(status.Gates) {
 		ui.nextSteps(
-			fmt.Sprintf(`memori gate evaluate --issue %s --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> --command-id "<new-id>"`, status.IssueID),
+			fmt.Sprintf("memori gate evaluate --issue %s --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref>", status.IssueID),
 		)
 	}
 	return nil
@@ -1855,6 +2073,83 @@ func defaultDBPath() string {
 	return ".memori/memori.db"
 }
 
+type mutationAuthDeps struct {
+	resolvePrincipal func() (provenance.Principal, error)
+	promptPassword   func(string) (string, error)
+}
+
+type mutationIdentity struct {
+	Principal provenance.Principal
+	Actor     string
+	CommandID string
+}
+
+func defaultMutationAuthDeps() mutationAuthDeps {
+	return mutationAuthDeps{
+		resolvePrincipal: provenance.ResolvePrincipal,
+		promptPassword:   passwordPrompter,
+	}
+}
+
+func resolveWriteActor(actorHint string, deps mutationAuthDeps) (provenance.Principal, string, error) {
+	principal, err := deps.resolvePrincipal()
+	if err != nil {
+		return provenance.Principal{}, "", err
+	}
+	_ = strings.TrimSpace(actorHint)
+	return principal, principal.Actor, nil
+}
+
+func resolveMutationIdentity(
+	ctx context.Context,
+	s *store.Store,
+	dbPath string,
+	operation string,
+	actorHint string,
+	commandIDHint string,
+	deps mutationAuthDeps,
+) (mutationIdentity, error) {
+	principal, actor, err := resolveWriteActor(actorHint, deps)
+	if err != nil {
+		return mutationIdentity{}, err
+	}
+	if principal.Kind == provenance.PrincipalHuman {
+		credential, configured, err := s.GetHumanAuthCredential(ctx)
+		if err != nil {
+			return mutationIdentity{}, err
+		}
+		if !configured {
+			return mutationIdentity{}, fmt.Errorf("human auth is not configured (run: memori auth set-password --db %s)", dbPath)
+		}
+		password, err := deps.promptPassword("Password: ")
+		if err != nil {
+			return mutationIdentity{}, err
+		}
+		ok, err := provenance.VerifyPassword(password, provenance.PasswordCredential{
+			Algorithm:  credential.Algorithm,
+			Iterations: credential.Iterations,
+			SaltHex:    credential.SaltHex,
+			HashHex:    credential.HashHex,
+		})
+		if err != nil {
+			return mutationIdentity{}, err
+		}
+		if !ok {
+			return mutationIdentity{}, errors.New("human auth verification failed")
+		}
+	}
+
+	commandID, err := provenance.ResolveCommandID(operation, commandIDHint)
+	if err != nil {
+		return mutationIdentity{}, err
+	}
+	return mutationIdentity{
+		Principal: principal,
+		Actor:     actor,
+		CommandID: commandID,
+	}, nil
+}
+
 func openInitializedStore(ctx context.Context, dbPath string) (*store.Store, int, error) {
 	s, err := store.Open(dbPath)
 	if err != nil {
@@ -1929,6 +2224,23 @@ type initData struct {
 	DBPath         string `json:"db_path"`
 	Status         string `json:"status"`
 	IssueKeyPrefix string `json:"issue_key_prefix"`
+}
+
+type authStatusData struct {
+	Configured bool   `json:"configured"`
+	Algorithm  string `json:"algorithm,omitempty"`
+	Iterations int    `json:"iterations,omitempty"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
+	RotatedBy  string `json:"rotated_by,omitempty"`
+}
+
+type authSetPasswordData struct {
+	Configured bool   `json:"configured"`
+	Rotated    bool   `json:"rotated"`
+	Algorithm  string `json:"algorithm"`
+	Iterations int    `json:"iterations"`
+	UpdatedAt  string `json:"updated_at"`
+	Actor      string `json:"actor"`
 }
 
 type issueCreateData struct {
@@ -2276,6 +2588,7 @@ func printHelp(out io.Writer) {
 	ui.blank()
 
 	ui.section("Human Workflows")
+	ui.bullet("memori auth status [--db <path>] [--json]")
 	ui.bullet("memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]")
 	ui.bullet("memori issue show --key <prefix-shortSHA> [--json]")
 	ui.bullet("memori gate status --issue <prefix-shortSHA> [--cycle <n>] [--json]")
@@ -2294,16 +2607,17 @@ func printHelp(out io.Writer) {
 	ui.blank()
 	ui.section("Create And Update Work")
 	ui.bullet("memori help [--json]")
+	ui.bullet("memori auth set-password [--db <path>] [--json]")
 	ui.bullet("memori init [--db <path>] [--issue-prefix <prefix>] [--json]")
-	ui.bullet("memori issue create --type epic|story|task|bug --title <title> [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] --command-id <id> [--json]")
-	ui.bullet("memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] --command-id <id> [--json]")
-	ui.bullet("memori issue update --key <prefix-shortSHA> [--status todo|inprogress|blocked|done] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--actor <actor>] --command-id <id> [--json]")
+	ui.bullet("memori issue create --type epic|story|task|bug --title <title> [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] [--command-id <id>] [--json]")
+	ui.bullet("memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] [--command-id <id>] [--json]")
+	ui.bullet("memori issue update --key <prefix-shortSHA> [--status todo|inprogress|blocked|done] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori gate template create --id <template-id> --version <n> --applies-to epic|story|task|bug [--applies-to ...] --file <path> [--actor <actor>] [--json]")
 	ui.bullet("memori gate template list [--type epic|story|task|bug] [--json]")
 	ui.bullet("memori gate set instantiate --issue <prefix-shortSHA> --template <template-id@version> [--template ...] [--actor <actor>] [--json]")
 	ui.bullet("memori gate set lock --issue <prefix-shortSHA> [--cycle <n>] [--actor <actor>] [--json]")
-	ui.bullet("memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] --command-id <id> [--json]")
-	ui.bullet("memori gate verify --issue <prefix-shortSHA> --gate <gate-id> [--actor <actor>] --command-id <id> [--json]")
+	ui.bullet("memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] [--command-id <id>] [--json]")
+	ui.bullet("memori gate verify --issue <prefix-shortSHA> --gate <gate-id> [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori db migrate [--to <version>] [--json]")
 	ui.bullet("memori db verify [--json]")
 	ui.bullet("memori db backup --out <path> [--json]")
@@ -2312,6 +2626,8 @@ func printHelp(out io.Writer) {
 	ui.blank()
 	ui.section("Tips")
 	ui.bullet("Use --json for automation and contract-stable output.")
-	ui.bullet("Mutating commands require --command-id for idempotent replays.")
+	ui.bullet("Human writes require a configured password and interactive verification via `memori auth set-password`.")
+	ui.bullet("Mutation actors are derived from the runtime principal; `--actor` is informational only.")
+	ui.bullet("Command IDs are generated automatically; manual `--command-id` is gated behind MEMORI_ALLOW_MANUAL_COMMAND_ID=1.")
 	ui.bullet("Control ANSI color with MEMORI_COLOR=auto|always|never. NO_COLOR, CLICOLOR, CLICOLOR_FORCE, and FORCE_COLOR are also honored.")
 }

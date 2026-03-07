@@ -5,6 +5,8 @@ This repo now contains the first implementation slice for a local event-ledger-b
 ## Implemented in this slice
 
 - `memori init`
+- `memori auth status`
+- `memori auth set-password`
 - Event store foundation (`events` append-only, hash chain columns, idempotency key)
 - Immutable gate schema foundation (`gate_templates`, `gate_sets`, `gate_set_items` + immutability triggers)
 - Close-validator contract on `issue update --status done` (checks required locked gates from source-of-truth data)
@@ -50,8 +52,11 @@ memori db verify
 # write restorable snapshot
 memori db backup --out /tmp/memori-backup.db
 
-# create an issue
-memori issue create --type task --title "First ticket" --command-id "cli-create-01"
+# configure human mutation auth once per DB
+memori auth set-password
+
+# create an issue (command_id auto-generated)
+memori issue create --type task --title "First ticket"
 
 # create with richer context
 memori issue create \
@@ -60,13 +65,13 @@ memori issue create \
   --description "Add richer fields for agent/human handoff" \
   --acceptance-criteria "Issue show returns context-rich payload" \
   --reference "https://example.com/spec" \
-  --command-id "cli-create-02"
+  --json
 
 # show issue
 memori issue show --key <issue-key>
 
 # move issue to in-progress
-memori issue update --key <issue-key> --status inprogress --command-id "cli-update-01"
+memori issue update --key <issue-key> --status inprogress
 
 # update context fields without changing status
 memori issue update \
@@ -77,10 +82,10 @@ memori issue update \
   --description "Updated context" \
   --acceptance-criteria "Readable in issue show output" \
   --reference "notes.md" \
-  --command-id "cli-update-02"
+  --json
 
 # re-link child to parent
-memori issue link --child <child-key> --parent <parent-key> --command-id "cli-link-01"
+memori issue link --child <child-key> --parent <parent-key>
 
 # ask memori for the next actionable issue
 memori issue next --agent codex-1
@@ -93,14 +98,12 @@ memori gate evaluate \
   --issue <issue-key> \
   --gate build \
   --result PASS \
-  --evidence "ci://run/123" \
-  --command-id "cli-gate-eval-01"
+  --evidence "ci://run/123"
 
 # verifier-executed gate evaluation (recommended)
 memori gate verify \
   --issue <issue-key> \
-  --gate build \
-  --command-id "cli-gate-verify-01"
+  --gate build
 
 # inspect gate status for current locked gate set (or a specific cycle)
 memori gate status --issue <issue-key> [--cycle <n>]
@@ -137,9 +140,18 @@ memori context rehydrate --session sess-1
 memori db replay
 ```
 
-`--json` is supported on read/list commands in this slice and on `init`/`issue create`/`issue update` for structured automation.
+`--json` is supported on read/list commands in this slice and on write commands that return structured envelopes.
 
-Mutating commands (`issue create`, `issue update`, `issue link`, `gate evaluate`) require `--command-id` for idempotency tracking.
+## Provenance controls
+
+- Human principals must configure a password with `memori auth set-password` before mutating commands will write.
+- Human mutation verification is interactive and intentionally fails closed on non-terminal stdin.
+- Mutation actors are derived from trusted runtime principal context, not `--actor`.
+- Human actors use `human:<system-username>`.
+- LLM actors use `llm:<provider>:<model>` and require `MEMORI_PRINCIPAL=llm`, `MEMORI_LLM_PROVIDER`, and `MEMORI_LLM_MODEL`.
+- Event-backed mutating commands generate `command_id` automatically using `cmdv1-<operation>-<utcstamp>-<entropy>`.
+- Manual `--command-id` is reserved for automation/replay workflows and requires `MEMORI_ALLOW_MANUAL_COMMAND_ID=1`.
+- Existing event rows remain valid; the new controls apply to future writes only.
 
 Human-readable output is grouped around likely workflows:
 
@@ -147,6 +159,12 @@ Human-readable output is grouped around likely workflows:
 - Happy-path text output highlights the action that succeeded and includes suggested next commands when available.
 - `MEMORI_COLOR=auto|always|never` controls ANSI color in human-readable output.
 - `NO_COLOR`, `CLICOLOR=0`, `CLICOLOR_FORCE=1`, and `FORCE_COLOR=1` are also honored.
+
+Operational notes:
+
+- Password material is stored hashed at rest in `human_auth_credentials` using PBKDF2-HMAC-SHA256 with a per-credential salt and enforced minimum iteration count.
+- Rotating the password updates the single `default` credential row and preserves existing event history.
+- If human auth is not yet configured, mutation commands return an actionable setup error that points to `memori auth set-password`.
 
 Issue key format:
 
