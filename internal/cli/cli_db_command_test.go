@@ -12,8 +12,10 @@ import (
 )
 
 type dbStatusEnvelope struct {
-	Command string `json:"command"`
-	Data    struct {
+	ResponseSchemaVersion int    `json:"response_schema_version"`
+	DBSchemaVersion       int    `json:"db_schema_version"`
+	Command               string `json:"command"`
+	Data                  struct {
 		CurrentVersion    int `json:"current_version"`
 		HeadVersion       int `json:"head_version"`
 		PendingMigrations int `json:"pending_migrations"`
@@ -21,16 +23,20 @@ type dbStatusEnvelope struct {
 }
 
 type dbVerifyEnvelope struct {
-	Command string `json:"command"`
-	Data    struct {
+	ResponseSchemaVersion int    `json:"response_schema_version"`
+	DBSchemaVersion       int    `json:"db_schema_version"`
+	Command               string `json:"command"`
+	Data                  struct {
 		OK     bool     `json:"ok"`
 		Checks []string `json:"checks"`
 	} `json:"data"`
 }
 
 type dbBackupEnvelope struct {
-	Command string `json:"command"`
-	Data    struct {
+	ResponseSchemaVersion int    `json:"response_schema_version"`
+	DBSchemaVersion       int    `json:"db_schema_version"`
+	Command               string `json:"command"`
+	Data                  struct {
 		SourcePath string `json:"source_path"`
 		TargetPath string `json:"target_path"`
 		Status     string `json:"status"`
@@ -43,6 +49,7 @@ func TestDBStatusMigrateAndVerifyJSON(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "memori-db-cli.db")
 
 	before := runDBStatusJSONForTest(t, dbPath)
+	assertEnvelopeMetadata(t, before.ResponseSchemaVersion, before.DBSchemaVersion)
 	if before.Command != "db status" {
 		t.Fatalf("expected db status command, got %q", before.Command)
 	}
@@ -61,6 +68,7 @@ func TestDBStatusMigrateAndVerifyJSON(t *testing.T) {
 	}
 
 	after := runDBStatusJSONForTest(t, dbPath)
+	assertEnvelopeMetadata(t, after.ResponseSchemaVersion, after.DBSchemaVersion)
 	if after.Data.CurrentVersion != after.Data.HeadVersion {
 		t.Fatalf("expected current=head after migrate, got current=%d head=%d", after.Data.CurrentVersion, after.Data.HeadVersion)
 	}
@@ -76,6 +84,7 @@ func TestDBStatusMigrateAndVerifyJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &verify); err != nil {
 		t.Fatalf("decode db verify json output: %v\nstdout: %s", err, stdout)
 	}
+	assertEnvelopeMetadata(t, verify.ResponseSchemaVersion, verify.DBSchemaVersion)
 	if verify.Command != "db verify" || !verify.Data.OK {
 		t.Fatalf("expected db verify ok, got %+v", verify)
 	}
@@ -89,6 +98,7 @@ func TestDBStatusMigrateAndVerifyJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &backup); err != nil {
 		t.Fatalf("decode db backup json output: %v\nstdout: %s", err, stdout)
 	}
+	assertEnvelopeMetadata(t, backup.ResponseSchemaVersion, backup.DBSchemaVersion)
 	if backup.Command != "db backup" || backup.Data.Status != "ok" {
 		t.Fatalf("expected db backup ok, got %+v", backup)
 	}
@@ -150,6 +160,7 @@ func TestDBVerifyFailsWhenEventsTableMissing(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &verify); err != nil {
 		t.Fatalf("decode db verify json output: %v\nstdout: %s", err, stdout)
 	}
+	assertEnvelopeMetadata(t, verify.ResponseSchemaVersion, verify.DBSchemaVersion)
 	if verify.Command != "db verify" {
 		t.Fatalf("expected db verify command, got %q", verify.Command)
 	}
@@ -188,6 +199,7 @@ func TestDBVerifyFailsWhenWorkItemsTableMissing(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &verify); err != nil {
 		t.Fatalf("decode db verify json output: %v\nstdout: %s", err, stdout)
 	}
+	assertEnvelopeMetadata(t, verify.ResponseSchemaVersion, verify.DBSchemaVersion)
 	if verify.Data.OK {
 		t.Fatalf("expected db verify to fail when work_items table is missing")
 	}

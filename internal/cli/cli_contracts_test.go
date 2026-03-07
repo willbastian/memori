@@ -11,8 +11,10 @@ import (
 )
 
 type mutationEventEnvelope struct {
-	Command string `json:"command"`
-	Data    struct {
+	ResponseSchemaVersion int    `json:"response_schema_version"`
+	DBSchemaVersion       int    `json:"db_schema_version"`
+	Command               string `json:"command"`
+	Data                  struct {
 		Event store.Event `json:"event"`
 	} `json:"data"`
 }
@@ -41,6 +43,7 @@ func TestIssueCreateGeneratesCommandIDWhenOmitted(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
 		t.Fatalf("decode issue create json: %v\nstdout: %s", err, stdout)
 	}
+	assertEnvelopeMetadata(t, resp.ResponseSchemaVersion, resp.DBSchemaVersion)
 	if !strings.HasPrefix(resp.Data.Event.CommandID, "cmdv1-issue-create-") {
 		t.Fatalf("expected generated command id, got %q", resp.Data.Event.CommandID)
 	}
@@ -79,6 +82,7 @@ func TestIssueUpdateGeneratesCommandIDWhenOmitted(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
 		t.Fatalf("decode issue update json: %v\nstdout: %s", err, stdout)
 	}
+	assertEnvelopeMetadata(t, resp.ResponseSchemaVersion, resp.DBSchemaVersion)
 	if !strings.HasPrefix(resp.Data.Event.CommandID, "cmdv1-issue-update-") {
 		t.Fatalf("expected generated command id, got %q", resp.Data.Event.CommandID)
 	}
@@ -127,6 +131,7 @@ func TestIssueLinkGeneratesCommandIDWhenOmitted(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
 		t.Fatalf("decode issue link json: %v\nstdout: %s", err, stdout)
 	}
+	assertEnvelopeMetadata(t, resp.ResponseSchemaVersion, resp.DBSchemaVersion)
 	if !strings.HasPrefix(resp.Data.Event.CommandID, "cmdv1-issue-link-") {
 		t.Fatalf("expected generated command id, got %q", resp.Data.Event.CommandID)
 	}
@@ -154,6 +159,7 @@ func TestGateEvaluateGeneratesCommandIDWhenOmitted(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
 		t.Fatalf("decode gate evaluate json: %v\nstdout: %s", err, stdout)
 	}
+	assertEnvelopeMetadata(t, resp.ResponseSchemaVersion, resp.DBSchemaVersion)
 	if !strings.HasPrefix(resp.Data.Event.CommandID, "cmdv1-gate-evaluate-") {
 		t.Fatalf("expected generated command id, got %q", resp.Data.Event.CommandID)
 	}
@@ -378,5 +384,16 @@ func TestIssueUpdateSupportsPriorityAndLabels(t *testing.T) {
 	}
 	if len(showResp.Data.Issue.Labels) != 2 || showResp.Data.Issue.Labels[0] != "backend" || showResp.Data.Issue.Labels[1] != "urgent" {
 		t.Fatalf("expected labels [backend urgent], got %#v", showResp.Data.Issue.Labels)
+	}
+}
+
+func assertEnvelopeMetadata(t *testing.T, gotResponseSchemaVersion, gotDBSchemaVersion int) {
+	t.Helper()
+
+	if gotResponseSchemaVersion != responseSchemaVersion {
+		t.Fatalf("expected response_schema_version %d, got %d", responseSchemaVersion, gotResponseSchemaVersion)
+	}
+	if gotDBSchemaVersion < 0 {
+		t.Fatalf("expected non-negative db_schema_version, got %d", gotDBSchemaVersion)
 	}
 }

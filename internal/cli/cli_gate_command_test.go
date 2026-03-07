@@ -13,24 +13,31 @@ import (
 )
 
 type gateEvaluateEnvelope struct {
-	Command string `json:"command"`
-	Data    struct {
+	ResponseSchemaVersion int    `json:"response_schema_version"`
+	DBSchemaVersion       int    `json:"db_schema_version"`
+	Command               string `json:"command"`
+	Data                  struct {
 		Evaluation store.GateEvaluation `json:"evaluation"`
 		Idempotent bool                 `json:"idempotent"`
 	} `json:"data"`
 }
 
 type gateStatusEnvelope struct {
-	Command string `json:"command"`
-	Data    struct {
+	ResponseSchemaVersion int    `json:"response_schema_version"`
+	DBSchemaVersion       int    `json:"db_schema_version"`
+	Command               string `json:"command"`
+	Data                  struct {
 		Status store.GateStatus `json:"status"`
 	} `json:"data"`
 }
 
 type gateVerifyEnvelope struct {
-	Command string `json:"command"`
-	Data    struct {
+	ResponseSchemaVersion int    `json:"response_schema_version"`
+	DBSchemaVersion       int    `json:"db_schema_version"`
+	Command               string `json:"command"`
+	Data                  struct {
 		Evaluation store.GateEvaluation `json:"evaluation"`
+		Event      store.Event          `json:"event"`
 		Command    string               `json:"command"`
 		ExitCode   int                  `json:"exit_code"`
 		OutputSHA  string               `json:"output_sha256"`
@@ -61,6 +68,7 @@ func TestGateEvaluateAndStatusJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &evalResp); err != nil {
 		t.Fatalf("decode gate evaluate json output: %v\nstdout: %s", err, stdout)
 	}
+	assertEnvelopeMetadata(t, evalResp.ResponseSchemaVersion, evalResp.DBSchemaVersion)
 	if evalResp.Command != "gate evaluate" {
 		t.Fatalf("expected gate evaluate command, got %q", evalResp.Command)
 	}
@@ -85,6 +93,7 @@ func TestGateEvaluateAndStatusJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &statusResp); err != nil {
 		t.Fatalf("decode gate status json output: %v\nstdout: %s", err, stdout)
 	}
+	assertEnvelopeMetadata(t, statusResp.ResponseSchemaVersion, statusResp.DBSchemaVersion)
 	if statusResp.Command != "gate status" {
 		t.Fatalf("expected gate status command, got %q", statusResp.Command)
 	}
@@ -166,6 +175,7 @@ func TestGateVerifyExecutesCriteriaCommandAndRecordsProof(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &verifyResp); err != nil {
 		t.Fatalf("decode gate verify json output: %v\nstdout: %s", err, stdout)
 	}
+	assertEnvelopeMetadata(t, verifyResp.ResponseSchemaVersion, verifyResp.DBSchemaVersion)
 	if verifyResp.Command != "gate verify" {
 		t.Fatalf("expected gate verify command, got %q", verifyResp.Command)
 	}
@@ -213,6 +223,7 @@ func TestGateVerifyIdempotentRetryReplaysPersistedResultWithoutRerunningCommand(
 	if err := json.Unmarshal([]byte(stdout), &firstResp); err != nil {
 		t.Fatalf("decode first gate verify json output: %v\nstdout: %s", err, stdout)
 	}
+	assertEnvelopeMetadata(t, firstResp.ResponseSchemaVersion, firstResp.DBSchemaVersion)
 	if firstResp.Data.Idempotent {
 		t.Fatalf("expected first gate verify to be non-idempotent")
 	}
@@ -241,8 +252,12 @@ func TestGateVerifyIdempotentRetryReplaysPersistedResultWithoutRerunningCommand(
 	if err := json.Unmarshal([]byte(stdout), &retryResp); err != nil {
 		t.Fatalf("decode retry gate verify json output: %v\nstdout: %s", err, stdout)
 	}
+	assertEnvelopeMetadata(t, retryResp.ResponseSchemaVersion, retryResp.DBSchemaVersion)
 	if !retryResp.Data.Idempotent {
 		t.Fatalf("expected idempotent retry response")
+	}
+	if retryResp.Data.Event.EventID != firstResp.Data.Event.EventID {
+		t.Fatalf("expected replay to return original event_id %q, got %q", firstResp.Data.Event.EventID, retryResp.Data.Event.EventID)
 	}
 	if retryResp.Data.ExitCode != firstResp.Data.ExitCode {
 		t.Fatalf("expected replayed exit code %d, got %d", firstResp.Data.ExitCode, retryResp.Data.ExitCode)
