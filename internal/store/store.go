@@ -3858,6 +3858,18 @@ func lockedGateSetForIssueCycleTx(ctx context.Context, tx *sql.Tx, issueID strin
 }
 
 func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID string) error {
+	openChildren, err := listIncompleteChildIssuesTx(ctx, tx, issueID)
+	if err != nil {
+		return fmt.Errorf("close validation %w", err)
+	}
+	if len(openChildren) > 0 {
+		return fmt.Errorf(
+			"close validation failed for issue %q: child issues must be Done first: %s",
+			issueID,
+			strings.Join(openChildren, ", "),
+		)
+	}
+
 	gateSet, found, err := lockedGateSetForIssueTx(ctx, tx, issueID)
 	if err != nil {
 		return fmt.Errorf("close validation %w", err)
@@ -3988,6 +4000,33 @@ func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID st
 		)
 	}
 	return nil
+}
+
+func listIncompleteChildIssuesTx(ctx context.Context, tx *sql.Tx, parentID string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, status
+		FROM work_items
+		WHERE parent_id = ?
+			AND status != 'Done'
+		ORDER BY id ASC
+	`, parentID)
+	if err != nil {
+		return nil, fmt.Errorf("list incomplete child issues for %q: %w", parentID, err)
+	}
+	defer rows.Close()
+
+	children := make([]string, 0)
+	for rows.Next() {
+		var childID, status string
+		if err := rows.Scan(&childID, &status); err != nil {
+			return nil, fmt.Errorf("scan incomplete child issue for %q: %w", parentID, err)
+		}
+		children = append(children, childID+"="+status)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate incomplete child issues for %q: %w", parentID, err)
+	}
+	return children, nil
 }
 
 func validateIssueLinkForNewIssueTx(

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -102,6 +103,103 @@ func TestIssueDoneRequiresLockedGateSet(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), "no locked gate set for current cycle") {
 		t.Fatalf("expected done gate-set requirement error, got: %v", err)
+	}
+}
+
+func TestIssueDoneRequiresChildIssuesClosed(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-done-requires-children.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-a111111",
+		"--type", "story",
+		"--title", "Parent story",
+		"--command-id", "cmd-cli-done-children-parent-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("parent issue create: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-b111111",
+		"--type", "task",
+		"--parent", "mem-a111111",
+		"--title", "Child task",
+		"--command-id", "cmd-cli-done-children-child-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("child issue create: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-a111111",
+		"--status", "inprogress",
+		"--command-id", "cmd-cli-done-children-parent-progress-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("parent issue update inprogress: %v\nstderr: %s", err, stderr)
+	}
+
+	gateDefPath := filepath.Join(t.TempDir(), "story-close-gates.json")
+	if err := os.WriteFile(gateDefPath, []byte(`{"gates":[{"id":"review","kind":"check","required":true,"criteria":{"command":"echo ok"}}]}`), 0o644); err != nil {
+		t.Fatalf("write gate definition: %v", err)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"gate", "template", "create",
+		"--db", dbPath,
+		"--id", "story-close",
+		"--version", "1",
+		"--applies-to", "story",
+		"--file", gateDefPath,
+		"--json",
+	); err != nil {
+		t.Fatalf("gate template create: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"gate", "set", "instantiate",
+		"--db", dbPath,
+		"--issue", "mem-a111111",
+		"--template", "story-close@1",
+		"--json",
+	); err != nil {
+		t.Fatalf("gate set instantiate: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"gate", "set", "lock",
+		"--db", dbPath,
+		"--issue", "mem-a111111",
+		"--json",
+	); err != nil {
+		t.Fatalf("gate set lock: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"gate", "verify",
+		"--db", dbPath,
+		"--issue", "mem-a111111",
+		"--gate", "review",
+		"--command-id", "cmd-cli-done-children-parent-verify-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("gate verify: %v\nstderr: %s", err, stderr)
+	}
+
+	_, _, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-a111111",
+		"--status", "done",
+		"--command-id", "cmd-cli-done-children-parent-done-1",
+		"--json",
+	)
+	if err == nil || !strings.Contains(err.Error(), "child issues must be Done first: mem-b111111=Todo") {
+		t.Fatalf("expected child-close requirement error, got: %v", err)
 	}
 }
 
