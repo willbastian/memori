@@ -2,13 +2,16 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -71,6 +74,7 @@ func runHelp(args []string, out io.Writer) error {
 			"memori gate set instantiate --issue <prefix-shortSHA> --template <template-id@version> [--template ...] [--actor <actor>] [--json]",
 			"memori gate set lock --issue <prefix-shortSHA> [--cycle <n>] [--actor <actor>] [--json]",
 			"memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] --command-id <id> [--json]",
+			"memori gate verify --issue <prefix-shortSHA> --gate <gate-id> [--actor <actor>] --command-id <id> [--json]",
 			"memori gate status --issue <prefix-shortSHA> [--cycle <n>] [--json]",
 			"memori context checkpoint --session <id> [--trigger <trigger>] [--actor <actor>] [--json]",
 			"memori context rehydrate --session <id> [--json]",
@@ -578,7 +582,7 @@ func runBacklog(args []string, out io.Writer) error {
 
 func runGate(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("gate subcommand required: template|set|evaluate|status")
+		return errors.New("gate subcommand required: template|set|evaluate|verify|status")
 	}
 	switch args[0] {
 	case "template":
@@ -587,6 +591,8 @@ func runGate(args []string, out io.Writer) error {
 		return runGateSet(args[1:], out)
 	case "evaluate":
 		return runGateEvaluate(args[1:], out)
+	case "verify":
+		return runGateVerify(args[1:], out)
 	case "status":
 		return runGateStatus(args[1:], out)
 	default:
@@ -1258,6 +1264,115 @@ func runGateEvaluate(args []string, out io.Writer) error {
 	return nil
 }
 
+func runGateVerify(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("gate verify", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	issue := fs.String("issue", "", "issue key")
+	gate := fs.String("gate", "", "gate id")
+	actor := fs.String("actor", "", "actor id")
+	commandID := fs.String("command-id", "", "idempotency command id")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*issue) == "" {
+		return errors.New("--issue is required")
+	}
+	if strings.TrimSpace(*gate) == "" {
+		return errors.New("--gate is required")
+	}
+	if strings.TrimSpace(*commandID) == "" {
+		return errors.New("--command-id is required")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	spec, err := s.LookupGateVerificationSpec(ctx, *issue, *gate)
+	if err != nil {
+		return err
+	}
+
+	startedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	cmd := exec.CommandContext(ctx, "sh", "-lc", spec.Command)
+	output, runErr := cmd.CombinedOutput()
+	finishedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	exitCode := 0
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		} else {
+			return fmt.Errorf("run verifier command for gate %s: %w", spec.GateID, runErr)
+		}
+	}
+	result := "PASS"
+	if exitCode != 0 {
+		result = "FAIL"
+	}
+	outputDigest := sha256.Sum256(output)
+	outputHash := hex.EncodeToString(outputDigest[:])
+	evidence := []string{
+		"verifier:memori-cli-gate-verify",
+		"command:" + spec.Command,
+		fmt.Sprintf("exit:%d", exitCode),
+		"output_sha256:" + outputHash,
+	}
+
+	evaluation, event, idempotent, err := s.EvaluateGate(ctx, store.EvaluateGateParams{
+		IssueID:      spec.IssueID,
+		GateID:       spec.GateID,
+		Result:       result,
+		EvidenceRefs: evidence,
+		Proof: &store.GateEvaluationProof{
+			Verifier:      "memori-cli-gate-verify",
+			Runner:        "sh",
+			RunnerVersion: "1",
+			ExitCode:      exitCode,
+			StartedAt:     startedAt,
+			FinishedAt:    finishedAt,
+			GateSetHash:   spec.GateSetHash,
+		},
+		Actor:     *actor,
+		CommandID: *commandID,
+	})
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "gate verify",
+			Data: gateVerifyData{
+				Evaluation: evaluation,
+				Event:      event,
+				Command:    spec.Command,
+				ExitCode:   exitCode,
+				OutputSHA:  outputHash,
+				Idempotent: idempotent,
+			},
+		})
+	}
+
+	if idempotent {
+		_, _ = fmt.Fprintf(out, "Gate verification already recorded for issue %s gate %s.\n", evaluation.IssueID, evaluation.GateID)
+	} else {
+		_, _ = fmt.Fprintf(out, "Verified gate %s for issue %s -> %s (exit=%d)\n", evaluation.GateID, evaluation.IssueID, evaluation.Result, exitCode)
+	}
+	_, _ = fmt.Fprintf(out, "Gate Set: %s\n", evaluation.GateSetID)
+	_, _ = fmt.Fprintf(out, "Output SHA256: %s\n", outputHash)
+	return nil
+}
+
 func runGateStatus(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("gate status", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -1791,6 +1906,15 @@ type gateEvaluateData struct {
 	Idempotent bool                 `json:"idempotent"`
 }
 
+type gateVerifyData struct {
+	Evaluation store.GateEvaluation `json:"evaluation"`
+	Event      store.Event          `json:"event"`
+	Command    string               `json:"command"`
+	ExitCode   int                  `json:"exit_code"`
+	OutputSHA  string               `json:"output_sha256"`
+	Idempotent bool                 `json:"idempotent"`
+}
+
 type gateTemplateCreateData struct {
 	Template   store.GateTemplate `json:"template"`
 	Idempotent bool               `json:"idempotent"`
@@ -2058,6 +2182,7 @@ func printHelp(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "  memori gate set instantiate --issue <prefix-shortSHA> --template <template-id@version> [--template ...] [--actor <actor>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori gate set lock --issue <prefix-shortSHA> [--cycle <n>] [--actor <actor>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] --command-id <id> [--json]")
+	_, _ = fmt.Fprintln(out, "  memori gate verify --issue <prefix-shortSHA> --gate <gate-id> [--actor <actor>] --command-id <id> [--json]")
 	_, _ = fmt.Fprintln(out, "  memori gate status --issue <prefix-shortSHA> [--cycle <n>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori context checkpoint --session <id> [--trigger <trigger>] [--actor <actor>] [--json]")
 	_, _ = fmt.Fprintln(out, "  memori context rehydrate --session <id> [--json]")

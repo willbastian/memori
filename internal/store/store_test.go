@@ -1239,6 +1239,18 @@ func TestUpdateIssueStatusDoneRequiresPassingLockedRequiredGates(t *testing.T) {
 		t.Fatalf("expected pass-no-proof rejection, got: %v", err)
 	}
 
+	appendGateEvaluationEventWithEvidenceNoProofForTest(t, s, issueID, gateSetID, "build", "PASS", "agent-1", "cmd-close-gate-eval-pass-unverified-1")
+
+	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "done",
+		Actor:     "agent-1",
+		CommandID: "cmd-close-done-pass-unverified-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "required gates not PASS: build=PASS_UNVERIFIED") {
+		t.Fatalf("expected pass-unverified rejection, got: %v", err)
+	}
+
 	appendGateEvaluationEventForTest(t, s, issueID, gateSetID, "build", "PASS", "agent-1", "cmd-close-gate-eval-pass-1")
 
 	closed, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
@@ -1462,6 +1474,55 @@ func TestEvaluateGateRequiresEvidenceAndKnownGate(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), `gate "not-defined" is not defined`) {
 		t.Fatalf("expected missing gate definition error, got: %v", err)
+	}
+}
+
+func TestLookupGateVerificationSpecReturnsLockedCriteriaCommand(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-5757575"
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Gate verify lookup test",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-verify-spec-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-verify-spec-progress-1",
+	}); err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+
+	gateSetID := "gs_verify_spec_1"
+	seedLockedGateSetForTest(t, s, issueID, gateSetID)
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO gate_set_items(gate_set_id, gate_id, kind, required, criteria_json)
+		VALUES(?, ?, ?, ?, ?)
+	`, gateSetID, "build", "check", 1, `{"command":"go test ./..."}`); err != nil {
+		t.Fatalf("insert gate_set_item with command criteria: %v", err)
+	}
+
+	spec, err := s.LookupGateVerificationSpec(ctx, issueID, "build")
+	if err != nil {
+		t.Fatalf("lookup gate verification spec: %v", err)
+	}
+	if spec.GateSetID != gateSetID {
+		t.Fatalf("expected gate_set_id %q, got %q", gateSetID, spec.GateSetID)
+	}
+	if spec.Command != "go test ./..." {
+		t.Fatalf("expected verifier command, got %q", spec.Command)
+	}
+	if spec.GateSetHash == "" {
+		t.Fatalf("expected non-empty gate_set_hash in verification spec")
 	}
 }
 
@@ -2019,9 +2080,14 @@ func appendGateEvaluationEventForTest(
 	}
 	defer tx.Rollback()
 
+	var gateSetHash string
+	if err := tx.QueryRowContext(ctx, `SELECT gate_set_hash FROM gate_sets WHERE gate_set_id = ?`, gateSetID).Scan(&gateSetHash); err != nil {
+		t.Fatalf("lookup gate_set_hash for %s: %v", gateSetID, err)
+	}
+
 	payloadJSON := fmt.Sprintf(
-		`{"issue_id":%q,"gate_set_id":%q,"gate_id":%q,"result":%q,"evidence_refs":["test://evidence"],"evaluated_at":%q}`,
-		issueID, gateSetID, gateID, result, nowUTC(),
+		`{"issue_id":%q,"gate_set_id":%q,"gate_id":%q,"result":%q,"evidence_refs":["test://evidence"],"proof":{"verifier":"test-verifier","runner":"unit-test","runner_version":"1","exit_code":0,"gate_set_hash":%q},"evaluated_at":%q}`,
+		issueID, gateSetID, gateID, result, gateSetHash, nowUTC(),
 	)
 	res, err := s.appendEventTx(ctx, tx, appendEventRequest{
 		EntityType:          entityTypeIssue,
@@ -2060,6 +2126,45 @@ func appendGateEvaluationEventWithoutEvidenceForTest(
 
 	payloadJSON := fmt.Sprintf(
 		`{"issue_id":%q,"gate_set_id":%q,"gate_id":%q,"result":%q,"evaluated_at":%q}`,
+		issueID, gateSetID, gateID, result, nowUTC(),
+	)
+	res, err := s.appendEventTx(ctx, tx, appendEventRequest{
+		EntityType:          entityTypeIssue,
+		EntityID:            issueID,
+		EventType:           eventTypeGateEval,
+		PayloadJSON:         payloadJSON,
+		Actor:               actor,
+		CommandID:           commandID,
+		EventPayloadVersion: 1,
+	})
+	if err != nil {
+		t.Fatalf("append gate evaluation event: %v", err)
+	}
+	if res.AlreadyExists {
+		t.Fatalf("expected non-idempotent append for unique command_id %q", commandID)
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit gate evaluation event: %v", err)
+	}
+}
+
+func appendGateEvaluationEventWithEvidenceNoProofForTest(
+	t *testing.T,
+	s *Store,
+	issueID, gateSetID, gateID, result, actor, commandID string,
+) {
+	t.Helper()
+
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx for gate evaluation event: %v", err)
+	}
+	defer tx.Rollback()
+
+	payloadJSON := fmt.Sprintf(
+		`{"issue_id":%q,"gate_set_id":%q,"gate_id":%q,"result":%q,"evidence_refs":["test://evidence"],"evaluated_at":%q}`,
 		issueID, gateSetID, gateID, result, nowUTC(),
 	)
 	res, err := s.appendEventTx(ctx, tx, appendEventRequest{

@@ -19,6 +19,7 @@ This repo now contains the first implementation slice for a local event-ledger-b
 - `memori gate set instantiate`
 - `memori gate set lock`
 - `memori gate evaluate`
+- `memori gate verify`
 - `memori gate status`
 - `memori context checkpoint`
 - `memori context rehydrate`
@@ -95,13 +96,19 @@ memori gate evaluate \
   --evidence "ci://run/123" \
   --command-id "cli-gate-eval-01"
 
+# verifier-executed gate evaluation (recommended)
+memori gate verify \
+  --issue <issue-key> \
+  --gate build \
+  --command-id "cli-gate-verify-01"
+
 # inspect gate status for current locked gate set (or a specific cycle)
 memori gate status --issue <issue-key> [--cycle <n>]
 
 # close validation requires:
 # - a locked gate set for the issue's current cycle
 # - PASS for every required gate
-# - proof-bearing evaluations (non-empty evidence refs) for those PASS results
+# - proof-bearing evaluations from verifier execution (runner + exit_code + gate_set_hash)
 
 # create template definition file and register versioned gate template
 cat > /tmp/quality-gates.json <<'JSON'

@@ -25,6 +25,15 @@ type gateStatusEnvelope struct {
 	} `json:"data"`
 }
 
+type gateVerifyEnvelope struct {
+	Command string `json:"command"`
+	Data    struct {
+		Evaluation store.GateEvaluation `json:"evaluation"`
+		ExitCode   int                  `json:"exit_code"`
+		OutputSHA  string               `json:"output_sha256"`
+	} `json:"data"`
+}
+
 func TestGateEvaluateAndStatusJSON(t *testing.T) {
 	t.Parallel()
 
@@ -129,6 +138,44 @@ func TestGateStatusHumanOutputShowsResults(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "lint [optional/check] MISSING") {
 		t.Fatalf("expected MISSING lint row in gate status output, got:\n%s", stdout)
+	}
+}
+
+func TestGateVerifyExecutesCriteriaCommandAndRecordsProof(t *testing.T) {
+	t.Parallel()
+
+	dbPath := seedGateVerifyCommandTestDB(t)
+
+	stdout, stderr, err := runMemoriForTest(
+		"gate", "verify",
+		"--db", dbPath,
+		"--issue", "mem-c111111",
+		"--gate", "build",
+		"--command-id", "cmd-cli-gate-verify-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("run gate verify command: %v\nstderr: %s", err, stderr)
+	}
+
+	var verifyResp gateVerifyEnvelope
+	if err := json.Unmarshal([]byte(stdout), &verifyResp); err != nil {
+		t.Fatalf("decode gate verify json output: %v\nstdout: %s", err, stdout)
+	}
+	if verifyResp.Command != "gate verify" {
+		t.Fatalf("expected gate verify command, got %q", verifyResp.Command)
+	}
+	if verifyResp.Data.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", verifyResp.Data.ExitCode)
+	}
+	if verifyResp.Data.Evaluation.Result != "PASS" {
+		t.Fatalf("expected PASS from verifier execution, got %q", verifyResp.Data.Evaluation.Result)
+	}
+	if verifyResp.Data.Evaluation.Proof == nil || verifyResp.Data.Evaluation.Proof.GateSetHash == "" {
+		t.Fatalf("expected proof payload with gate_set_hash, got %#v", verifyResp.Data.Evaluation.Proof)
+	}
+	if verifyResp.Data.OutputSHA == "" {
+		t.Fatalf("expected non-empty output hash from verifier command")
 	}
 }
 
@@ -244,4 +291,54 @@ func seedGateCommandHistoricalCycle(t *testing.T, dbPath string) {
 	if err != nil {
 		t.Fatalf("insert historical gate set item: %v", err)
 	}
+}
+
+func seedGateVerifyCommandTestDB(t *testing.T) string {
+	t.Helper()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-gate-verify.db")
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	if err := s.Initialize(ctx, store.InitializeParams{IssueKeyPrefix: "mem"}); err != nil {
+		t.Fatalf("initialize store: %v", err)
+	}
+	if _, _, _, err := s.CreateIssue(ctx, store.CreateIssueParams{
+		IssueID:   "mem-c111111",
+		Type:      "task",
+		Title:     "Gate verify command issue",
+		Actor:     "test",
+		CommandID: "cmd-cli-gate-verify-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, store.UpdateIssueStatusParams{
+		IssueID:   "mem-c111111",
+		Status:    "inprogress",
+		Actor:     "test",
+		CommandID: "cmd-cli-gate-verify-progress-1",
+	}); err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+	_, err = s.DB().ExecContext(ctx, `
+		INSERT INTO gate_sets(
+			gate_set_id, issue_id, cycle_no, template_refs_json, frozen_definition_json,
+			gate_set_hash, locked_at, created_at, created_by
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "gs_cli_verify_1", "mem-c111111", 1, `["tmpl-default@1"]`, `{"gates":[{"id":"build"}]}`, "gs_cli_verify_hash_1", "2026-03-06T12:00:00Z", "2026-03-06T12:00:00Z", "test")
+	if err != nil {
+		t.Fatalf("insert gate set: %v", err)
+	}
+	_, err = s.DB().ExecContext(ctx, `
+		INSERT INTO gate_set_items(gate_set_id, gate_id, kind, required, criteria_json)
+		VALUES('gs_cli_verify_1', 'build', 'check', 1, '{"command":"echo verified"}')
+	`)
+	if err != nil {
+		t.Fatalf("insert gate set item: %v", err)
+	}
+	return dbPath
 }

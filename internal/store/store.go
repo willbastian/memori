@@ -126,6 +126,7 @@ type EvaluateGateParams struct {
 	GateID       string
 	Result       string
 	EvidenceRefs []string
+	Proof        *GateEvaluationProof
 	Actor        string
 	CommandID    string
 }
@@ -258,21 +259,41 @@ type issueLinkedPayload struct {
 }
 
 type gateEvaluatedPayload struct {
-	IssueID      string   `json:"issue_id"`
-	GateSetID    string   `json:"gate_set_id"`
-	GateID       string   `json:"gate_id"`
-	Result       string   `json:"result"`
-	EvidenceRefs []string `json:"evidence_refs,omitempty"`
-	EvaluatedAt  string   `json:"evaluated_at"`
+	IssueID      string               `json:"issue_id"`
+	GateSetID    string               `json:"gate_set_id"`
+	GateID       string               `json:"gate_id"`
+	Result       string               `json:"result"`
+	EvidenceRefs []string             `json:"evidence_refs,omitempty"`
+	Proof        *GateEvaluationProof `json:"proof,omitempty"`
+	EvaluatedAt  string               `json:"evaluated_at"`
+}
+
+type GateEvaluationProof struct {
+	Verifier      string `json:"verifier"`
+	Runner        string `json:"runner"`
+	RunnerVersion string `json:"runner_version"`
+	ExitCode      int    `json:"exit_code"`
+	StartedAt     string `json:"started_at,omitempty"`
+	FinishedAt    string `json:"finished_at,omitempty"`
+	GateSetHash   string `json:"gate_set_hash,omitempty"`
 }
 
 type GateEvaluation struct {
-	IssueID      string   `json:"issue_id"`
-	GateSetID    string   `json:"gate_set_id"`
-	GateID       string   `json:"gate_id"`
-	Result       string   `json:"result"`
-	EvidenceRefs []string `json:"evidence_refs,omitempty"`
-	EvaluatedAt  string   `json:"evaluated_at"`
+	IssueID      string               `json:"issue_id"`
+	GateSetID    string               `json:"gate_set_id"`
+	GateID       string               `json:"gate_id"`
+	Result       string               `json:"result"`
+	EvidenceRefs []string             `json:"evidence_refs,omitempty"`
+	Proof        *GateEvaluationProof `json:"proof,omitempty"`
+	EvaluatedAt  string               `json:"evaluated_at"`
+}
+
+type GateVerificationSpec struct {
+	IssueID     string `json:"issue_id"`
+	GateSetID   string `json:"gate_set_id"`
+	GateSetHash string `json:"gate_set_hash"`
+	GateID      string `json:"gate_id"`
+	Command     string `json:"command"`
 }
 
 type GateStatus struct {
@@ -1097,6 +1118,7 @@ func (s *Store) EvaluateGate(ctx context.Context, p EvaluateGateParams) (GateEva
 			GateID:       payload.GateID,
 			Result:       payload.Result,
 			EvidenceRefs: payload.EvidenceRefs,
+			Proof:        payload.Proof,
 			EvaluatedAt:  payload.EvaluatedAt,
 		}, existingEvent, true, nil
 	}
@@ -1111,6 +1133,10 @@ func (s *Store) EvaluateGate(ctx context.Context, p EvaluateGateParams) (GateEva
 	}
 	if !found {
 		return GateEvaluation{}, Event{}, false, fmt.Errorf("no locked gate set found for issue %q", issueID)
+	}
+	proof := normalizeGateEvaluationProof(p.Proof)
+	if proof != nil && strings.TrimSpace(proof.GateSetHash) == "" {
+		proof.GateSetHash = gateSet.GateSetHash
 	}
 
 	var gateCount int
@@ -1136,6 +1162,7 @@ func (s *Store) EvaluateGate(ctx context.Context, p EvaluateGateParams) (GateEva
 		GateID:       gateID,
 		Result:       result,
 		EvidenceRefs: evidenceRefs,
+		Proof:        proof,
 		EvaluatedAt:  nowUTC(),
 	}
 	payloadBytes, err := json.Marshal(payload)
@@ -1175,8 +1202,70 @@ func (s *Store) EvaluateGate(ctx context.Context, p EvaluateGateParams) (GateEva
 		GateID:       payload.GateID,
 		Result:       payload.Result,
 		EvidenceRefs: payload.EvidenceRefs,
+		Proof:        payload.Proof,
 		EvaluatedAt:  payload.EvaluatedAt,
 	}, appendRes.Event, appendRes.AlreadyExists, nil
+}
+
+func (s *Store) LookupGateVerificationSpec(ctx context.Context, issueID, gateID string) (GateVerificationSpec, error) {
+	normalizedIssueID, err := normalizeIssueKey(issueID)
+	if err != nil {
+		return GateVerificationSpec{}, err
+	}
+	normalizedGateID := strings.TrimSpace(gateID)
+	if normalizedGateID == "" {
+		return GateVerificationSpec{}, errors.New("--gate is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return GateVerificationSpec{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := getIssueTx(ctx, tx, normalizedIssueID); err != nil {
+		return GateVerificationSpec{}, err
+	}
+	gateSet, found, err := lockedGateSetForIssueTx(ctx, tx, normalizedIssueID)
+	if err != nil {
+		return GateVerificationSpec{}, err
+	}
+	if !found {
+		return GateVerificationSpec{}, fmt.Errorf("no locked gate set found for issue %q", normalizedIssueID)
+	}
+
+	var criteriaJSON string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT criteria_json
+		FROM gate_set_items
+		WHERE gate_set_id = ? AND gate_id = ?
+	`, gateSet.GateSetID, normalizedGateID).Scan(&criteriaJSON); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return GateVerificationSpec{}, fmt.Errorf("gate %q is not defined in locked gate_set %q for issue %q", normalizedGateID, gateSet.GateSetID, normalizedIssueID)
+		}
+		return GateVerificationSpec{}, fmt.Errorf("lookup verification criteria for gate %q: %w", normalizedGateID, err)
+	}
+
+	var criteria map[string]any
+	if err := json.Unmarshal([]byte(criteriaJSON), &criteria); err != nil {
+		return GateVerificationSpec{}, fmt.Errorf("decode criteria_json for gate %q: %w", normalizedGateID, err)
+	}
+	command, _ := criteria["command"].(string)
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return GateVerificationSpec{}, fmt.Errorf("gate %q has no executable verifier command in criteria.command", normalizedGateID)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return GateVerificationSpec{}, fmt.Errorf("commit tx: %w", err)
+	}
+	return GateVerificationSpec{
+		IssueID:     normalizedIssueID,
+		GateSetID:   gateSet.GateSetID,
+		GateSetHash: gateSet.GateSetHash,
+		GateID:      normalizedGateID,
+		Command:     command,
+	}, nil
 }
 
 func (s *Store) GetGateStatus(ctx context.Context, issueID string) (GateStatus, error) {
@@ -3716,9 +3805,10 @@ func validateIssueStatusTransition(from, to string) error {
 }
 
 type lockedGateSet struct {
-	GateSetID string
-	CycleNo   int
-	LockedAt  string
+	GateSetID   string
+	GateSetHash string
+	CycleNo     int
+	LockedAt    string
 }
 
 type gateTemplateRef struct {
@@ -3730,7 +3820,7 @@ type gateTemplateRef struct {
 func lockedGateSetForIssueTx(ctx context.Context, tx *sql.Tx, issueID string) (lockedGateSet, bool, error) {
 	var gateSet lockedGateSet
 	err := tx.QueryRowContext(ctx, `
-		SELECT gs.gate_set_id, gs.cycle_no, gs.locked_at
+		SELECT gs.gate_set_id, gs.gate_set_hash, gs.cycle_no, gs.locked_at
 		FROM gate_sets gs
 		INNER JOIN work_items wi
 			ON wi.id = gs.issue_id
@@ -3739,7 +3829,7 @@ func lockedGateSetForIssueTx(ctx context.Context, tx *sql.Tx, issueID string) (l
 			AND gs.locked_at IS NOT NULL
 		ORDER BY gs.cycle_no DESC
 		LIMIT 1
-	`, issueID).Scan(&gateSet.GateSetID, &gateSet.CycleNo, &gateSet.LockedAt)
+	`, issueID).Scan(&gateSet.GateSetID, &gateSet.GateSetHash, &gateSet.CycleNo, &gateSet.LockedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return lockedGateSet{}, false, nil
 	}
@@ -3752,12 +3842,12 @@ func lockedGateSetForIssueTx(ctx context.Context, tx *sql.Tx, issueID string) (l
 func lockedGateSetForIssueCycleTx(ctx context.Context, tx *sql.Tx, issueID string, cycleNo int) (lockedGateSet, bool, error) {
 	var gateSet lockedGateSet
 	err := tx.QueryRowContext(ctx, `
-		SELECT gate_set_id, cycle_no, locked_at
+		SELECT gate_set_id, gate_set_hash, cycle_no, locked_at
 		FROM gate_sets
 		WHERE issue_id = ?
 			AND cycle_no = ?
 			AND locked_at IS NOT NULL
-	`, issueID, cycleNo).Scan(&gateSet.GateSetID, &gateSet.CycleNo, &gateSet.LockedAt)
+	`, issueID, cycleNo).Scan(&gateSet.GateSetID, &gateSet.GateSetHash, &gateSet.CycleNo, &gateSet.LockedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return lockedGateSet{}, false, nil
 	}
@@ -3802,11 +3892,50 @@ func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID st
 				ORDER BY e.event_order DESC
 				LIMIT 1
 			), 0)
+			,
+			COALESCE((
+				SELECT json_extract(e.payload_json, '$.proof.gate_set_hash')
+				FROM events e
+				WHERE e.entity_type = ?
+					AND e.entity_id = ?
+					AND e.event_type = ?
+					AND json_extract(e.payload_json, '$.gate_set_id') = ?
+					AND json_extract(e.payload_json, '$.gate_id') = r.gate_id
+				ORDER BY e.event_order DESC
+				LIMIT 1
+			), '')
+			,
+			COALESCE((
+				SELECT CAST(json_extract(e.payload_json, '$.proof.exit_code') AS INTEGER)
+				FROM events e
+				WHERE e.entity_type = ?
+					AND e.entity_id = ?
+					AND e.event_type = ?
+					AND json_extract(e.payload_json, '$.gate_set_id') = ?
+					AND json_extract(e.payload_json, '$.gate_id') = r.gate_id
+				ORDER BY e.event_order DESC
+				LIMIT 1
+			), -1)
+			,
+			COALESCE((
+				SELECT json_extract(e.payload_json, '$.proof.runner')
+				FROM events e
+				WHERE e.entity_type = ?
+					AND e.entity_id = ?
+					AND e.event_type = ?
+					AND json_extract(e.payload_json, '$.gate_set_id') = ?
+					AND json_extract(e.payload_json, '$.gate_id') = r.gate_id
+				ORDER BY e.event_order DESC
+				LIMIT 1
+			), '')
 		FROM gate_set_items r
 		WHERE r.gate_set_id = ?
 			AND r.required = 1
 		ORDER BY r.gate_id ASC
 	`,
+		entityTypeIssue, issueID, eventTypeGateEval, gateSet.GateSetID,
+		entityTypeIssue, issueID, eventTypeGateEval, gateSet.GateSetID,
+		entityTypeIssue, issueID, eventTypeGateEval, gateSet.GateSetID,
 		entityTypeIssue, issueID, eventTypeGateEval, gateSet.GateSetID,
 		entityTypeIssue, issueID, eventTypeGateEval, gateSet.GateSetID,
 		gateSet.GateSetID,
@@ -3822,8 +3951,11 @@ func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID st
 			gateID            string
 			result            string
 			evidenceRefsCount int
+			proofGateSetHash  string
+			proofExitCode     int
+			proofRunner       string
 		)
-		if err := rows.Scan(&gateID, &result, &evidenceRefsCount); err != nil {
+		if err := rows.Scan(&gateID, &result, &evidenceRefsCount, &proofGateSetHash, &proofExitCode, &proofRunner); err != nil {
 			return fmt.Errorf("close validation scan required gate for issue %q: %w", issueID, err)
 		}
 		normalizedResult := strings.ToUpper(strings.TrimSpace(result))
@@ -3837,6 +3969,10 @@ func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID st
 		}
 		if evidenceRefsCount <= 0 {
 			failures = append(failures, gateID+"=PASS_NO_PROOF")
+			continue
+		}
+		if strings.TrimSpace(proofRunner) == "" || strings.TrimSpace(proofGateSetHash) != gateSet.GateSetHash || proofExitCode != 0 {
+			failures = append(failures, gateID+"=PASS_UNVERIFIED")
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -4045,6 +4181,20 @@ func parseReferencesJSON(raw string) ([]string, error) {
 
 func normalizeLabels(labels []string) []string {
 	return normalizeReferences(labels)
+}
+
+func normalizeGateEvaluationProof(proof *GateEvaluationProof) *GateEvaluationProof {
+	if proof == nil {
+		return nil
+	}
+	normalized := *proof
+	normalized.Verifier = strings.TrimSpace(normalized.Verifier)
+	normalized.Runner = strings.TrimSpace(normalized.Runner)
+	normalized.RunnerVersion = strings.TrimSpace(normalized.RunnerVersion)
+	normalized.StartedAt = strings.TrimSpace(normalized.StartedAt)
+	normalized.FinishedAt = strings.TrimSpace(normalized.FinishedAt)
+	normalized.GateSetHash = strings.TrimSpace(normalized.GateSetHash)
+	return &normalized
 }
 
 func parseLabelsJSON(raw string) ([]string, error) {
