@@ -177,6 +177,31 @@ func TestVerifyDetectsHashMismatch(t *testing.T) {
 	}
 }
 
+func TestVerifyFailsWhenEventsTableMissing(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestDB(t)
+	if _, err := Migrate(ctx, db, nil); err != nil {
+		t.Fatalf("migrate to head: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx, `DROP TABLE events`); err != nil {
+		t.Fatalf("drop events table: %v", err)
+	}
+
+	verify, err := Verify(ctx, db)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if verify.OK {
+		t.Fatalf("expected verify to fail when events table is missing")
+	}
+	if !containsCheck(verify.Checks, "required table missing: events") {
+		t.Fatalf("expected missing events table check, got: %v", verify.Checks)
+	}
+}
+
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 

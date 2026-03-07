@@ -186,7 +186,7 @@ func verifyEventHashChain(ctx context.Context, db *sql.DB) ([]string, error) {
 	`)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "no such table: events") {
-			return nil, nil
+			return []string{"required table missing: events"}, nil
 		}
 		return nil, fmt.Errorf("query events: %w", err)
 	}

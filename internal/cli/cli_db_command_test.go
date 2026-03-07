@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	_ "modernc.org/sqlite"
 )
 
 type dbStatusEnvelope struct {
@@ -20,7 +23,8 @@ type dbStatusEnvelope struct {
 type dbVerifyEnvelope struct {
 	Command string `json:"command"`
 	Data    struct {
-		OK bool `json:"ok"`
+		OK     bool     `json:"ok"`
+		Checks []string `json:"checks"`
 	} `json:"data"`
 }
 
@@ -119,6 +123,44 @@ func TestDBMigrateRejectsInvalidToVersion(t *testing.T) {
 	}
 }
 
+func TestDBVerifyFailsWhenEventsTableMissing(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-db-cli-missing-events.db")
+	if _, stderr, err := runMemoriForTest("db", "migrate", "--db", dbPath, "--json"); err != nil {
+		t.Fatalf("run db migrate: %v\nstderr: %s", err, stderr)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`DROP TABLE events`); err != nil {
+		t.Fatalf("drop events table: %v", err)
+	}
+
+	stdout, stderr, err := runMemoriForTest("db", "verify", "--db", dbPath, "--json")
+	if err == nil || !strings.Contains(err.Error(), "required table missing: events") {
+		t.Fatalf("expected missing events table error, got err=%v stderr=%s stdout=%s", err, stderr, stdout)
+	}
+
+	var verify dbVerifyEnvelope
+	if err := json.Unmarshal([]byte(stdout), &verify); err != nil {
+		t.Fatalf("decode db verify json output: %v\nstdout: %s", err, stdout)
+	}
+	if verify.Command != "db verify" {
+		t.Fatalf("expected db verify command, got %q", verify.Command)
+	}
+	if verify.Data.OK {
+		t.Fatalf("expected db verify to fail when events table is missing")
+	}
+	if !containsString(verify.Data.Checks, "required table missing: events") {
+		t.Fatalf("expected missing events check in JSON response, got %v", verify.Data.Checks)
+	}
+}
+
 func runDBStatusJSONForTest(t *testing.T, dbPath string) dbStatusEnvelope {
 	t.Helper()
 
@@ -132,4 +174,13 @@ func runDBStatusJSONForTest(t *testing.T, dbPath string) dbStatusEnvelope {
 		t.Fatalf("decode db status json output: %v\nstdout: %s", err, stdout)
 	}
 	return resp
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if strings.Contains(value, want) {
+			return true
+		}
+	}
+	return false
 }
