@@ -2193,10 +2193,12 @@ func parseEntityRef(raw string) (entityType, entityID string, err error) {
 	}
 	entityType = strings.ToLower(strings.TrimSpace(parts[0]))
 	entityID = strings.TrimSpace(parts[1])
-	if entityType != "issue" {
-		return "", "", fmt.Errorf("invalid entity type %q (expected issue)", parts[0])
+	switch entityType {
+	case "issue", "session":
+		return entityType, entityID, nil
+	default:
+		return "", "", fmt.Errorf("invalid entity type %q (expected issue|session)", parts[0])
 	}
-	return entityType, entityID, nil
 }
 
 func hasFlag(args []string, name string) bool {

@@ -242,20 +242,21 @@ type issueCreatedPayload struct {
 }
 
 type issueUpdatedPayload struct {
-	IssueID                string    `json:"issue_id"`
-	StatusFrom             *string   `json:"status_from,omitempty"`
-	StatusTo               *string   `json:"status_to,omitempty"`
-	PriorityFrom           *string   `json:"priority_from,omitempty"`
-	PriorityTo             *string   `json:"priority_to,omitempty"`
-	LabelsFrom             *[]string `json:"labels_from,omitempty"`
-	LabelsTo               *[]string `json:"labels_to,omitempty"`
-	DescriptionFrom        *string   `json:"description_from,omitempty"`
-	DescriptionTo          *string   `json:"description_to,omitempty"`
-	AcceptanceCriteriaFrom *string   `json:"acceptance_criteria_from,omitempty"`
-	AcceptanceCriteriaTo   *string   `json:"acceptance_criteria_to,omitempty"`
-	ReferencesFrom         *[]string `json:"references_from,omitempty"`
-	ReferencesTo           *[]string `json:"references_to,omitempty"`
-	UpdatedAt              string    `json:"updated_at"`
+	IssueID                string                   `json:"issue_id"`
+	StatusFrom             *string                  `json:"status_from,omitempty"`
+	StatusTo               *string                  `json:"status_to,omitempty"`
+	PriorityFrom           *string                  `json:"priority_from,omitempty"`
+	PriorityTo             *string                  `json:"priority_to,omitempty"`
+	LabelsFrom             *[]string                `json:"labels_from,omitempty"`
+	LabelsTo               *[]string                `json:"labels_to,omitempty"`
+	DescriptionFrom        *string                  `json:"description_from,omitempty"`
+	DescriptionTo          *string                  `json:"description_to,omitempty"`
+	AcceptanceCriteriaFrom *string                  `json:"acceptance_criteria_from,omitempty"`
+	AcceptanceCriteriaTo   *string                  `json:"acceptance_criteria_to,omitempty"`
+	ReferencesFrom         *[]string                `json:"references_from,omitempty"`
+	ReferencesTo           *[]string                `json:"references_to,omitempty"`
+	CloseProof             *IssueCloseAuthorization `json:"close_proof,omitempty"`
+	UpdatedAt              string                   `json:"updated_at"`
 }
 
 type issueLinkedPayload struct {
@@ -325,6 +326,19 @@ type GateVerificationSpec struct {
 	GateSetHash string `json:"gate_set_hash"`
 	GateID      string `json:"gate_id"`
 	Command     string `json:"command"`
+}
+
+type IssueCloseGateProof struct {
+	GateID       string               `json:"gate_id"`
+	Result       string               `json:"result"`
+	EvidenceRefs []string             `json:"evidence_refs,omitempty"`
+	Proof        *GateEvaluationProof `json:"proof,omitempty"`
+}
+
+type IssueCloseAuthorization struct {
+	GateSetID   string                `json:"gate_set_id"`
+	GateSetHash string                `json:"gate_set_hash"`
+	Gates       []IssueCloseGateProof `json:"gates"`
 }
 
 type GateStatus struct {
@@ -1012,6 +1026,7 @@ func (s *Store) UpdateIssue(ctx context.Context, p UpdateIssueParams) (Issue, Ev
 	}
 	changed := false
 	targetStatus := ""
+	var closeProof *IssueCloseAuthorization
 
 	if p.Status != nil {
 		statusTo, err := normalizeIssueStatus(*p.Status)
@@ -1083,9 +1098,12 @@ func (s *Store) UpdateIssue(ctx context.Context, p UpdateIssueParams) (Issue, Ev
 	}
 
 	if targetStatus == "Done" {
-		if err := validateIssueCloseEligibilityTx(ctx, tx, issueID); err != nil {
+		closeProofValue, err := validateIssueCloseEligibilityTx(ctx, tx, issueID)
+		if err != nil {
 			return Issue{}, Event{}, false, err
 		}
+		closeProof = closeProofValue
+		payload.CloseProof = closeProof
 	}
 
 	payloadBytes, err := json.Marshal(payload)
@@ -1841,8 +1859,7 @@ func (s *Store) BuildRehydratePacket(ctx context.Context, p BuildPacketParams) (
 		return RehydratePacket{}, err
 	}
 	if issueIDForSummary != "" {
-		gatesAny, _ := packetJSON["gates"].([]any)
-		openLoops, err := syncOpenLoopsForIssueFromGatesTx(ctx, tx, issueIDForSummary, issueCycleNo, gatesAny, latestEventID)
+		openLoops, err := listOpenLoopsForIssueCycleTx(ctx, tx, issueIDForSummary, issueCycleNo)
 		if err != nil {
 			return RehydratePacket{}, err
 		}
@@ -2652,6 +2669,9 @@ func (s *Store) ReplayProjections(ctx context.Context) (ReplayResult, error) {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM issue_summaries WHERE summary_level = 'packet'`); err != nil {
 		return ReplayResult{}, fmt.Errorf("clear packet issue_summaries: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM open_loops`); err != nil {
+		return ReplayResult{}, fmt.Errorf("clear open_loops: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM context_chunks`); err != nil {
 		return ReplayResult{}, fmt.Errorf("clear context_chunks: %w", err)
 	}
@@ -2688,6 +2708,9 @@ func (s *Store) ReplayProjections(ctx context.Context) (ReplayResult, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return ReplayResult{}, fmt.Errorf("iterate replay events: %w", err)
+	}
+	if err := syncAllOpenLoopsTx(ctx, tx); err != nil {
+		return ReplayResult{}, err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -2922,6 +2945,9 @@ func applyGateEvaluatedProjectionTx(ctx context.Context, tx *sql.Tx, event Event
 	)
 	if err != nil {
 		return fmt.Errorf("upsert gate status projection from event %s: %w", event.EventID, err)
+	}
+	if _, err := syncOpenLoopsForCurrentCycleTx(ctx, tx, payload.IssueID, event.EventID); err != nil {
+		return fmt.Errorf("sync open loops from gate event %s: %w", event.EventID, err)
 	}
 	return nil
 }
@@ -4032,6 +4058,103 @@ func syncOpenLoopsForIssueFromGatesTx(
 	return loops, nil
 }
 
+func syncOpenLoopsForCurrentCycleTx(ctx context.Context, tx *sql.Tx, issueID, sourceEventID string) ([]OpenLoop, error) {
+	var (
+		cycleNo     int
+		lastEventID string
+	)
+	if err := tx.QueryRowContext(ctx, `
+		SELECT current_cycle_no, COALESCE(last_event_id, '')
+		FROM work_items
+		WHERE id = ?
+	`, issueID).Scan(&cycleNo, &lastEventID); err != nil {
+		return nil, fmt.Errorf("query current cycle for issue %q: %w", issueID, err)
+	}
+	if strings.TrimSpace(sourceEventID) == "" {
+		sourceEventID = lastEventID
+	}
+	gates, _, _, err := gateSnapshotForIssueTx(ctx, tx, issueID)
+	if err != nil {
+		return nil, err
+	}
+	return syncOpenLoopsForIssueFromGatesTx(ctx, tx, issueID, cycleNo, gates, sourceEventID)
+}
+
+func syncAllOpenLoopsTx(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, COALESCE(last_event_id, '')
+		FROM work_items
+	`)
+	if err != nil {
+		return fmt.Errorf("query work_items for open-loop sync: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var issueID string
+		var lastEventID string
+		if err := rows.Scan(&issueID, &lastEventID); err != nil {
+			return fmt.Errorf("scan work_item for open-loop sync: %w", err)
+		}
+		if _, err := syncOpenLoopsForCurrentCycleTx(ctx, tx, issueID, lastEventID); err != nil {
+			return fmt.Errorf("sync open loops for issue %q: %w", issueID, err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate work_items for open-loop sync: %w", err)
+	}
+	return nil
+}
+
+func listOpenLoopsForIssueCycleTx(ctx context.Context, tx *sql.Tx, issueID string, cycleNo int) ([]OpenLoop, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT
+			loop_id,
+			issue_id,
+			cycle_no,
+			loop_type,
+			status,
+			COALESCE(owner, ''),
+			COALESCE(priority, ''),
+			COALESCE(source_event_id, ''),
+			updated_at
+		FROM open_loops
+		WHERE issue_id = ?
+			AND cycle_no = ?
+		ORDER BY
+			CASE status WHEN 'Open' THEN 0 ELSE 1 END,
+			updated_at DESC,
+			loop_id ASC
+	`, issueID, cycleNo)
+	if err != nil {
+		return nil, fmt.Errorf("query open loops for issue %q cycle %d: %w", issueID, cycleNo, err)
+	}
+	defer rows.Close()
+
+	loops := make([]OpenLoop, 0)
+	for rows.Next() {
+		var item OpenLoop
+		if err := rows.Scan(
+			&item.LoopID,
+			&item.IssueID,
+			&item.CycleNo,
+			&item.LoopType,
+			&item.Status,
+			&item.Owner,
+			&item.Priority,
+			&item.SourceEventID,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan open loop row: %w", err)
+		}
+		loops = append(loops, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate open loops: %w", err)
+	}
+	return loops, nil
+}
+
 func upsertIssueSummaryForPacketTx(ctx context.Context, tx *sql.Tx, issueID string, cycleNo int, summaryJSON, packetID, createdAt string) error {
 	var maxSeq int64
 	if err := tx.QueryRowContext(ctx, `
@@ -4237,13 +4360,13 @@ func lockedGateSetForIssueCycleTx(ctx context.Context, tx *sql.Tx, issueID strin
 	return gateSet, true, nil
 }
 
-func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID string) error {
+func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID string) (*IssueCloseAuthorization, error) {
 	openChildren, err := listIncompleteChildIssuesTx(ctx, tx, issueID)
 	if err != nil {
-		return fmt.Errorf("close validation %w", err)
+		return nil, fmt.Errorf("close validation %w", err)
 	}
 	if len(openChildren) > 0 {
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"close validation failed for issue %q: child issues must be Done first: %s",
 			issueID,
 			strings.Join(openChildren, ", "),
@@ -4252,65 +4375,17 @@ func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID st
 
 	gateSet, found, err := lockedGateSetForIssueTx(ctx, tx, issueID)
 	if err != nil {
-		return fmt.Errorf("close validation %w", err)
+		return nil, fmt.Errorf("close validation %w", err)
 	}
 	if !found {
-		return fmt.Errorf("close validation failed for issue %q: no locked gate set for current cycle", issueID)
+		return nil, fmt.Errorf("close validation failed for issue %q: no locked gate set for current cycle", issueID)
 	}
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT
 			r.gate_id,
 			COALESCE((
-				SELECT json_extract(e.payload_json, '$.result')
-				FROM events e
-				WHERE e.entity_type = ?
-					AND e.entity_id = ?
-					AND e.event_type = ?
-					AND json_extract(e.payload_json, '$.gate_set_id') = ?
-					AND json_extract(e.payload_json, '$.gate_id') = r.gate_id
-				ORDER BY e.event_order DESC
-				LIMIT 1
-			), '')
-			,
-			COALESCE((
-				SELECT json_array_length(json_extract(e.payload_json, '$.evidence_refs'))
-				FROM events e
-				WHERE e.entity_type = ?
-					AND e.entity_id = ?
-					AND e.event_type = ?
-					AND json_extract(e.payload_json, '$.gate_set_id') = ?
-					AND json_extract(e.payload_json, '$.gate_id') = r.gate_id
-				ORDER BY e.event_order DESC
-				LIMIT 1
-			), 0)
-			,
-			COALESCE((
-				SELECT json_extract(e.payload_json, '$.proof.gate_set_hash')
-				FROM events e
-				WHERE e.entity_type = ?
-					AND e.entity_id = ?
-					AND e.event_type = ?
-					AND json_extract(e.payload_json, '$.gate_set_id') = ?
-					AND json_extract(e.payload_json, '$.gate_id') = r.gate_id
-				ORDER BY e.event_order DESC
-				LIMIT 1
-			), '')
-			,
-			COALESCE((
-				SELECT CAST(json_extract(e.payload_json, '$.proof.exit_code') AS INTEGER)
-				FROM events e
-				WHERE e.entity_type = ?
-					AND e.entity_id = ?
-					AND e.event_type = ?
-					AND json_extract(e.payload_json, '$.gate_set_id') = ?
-					AND json_extract(e.payload_json, '$.gate_id') = r.gate_id
-				ORDER BY e.event_order DESC
-				LIMIT 1
-			), -1)
-			,
-			COALESCE((
-				SELECT json_extract(e.payload_json, '$.proof.runner')
+				SELECT e.payload_json
 				FROM events e
 				WHERE e.entity_type = ?
 					AND e.entity_id = ?
@@ -4326,60 +4401,71 @@ func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID st
 		ORDER BY r.gate_id ASC
 	`,
 		entityTypeIssue, issueID, eventTypeGateEval, gateSet.GateSetID,
-		entityTypeIssue, issueID, eventTypeGateEval, gateSet.GateSetID,
-		entityTypeIssue, issueID, eventTypeGateEval, gateSet.GateSetID,
-		entityTypeIssue, issueID, eventTypeGateEval, gateSet.GateSetID,
-		entityTypeIssue, issueID, eventTypeGateEval, gateSet.GateSetID,
 		gateSet.GateSetID,
 	)
 	if err != nil {
-		return fmt.Errorf("close validation list required gates for issue %q: %w", issueID, err)
+		return nil, fmt.Errorf("close validation list required gates for issue %q: %w", issueID, err)
 	}
 	defer rows.Close()
 
 	failures := make([]string, 0)
+	closeProof := &IssueCloseAuthorization{
+		GateSetID:   gateSet.GateSetID,
+		GateSetHash: gateSet.GateSetHash,
+		Gates:       make([]IssueCloseGateProof, 0),
+	}
 	for rows.Next() {
 		var (
-			gateID            string
-			result            string
-			evidenceRefsCount int
-			proofGateSetHash  string
-			proofExitCode     int
-			proofRunner       string
+			gateID      string
+			payloadJSON string
 		)
-		if err := rows.Scan(&gateID, &result, &evidenceRefsCount, &proofGateSetHash, &proofExitCode, &proofRunner); err != nil {
-			return fmt.Errorf("close validation scan required gate for issue %q: %w", issueID, err)
+		if err := rows.Scan(&gateID, &payloadJSON); err != nil {
+			return nil, fmt.Errorf("close validation scan required gate for issue %q: %w", issueID, err)
 		}
-		normalizedResult := strings.ToUpper(strings.TrimSpace(result))
-		if normalizedResult != "PASS" {
-			status := "MISSING"
-			if strings.TrimSpace(result) != "" {
-				status = normalizedResult
-			}
-			failures = append(failures, gateID+"="+status)
+		if strings.TrimSpace(payloadJSON) == "" {
+			failures = append(failures, gateID+"=MISSING")
 			continue
 		}
-		if evidenceRefsCount <= 0 {
+		payload, err := decodeGateEvaluatedPayload(payloadJSON)
+		if err != nil {
+			return nil, fmt.Errorf("close validation decode required gate %q for issue %q: %w", gateID, issueID, err)
+		}
+		normalizedResult := strings.ToUpper(strings.TrimSpace(payload.Result))
+		if normalizedResult != "PASS" {
+			failures = append(failures, gateID+"="+normalizedResult)
+			continue
+		}
+		if len(payload.EvidenceRefs) == 0 {
 			failures = append(failures, gateID+"=PASS_NO_PROOF")
 			continue
 		}
-		if strings.TrimSpace(proofRunner) == "" || strings.TrimSpace(proofGateSetHash) != gateSet.GateSetHash || proofExitCode != 0 {
+		if payload.Proof == nil ||
+			strings.TrimSpace(payload.Proof.Runner) == "" ||
+			strings.TrimSpace(payload.Proof.GateSetHash) != gateSet.GateSetHash ||
+			payload.Proof.ExitCode != 0 {
 			failures = append(failures, gateID+"=PASS_UNVERIFIED")
+			continue
 		}
+		closeProof.Gates = append(closeProof.Gates, IssueCloseGateProof{
+			GateID:       payload.GateID,
+			Result:       payload.Result,
+			EvidenceRefs: copyStringSlice(payload.EvidenceRefs),
+			Proof:        payload.Proof,
+		})
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("close validation iterate required gates for issue %q: %w", issueID, err)
+		return nil, fmt.Errorf("close validation iterate required gates for issue %q: %w", issueID, err)
 	}
 
 	if len(failures) > 0 {
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"close validation failed for issue %q (gate_set %q): required gates not PASS: %s",
 			issueID,
 			gateSet.GateSetID,
 			strings.Join(failures, ", "),
 		)
 	}
-	return nil
+	return closeProof, nil
 }
 
 func listIncompleteChildIssuesTx(ctx context.Context, tx *sql.Tx, parentID string) ([]string, error) {

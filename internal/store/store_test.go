@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -1265,6 +1266,38 @@ func TestUpdateIssueStatusDoneRequiresPassingLockedRequiredGates(t *testing.T) {
 	if closed.Status != "Done" {
 		t.Fatalf("expected issue status Done, got %s", closed.Status)
 	}
+
+	events, err := s.ListEventsForEntity(ctx, entityTypeIssue, issueID)
+	if err != nil {
+		t.Fatalf("list issue events: %v", err)
+	}
+	lastEvent := events[len(events)-1]
+	if lastEvent.EventType != eventTypeIssueUpdate {
+		t.Fatalf("expected last event %q, got %q", eventTypeIssueUpdate, lastEvent.EventType)
+	}
+	var payload issueUpdatedPayload
+	if err := json.Unmarshal([]byte(lastEvent.PayloadJSON), &payload); err != nil {
+		t.Fatalf("decode final issue.updated payload: %v", err)
+	}
+	if payload.CloseProof == nil {
+		t.Fatalf("expected close proof on Done payload")
+	}
+	if payload.CloseProof.GateSetID != gateSetID {
+		t.Fatalf("expected close proof gate_set_id %q, got %q", gateSetID, payload.CloseProof.GateSetID)
+	}
+	if payload.CloseProof.GateSetHash != "closehash1" {
+		t.Fatalf("expected close proof gate_set_hash closehash1, got %q", payload.CloseProof.GateSetHash)
+	}
+	if len(payload.CloseProof.Gates) != 1 {
+		t.Fatalf("expected one close-proof gate, got %d", len(payload.CloseProof.Gates))
+	}
+	gateProof := payload.CloseProof.Gates[0]
+	if gateProof.GateID != "build" || gateProof.Result != "PASS" {
+		t.Fatalf("unexpected close-proof gate payload: %#v", gateProof)
+	}
+	if gateProof.Proof == nil || gateProof.Proof.Runner != "unit-test" || gateProof.Proof.ExitCode != 0 {
+		t.Fatalf("expected verifier proof on close payload, got %#v", gateProof.Proof)
+	}
 }
 
 func TestUpdateIssueStatusDoneRequiresChildIssuesClosed(t *testing.T) {
@@ -2181,6 +2214,9 @@ func TestReplayRebuildsEventSourcedPacketsAndIssueSummaries(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM rehydrate_packets WHERE packet_id = ?`, packet.PacketID); err != nil {
 		t.Fatalf("delete packet row: %v", err)
 	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM open_loops WHERE issue_id = ?`, issueID); err != nil {
+		t.Fatalf("delete open loops: %v", err)
+	}
 
 	if _, err := s.ReplayProjections(ctx); err != nil {
 		t.Fatalf("replay projections: %v", err)
@@ -2200,6 +2236,14 @@ func TestReplayRebuildsEventSourcedPacketsAndIssueSummaries(t *testing.T) {
 	}
 	if summaryCount == 0 {
 		t.Fatalf("expected replay to rebuild packet-derived issue summaries")
+	}
+
+	var loopCount int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM open_loops WHERE issue_id = ?`, issueID).Scan(&loopCount); err != nil {
+		t.Fatalf("count replayed open loops: %v", err)
+	}
+	if loopCount == 0 {
+		t.Fatalf("expected replay to rebuild open loops")
 	}
 }
 

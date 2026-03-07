@@ -321,9 +321,50 @@ func TestIssueDoneRequiresChildIssuesClosed(t *testing.T) {
 func TestEventLogRejectsUnknownEntityType(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := runMemoriForTest("event", "log", "--entity", "session:abc123")
+	_, _, err := runMemoriForTest("event", "log", "--entity", "checkpoint:abc123")
 	if err == nil || !strings.Contains(err.Error(), "invalid entity type") {
 		t.Fatalf("expected invalid entity type error, got: %v", err)
+	}
+}
+
+func TestEventLogBareEntityDefaultsToIssue(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-event-log-default-issue.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-a1b2c3d",
+		"--type", "task",
+		"--title", "Event log default entity test",
+		"--command-id", "cmd-cli-event-log-default-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"event", "log",
+		"--db", dbPath,
+		"--entity", "mem-a1b2c3d",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("event log issue default: %v\nstderr: %s", err, stderr)
+	}
+
+	var resp eventLogEnvelope
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("decode event log issue default json: %v\nstdout: %s", err, stdout)
+	}
+	if resp.Command != "event log" || resp.Data.EntityType != "issue" || resp.Data.EntityID != "mem-a1b2c3d" {
+		t.Fatalf("unexpected event log issue default response: %+v", resp)
+	}
+	if len(resp.Data.Events) != 1 || resp.Data.Events[0].EventType != "issue.created" {
+		t.Fatalf("unexpected issue event log contents: %+v", resp)
 	}
 }
 

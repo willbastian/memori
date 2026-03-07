@@ -61,6 +61,19 @@ type contextLoopsEnvelope struct {
 	} `json:"data"`
 }
 
+type eventLogEnvelope struct {
+	Command string `json:"command"`
+	Data    struct {
+		EntityType string `json:"entity_type"`
+		EntityID   string `json:"entity_id"`
+		Events     []struct {
+			EntityType string `json:"entity_type"`
+			EntityID   string `json:"entity_id"`
+			EventType  string `json:"event_type"`
+		} `json:"events"`
+	} `json:"data"`
+}
+
 func TestContextCheckpointPacketAndRehydrateCommands(t *testing.T) {
 	t.Parallel()
 
@@ -151,6 +164,30 @@ func TestContextCheckpointPacketAndRehydrateCommands(t *testing.T) {
 	}
 	if checkpoint.Command != "context checkpoint" || !checkpoint.Data.Created || checkpoint.Data.Session.SessionID != "sess-cli-1" {
 		t.Fatalf("unexpected checkpoint response: %+v", checkpoint)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"event", "log",
+		"--db", dbPath,
+		"--entity", "session:sess-cli-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("event log session: %v\nstderr: %s", err, stderr)
+	}
+	var sessionEvents eventLogEnvelope
+	if err := json.Unmarshal([]byte(stdout), &sessionEvents); err != nil {
+		t.Fatalf("decode event log session json: %v\nstdout: %s", err, stdout)
+	}
+	if sessionEvents.Command != "event log" || sessionEvents.Data.EntityType != "session" || sessionEvents.Data.EntityID != "sess-cli-1" {
+		t.Fatalf("unexpected session event log response: %+v", sessionEvents)
+	}
+	if len(sessionEvents.Data.Events) != 1 {
+		t.Fatalf("expected one session event, got %+v", sessionEvents)
+	}
+	event := sessionEvents.Data.Events[0]
+	if event.EntityType != "session" || event.EntityID != "sess-cli-1" || event.EventType != "session.checkpointed" {
+		t.Fatalf("unexpected session event: %+v", event)
 	}
 
 	stdout, stderr, err = runMemoriForTest(
