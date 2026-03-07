@@ -77,10 +77,10 @@ func runHelp(args []string, out io.Writer) error {
 			"memori issue update --key <prefix-shortSHA> [--status todo|inprogress|blocked|done] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--actor <actor>] [--command-id <id>] [--json]",
 			"memori issue show --key <prefix-shortSHA> [--json]",
 			"memori issue next [--agent <id>] [--json]",
-			"memori gate template create --id <template-id> --version <n> --applies-to epic|story|task|bug [--applies-to ...] --file <path> [--actor <actor>] [--json]",
+			"memori gate template create --id <template-id> --version <n> --applies-to epic|story|task|bug [--applies-to ...] --file <path> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate template list [--type epic|story|task|bug] [--json]",
-			"memori gate set instantiate --issue <prefix-shortSHA> --template <template-id@version> [--template ...] [--actor <actor>] [--json]",
-			"memori gate set lock --issue <prefix-shortSHA> [--cycle <n>] [--actor <actor>] [--json]",
+			"memori gate set instantiate --issue <prefix-shortSHA> --template <template-id@version> [--template ...] [--actor <actor>] [--command-id <id>] [--json]",
+			"memori gate set lock --issue <prefix-shortSHA> [--cycle <n>] [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate verify --issue <prefix-shortSHA> --gate <gate-id> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate status --issue <prefix-shortSHA> [--cycle <n>] [--json]",
@@ -1204,6 +1204,7 @@ func runGateTemplateCreate(args []string, out io.Writer) error {
 	fs.Var(&appliesTo, "applies-to", "issue type this template applies to: epic|story|task|bug (repeatable)")
 	filePath := fs.String("file", "", "path to JSON definition file")
 	actor := fs.String("actor", "", "actor id")
+	commandID := fs.String("command-id", "", "stable idempotency key")
 	jsonOut := fs.Bool("json", false, "machine-readable output")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -1232,7 +1233,7 @@ func runGateTemplateCreate(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
-	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "gate-template-create", *actor, "", defaultMutationAuthDeps())
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "gate-template-create", *actor, *commandID, defaultMutationAuthDeps())
 	if err != nil {
 		return err
 	}
@@ -1246,6 +1247,7 @@ func runGateTemplateCreate(args []string, out io.Writer) error {
 		AppliesTo:      appliesTo,
 		DefinitionJSON: string(definitionBytes),
 		Actor:          identity.Actor,
+		CommandID:      identity.CommandID,
 	})
 	if err != nil {
 		return err
@@ -1348,6 +1350,7 @@ func runGateSetInstantiate(args []string, out io.Writer) error {
 	var templates stringSliceFlag
 	fs.Var(&templates, "template", "template ref: <template_id>@<version> (repeatable)")
 	actor := fs.String("actor", "", "actor id")
+	commandID := fs.String("command-id", "", "stable idempotency key")
 	jsonOut := fs.Bool("json", false, "machine-readable output")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -1365,7 +1368,7 @@ func runGateSetInstantiate(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
-	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "gate-set-instantiate", *actor, "", defaultMutationAuthDeps())
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "gate-set-instantiate", *actor, *commandID, defaultMutationAuthDeps())
 	if err != nil {
 		return err
 	}
@@ -1374,6 +1377,7 @@ func runGateSetInstantiate(args []string, out io.Writer) error {
 		IssueID:      *issue,
 		TemplateRefs: templates,
 		Actor:        identity.Actor,
+		CommandID:    identity.CommandID,
 	})
 	if err != nil {
 		return err
@@ -1408,6 +1412,7 @@ func runGateSetLock(args []string, out io.Writer) error {
 	issue := fs.String("issue", "", "issue key")
 	cycle := fs.Int("cycle", 0, "issue cycle to lock (defaults to current cycle)")
 	actor := fs.String("actor", "", "actor id")
+	commandID := fs.String("command-id", "", "stable idempotency key")
 	jsonOut := fs.Bool("json", false, "machine-readable output")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -1430,15 +1435,16 @@ func runGateSetLock(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
-	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "gate-set-lock", *actor, "", defaultMutationAuthDeps())
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "gate-set-lock", *actor, *commandID, defaultMutationAuthDeps())
 	if err != nil {
 		return err
 	}
 
 	gateSet, lockedNow, err := s.LockGateSet(ctx, store.LockGateSetParams{
-		IssueID: *issue,
-		CycleNo: cyclePtr,
-		Actor:   identity.Actor,
+		IssueID:   *issue,
+		CycleNo:   cyclePtr,
+		Actor:     identity.Actor,
+		CommandID: identity.CommandID,
 	})
 	if err != nil {
 		return err
@@ -2203,8 +2209,12 @@ func parseEntityRef(raw string) (entityType, entityID string, err error) {
 	switch entityType {
 	case "issue", "session", "packet", "focus":
 		return entityType, entityID, nil
+	case "gate-template", "gate_template":
+		return "gate_template", entityID, nil
+	case "gate-set", "gate_set":
+		return "gate_set", entityID, nil
 	default:
-		return "", "", fmt.Errorf("invalid entity type %q (expected issue|session|packet|focus)", parts[0])
+		return "", "", fmt.Errorf("invalid entity type %q (expected issue|session|packet|focus|gate-template|gate-set)", parts[0])
 	}
 }
 
@@ -2736,10 +2746,10 @@ func printHelp(out io.Writer) {
 	ui.bullet("memori issue create --type epic|story|task|bug --title <title> [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori issue update --key <prefix-shortSHA> [--status todo|inprogress|blocked|done] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--actor <actor>] [--command-id <id>] [--json]")
-	ui.bullet("memori gate template create --id <template-id> --version <n> --applies-to epic|story|task|bug [--applies-to ...] --file <path> [--actor <actor>] [--json]")
+	ui.bullet("memori gate template create --id <template-id> --version <n> --applies-to epic|story|task|bug [--applies-to ...] --file <path> [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori gate template list [--type epic|story|task|bug] [--json]")
-	ui.bullet("memori gate set instantiate --issue <prefix-shortSHA> --template <template-id@version> [--template ...] [--actor <actor>] [--json]")
-	ui.bullet("memori gate set lock --issue <prefix-shortSHA> [--cycle <n>] [--actor <actor>] [--json]")
+	ui.bullet("memori gate set instantiate --issue <prefix-shortSHA> --template <template-id@version> [--template ...] [--actor <actor>] [--command-id <id>] [--json]")
+	ui.bullet("memori gate set lock --issue <prefix-shortSHA> [--cycle <n>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori gate verify --issue <prefix-shortSHA> --gate <gate-id> [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori db migrate [--to <version>] [--json]")

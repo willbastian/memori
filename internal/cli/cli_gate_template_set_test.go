@@ -74,6 +74,7 @@ func TestGateTemplateCreateListInstantiateAndLockFlow(t *testing.T) {
 		"--version", "1",
 		"--applies-to", "task",
 		"--file", defPath,
+		"--command-id", "cmd-cli-gtemplate-create-1",
 		"--json",
 	)
 	if err != nil {
@@ -110,6 +111,7 @@ func TestGateTemplateCreateListInstantiateAndLockFlow(t *testing.T) {
 		"--db", dbPath,
 		"--issue", "mem-a111111",
 		"--template", "quality@1",
+		"--command-id", "cmd-cli-gset-instantiate-1",
 		"--json",
 	)
 	if err != nil {
@@ -133,6 +135,7 @@ func TestGateTemplateCreateListInstantiateAndLockFlow(t *testing.T) {
 		"gate", "set", "lock",
 		"--db", dbPath,
 		"--issue", "mem-a111111",
+		"--command-id", "cmd-cli-gset-lock-1",
 		"--json",
 	)
 	if err != nil {
@@ -156,6 +159,7 @@ func TestGateTemplateCreateListInstantiateAndLockFlow(t *testing.T) {
 		"gate", "set", "lock",
 		"--db", dbPath,
 		"--issue", "mem-a111111",
+		"--command-id", "cmd-cli-gset-lock-1",
 		"--json",
 	)
 	if err != nil {
@@ -167,6 +171,43 @@ func TestGateTemplateCreateListInstantiateAndLockFlow(t *testing.T) {
 	}
 	if relock.Data.LockedNow {
 		t.Fatalf("expected second lock call to report already locked")
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"event", "log",
+		"--db", dbPath,
+		"--entity", "gate-template:quality@1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("event log gate template: %v\nstderr: %s", err, stderr)
+	}
+	var templateEvents eventLogEnvelope
+	if err := json.Unmarshal([]byte(stdout), &templateEvents); err != nil {
+		t.Fatalf("decode gate template event log json: %v\nstdout: %s", err, stdout)
+	}
+	if templateEvents.Data.EntityType != "gate_template" || len(templateEvents.Data.Events) != 1 || templateEvents.Data.Events[0].EventType != "gate_template.created" {
+		t.Fatalf("unexpected gate template event log: %+v", templateEvents)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"event", "log",
+		"--db", dbPath,
+		"--entity", "gate-set:"+instantiated.Data.GateSet.GateSetID,
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("event log gate set: %v\nstderr: %s", err, stderr)
+	}
+	var gateSetEvents eventLogEnvelope
+	if err := json.Unmarshal([]byte(stdout), &gateSetEvents); err != nil {
+		t.Fatalf("decode gate set event log json: %v\nstdout: %s", err, stdout)
+	}
+	if gateSetEvents.Data.EntityType != "gate_set" || len(gateSetEvents.Data.Events) != 2 {
+		t.Fatalf("unexpected gate set event log: %+v", gateSetEvents)
+	}
+	if gateSetEvents.Data.Events[0].EventType != "gate_set.instantiated" || gateSetEvents.Data.Events[1].EventType != "gate_set.locked" {
+		t.Fatalf("unexpected gate set event types: %+v", gateSetEvents.Data.Events)
 	}
 }
 
@@ -200,6 +241,7 @@ func TestGateSetInstantiateRejectsTemplateTypeMismatch(t *testing.T) {
 		"--version", "1",
 		"--applies-to", "story",
 		"--file", defPath,
+		"--command-id", "cmd-cli-gtemplate-create-mismatch-1",
 		"--json",
 	); err != nil {
 		t.Fatalf("gate template create: %v\nstderr: %s", err, stderr)

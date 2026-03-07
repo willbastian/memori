@@ -628,6 +628,7 @@ func TestCreateGateTemplateVersioningAndListing(t *testing.T) {
 		AppliesTo:      []string{"task"},
 		DefinitionJSON: firstDef,
 		Actor:          "agent-1",
+		CommandID:      "cmd-template-create-1",
 	})
 	if err != nil {
 		t.Fatalf("create gate template v1: %v", err)
@@ -645,6 +646,7 @@ func TestCreateGateTemplateVersioningAndListing(t *testing.T) {
 		AppliesTo:      []string{"task"},
 		DefinitionJSON: firstDef,
 		Actor:          "agent-1",
+		CommandID:      "cmd-template-create-1",
 	})
 	if err != nil {
 		t.Fatalf("idempotent template create retry: %v", err)
@@ -662,6 +664,7 @@ func TestCreateGateTemplateVersioningAndListing(t *testing.T) {
 		AppliesTo:      []string{"task"},
 		DefinitionJSON: `{"gates":[{"id":"build","required":false}]}`,
 		Actor:          "agent-1",
+		CommandID:      "cmd-template-create-2",
 	})
 	if err == nil || !strings.Contains(err.Error(), "create a new version") {
 		t.Fatalf("expected same-version mutation rejection, got: %v", err)
@@ -673,6 +676,7 @@ func TestCreateGateTemplateVersioningAndListing(t *testing.T) {
 		AppliesTo:      []string{"task"},
 		DefinitionJSON: `{"gates":[{"id":"build","required":false}]}`,
 		Actor:          "agent-1",
+		CommandID:      "cmd-template-create-3",
 	})
 	if err != nil {
 		t.Fatalf("create gate template v2: %v", err)
@@ -714,6 +718,7 @@ func TestInstantiateAndLockGateSetFlow(t *testing.T) {
 		AppliesTo:      []string{"task"},
 		DefinitionJSON: `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}},{"id":"lint","kind":"check","required":false}]}`,
 		Actor:          "agent-1",
+		CommandID:      "cmd-gset-template-create-1",
 	})
 	if err != nil {
 		t.Fatalf("create gate template: %v", err)
@@ -723,6 +728,7 @@ func TestInstantiateAndLockGateSetFlow(t *testing.T) {
 		IssueID:      issueID,
 		TemplateRefs: []string{"quality@1"},
 		Actor:        "agent-1",
+		CommandID:    "cmd-gset-instantiate-1",
 	})
 	if err != nil {
 		t.Fatalf("instantiate gate set: %v", err)
@@ -741,6 +747,7 @@ func TestInstantiateAndLockGateSetFlow(t *testing.T) {
 		IssueID:      issueID,
 		TemplateRefs: []string{"quality@1"},
 		Actor:        "agent-1",
+		CommandID:    "cmd-gset-instantiate-1",
 	})
 	if err != nil {
 		t.Fatalf("instantiate gate set retry: %v", err)
@@ -752,7 +759,11 @@ func TestInstantiateAndLockGateSetFlow(t *testing.T) {
 		t.Fatalf("expected same gate set id on retry, got %q vs %q", retrySet.GateSetID, gateSet.GateSetID)
 	}
 
-	locked, lockedNow, err := s.LockGateSet(ctx, LockGateSetParams{IssueID: issueID})
+	locked, lockedNow, err := s.LockGateSet(ctx, LockGateSetParams{
+		IssueID:   issueID,
+		Actor:     "agent-1",
+		CommandID: "cmd-gset-lock-1",
+	})
 	if err != nil {
 		t.Fatalf("lock gate set: %v", err)
 	}
@@ -763,7 +774,11 @@ func TestInstantiateAndLockGateSetFlow(t *testing.T) {
 		t.Fatalf("expected locked_at timestamp to be set")
 	}
 
-	relock, relockNow, err := s.LockGateSet(ctx, LockGateSetParams{IssueID: issueID})
+	relock, relockNow, err := s.LockGateSet(ctx, LockGateSetParams{
+		IssueID:   issueID,
+		Actor:     "agent-1",
+		CommandID: "cmd-gset-lock-1",
+	})
 	if err != nil {
 		t.Fatalf("lock gate set second time: %v", err)
 	}
@@ -1426,6 +1441,7 @@ func TestUpdateIssueStatusReopenAdvancesCycleAndClearsActiveGateSet(t *testing.T
 		AppliesTo:      []string{"task"},
 		DefinitionJSON: `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}}]}`,
 		Actor:          "agent-1",
+		CommandID:      "cmd-reopen-template-create-1",
 	}); err != nil {
 		t.Fatalf("create gate template: %v", err)
 	}
@@ -1434,11 +1450,16 @@ func TestUpdateIssueStatusReopenAdvancesCycleAndClearsActiveGateSet(t *testing.T
 		IssueID:      issueID,
 		TemplateRefs: []string{"reopen@1"},
 		Actor:        "agent-1",
+		CommandID:    "cmd-reopen-gset-create-1",
 	})
 	if err != nil {
 		t.Fatalf("instantiate gate set: %v", err)
 	}
-	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{IssueID: issueID}); err != nil {
+	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{
+		IssueID:   issueID,
+		Actor:     "agent-1",
+		CommandID: "cmd-reopen-gset-lock-1",
+	}); err != nil {
 		t.Fatalf("lock gate set: %v", err)
 	}
 	appendGateEvaluationEventForTest(t, s, issueID, gateSet.GateSetID, "build", "PASS", "agent-1", "cmd-reopen-gate-pass-1")
@@ -1514,6 +1535,7 @@ func TestReopenSupportsNewCycleGateSetAndReplay(t *testing.T) {
 		AppliesTo:      []string{"task"},
 		DefinitionJSON: `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}}]}`,
 		Actor:          "agent-1",
+		CommandID:      "cmd-reopen-replay-template-create-1",
 	}); err != nil {
 		t.Fatalf("create gate template: %v", err)
 	}
@@ -1522,11 +1544,16 @@ func TestReopenSupportsNewCycleGateSetAndReplay(t *testing.T) {
 		IssueID:      issueID,
 		TemplateRefs: []string{"reopen-replay@1"},
 		Actor:        "agent-1",
+		CommandID:    "cmd-reopen-replay-gset-create-1",
 	})
 	if err != nil {
 		t.Fatalf("instantiate cycle 1 gate set: %v", err)
 	}
-	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{IssueID: issueID}); err != nil {
+	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{
+		IssueID:   issueID,
+		Actor:     "agent-1",
+		CommandID: "cmd-reopen-replay-gset-lock-1",
+	}); err != nil {
 		t.Fatalf("lock cycle 1 gate set: %v", err)
 	}
 	appendGateEvaluationEventForTest(t, s, issueID, cycle1.GateSetID, "build", "PASS", "agent-1", "cmd-reopen-replay-gate-pass-1")
@@ -1551,6 +1578,7 @@ func TestReopenSupportsNewCycleGateSetAndReplay(t *testing.T) {
 		IssueID:      issueID,
 		TemplateRefs: []string{"reopen-replay@1"},
 		Actor:        "agent-1",
+		CommandID:    "cmd-reopen-replay-gset-create-2",
 	})
 	if err != nil {
 		t.Fatalf("instantiate cycle 2 gate set: %v", err)
@@ -1561,7 +1589,11 @@ func TestReopenSupportsNewCycleGateSetAndReplay(t *testing.T) {
 	if cycle2.GateSetID == cycle1.GateSetID {
 		t.Fatalf("expected new gate set id for reopened cycle, got %q", cycle2.GateSetID)
 	}
-	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{IssueID: issueID}); err != nil {
+	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{
+		IssueID:   issueID,
+		Actor:     "agent-1",
+		CommandID: "cmd-reopen-replay-gset-lock-2",
+	}); err != nil {
 		t.Fatalf("lock cycle 2 gate set: %v", err)
 	}
 	evaluation, _, _, err := s.EvaluateGate(ctx, EvaluateGateParams{
@@ -1597,8 +1629,8 @@ func TestReopenSupportsNewCycleGateSetAndReplay(t *testing.T) {
 	if cycleNo != 2 {
 		t.Fatalf("expected replayed current_cycle_no 2, got %d", cycleNo)
 	}
-	if activeGateSetID.Valid {
-		t.Fatalf("expected replay to leave active_gate_set_id unset until gate-set locking is event-sourced, got %#v", activeGateSetID)
+	if !activeGateSetID.Valid || activeGateSetID.String != cycle2.GateSetID {
+		t.Fatalf("expected replay to restore active_gate_set_id %q, got %#v", cycle2.GateSetID, activeGateSetID)
 	}
 
 	status, err := s.GetGateStatus(ctx, issueID)
@@ -1610,6 +1642,22 @@ func TestReopenSupportsNewCycleGateSetAndReplay(t *testing.T) {
 	}
 	if len(status.Gates) != 1 || status.Gates[0].GateID != "build" || status.Gates[0].Result != "FAIL" {
 		t.Fatalf("unexpected replayed gate status: %#v", status.Gates)
+	}
+
+	templateEvents, err := s.ListEventsForEntity(ctx, "gate_template", "reopen-replay@1")
+	if err != nil {
+		t.Fatalf("list gate template events: %v", err)
+	}
+	if len(templateEvents) != 1 || templateEvents[0].EventType != "gate_template.created" {
+		t.Fatalf("unexpected gate template events: %#v", templateEvents)
+	}
+
+	gateSetEvents, err := s.ListEventsForEntity(ctx, "gate_set", cycle2.GateSetID)
+	if err != nil {
+		t.Fatalf("list gate set events: %v", err)
+	}
+	if len(gateSetEvents) != 2 || gateSetEvents[0].EventType != "gate_set.instantiated" || gateSetEvents[1].EventType != "gate_set.locked" {
+		t.Fatalf("unexpected gate set events: %#v", gateSetEvents)
 	}
 }
 
@@ -2019,9 +2067,7 @@ func TestReplayProjectionsRebuildsGateStatusProjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("move issue to inprogress: %v", err)
 	}
-	gateSetID := "gs_eval_3"
-	seedLockedGateSetForTest(t, s, issueID, gateSetID)
-	seedGateSetItemForTest(t, s, gateSetID, "build", "check", 1)
+	createLockedGateSetEventSourcedForTest(t, s, issueID, "gate-replay", "build", "cmd-gate-replay")
 
 	if _, _, _, err := s.EvaluateGate(ctx, EvaluateGateParams{
 		IssueID:      issueID,
@@ -2042,8 +2088,8 @@ func TestReplayProjectionsRebuildsGateStatusProjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replay projections: %v", err)
 	}
-	if replay.EventsApplied != 3 {
-		t.Fatalf("expected replay to apply 3 events, got %d", replay.EventsApplied)
+	if replay.EventsApplied != 6 {
+		t.Fatalf("expected replay to apply 6 events, got %d", replay.EventsApplied)
 	}
 
 	status, err := s.GetGateStatus(ctx, issueID)
@@ -2355,9 +2401,7 @@ func TestSessionCheckpointPacketAndRehydrateFlow(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("move issue to inprogress: %v", err)
 	}
-	gateSetID := "gs_context_1"
-	seedLockedGateSetForTest(t, s, issueID, gateSetID)
-	seedGateSetItemForTest(t, s, gateSetID, "build", "check", 1)
+	createLockedGateSetEventSourcedForTest(t, s, issueID, "context-gate", "build", "cmd-context-gset")
 	if _, _, _, err := s.EvaluateGate(ctx, EvaluateGateParams{
 		IssueID:      issueID,
 		GateID:       "build",
@@ -2575,9 +2619,7 @@ func TestReplayRebuildsEventSourcedPacketsAndIssueSummaries(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("move issue to inprogress: %v", err)
 	}
-	gateSetID := "gs_replay_packet_1"
-	seedLockedGateSetForTest(t, s, issueID, gateSetID)
-	seedGateSetItemForTest(t, s, gateSetID, "build", "check", 1)
+	createLockedGateSetEventSourcedForTest(t, s, issueID, "replay-packet-gate", "build", "cmd-replay-packet-gset")
 	_, gateEvent, _, err := s.EvaluateGate(ctx, EvaluateGateParams{
 		IssueID:      issueID,
 		GateID:       "build",
@@ -2754,6 +2796,40 @@ func seedLockedGateSetForTest(t *testing.T, s *Store, issueID, gateSetID string)
 	if err != nil {
 		t.Fatalf("insert locked gate set %s: %v", gateSetID, err)
 	}
+}
+
+func createLockedGateSetEventSourcedForTest(t *testing.T, s *Store, issueID, templateID, gateID, commandPrefix string) string {
+	t.Helper()
+
+	ctx := context.Background()
+	definition := fmt.Sprintf(`{"gates":[{"id":%q,"kind":"check","required":true,"criteria":{"ref":"test"}}]}`, gateID)
+	if _, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     templateID,
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: definition,
+		Actor:          "agent-1",
+		CommandID:      commandPrefix + "-template-1",
+	}); err != nil {
+		t.Fatalf("create event-sourced gate template %s@1: %v", templateID, err)
+	}
+	gateSet, _, err := s.InstantiateGateSet(ctx, InstantiateGateSetParams{
+		IssueID:      issueID,
+		TemplateRefs: []string{templateID + "@1"},
+		Actor:        "agent-1",
+		CommandID:    commandPrefix + "-instantiate-1",
+	})
+	if err != nil {
+		t.Fatalf("instantiate event-sourced gate set for %s: %v", issueID, err)
+	}
+	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{
+		IssueID:   issueID,
+		Actor:     "agent-1",
+		CommandID: commandPrefix + "-lock-1",
+	}); err != nil {
+		t.Fatalf("lock event-sourced gate set for %s: %v", issueID, err)
+	}
+	return gateSet.GateSetID
 }
 
 func sqliteSchemaObjectsForTest(t *testing.T, db *sql.DB) []string {
