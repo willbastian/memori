@@ -70,6 +70,9 @@ memori issue update --key <issue-key> --status inprogress --command-id "cli-upda
 # update context fields without changing status
 memori issue update \
   --key <issue-key> \
+  --priority P1 \
+  --label backend \
+  --label ux \
   --description "Updated context" \
   --acceptance-criteria "Readable in issue show output" \
   --reference "notes.md" \

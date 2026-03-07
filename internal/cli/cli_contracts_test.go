@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -110,5 +111,65 @@ func TestEventLogRejectsUnknownEntityType(t *testing.T) {
 	_, _, err := runMemoriForTest("event", "log", "--entity", "session:abc123")
 	if err == nil || !strings.Contains(err.Error(), "invalid entity type") {
 		t.Fatalf("expected invalid entity type error, got: %v", err)
+	}
+}
+
+func TestIssueUpdateSupportsPriorityAndLabels(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-priority-labels.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-a1b1c1d",
+		"--type", "task",
+		"--title", "Priority and labels test",
+		"--command-id", "cmd-cli-priority-label-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+
+	if _, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-a1b1c1d",
+		"--priority", "p1",
+		"--label", "backend",
+		"--label", "urgent",
+		"--command-id", "cmd-cli-priority-label-update-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue update priority/labels: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"issue", "show",
+		"--db", dbPath,
+		"--key", "mem-a1b1c1d",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("issue show: %v\nstderr: %s", err, stderr)
+	}
+	var showResp struct {
+		Data struct {
+			Issue struct {
+				Priority string   `json:"priority"`
+				Labels   []string `json:"labels"`
+			} `json:"issue"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &showResp); err != nil {
+		t.Fatalf("decode issue show json: %v\nstdout: %s", err, stdout)
+	}
+	if showResp.Data.Issue.Priority != "P1" {
+		t.Fatalf("expected normalized priority P1, got %q", showResp.Data.Issue.Priority)
+	}
+	if len(showResp.Data.Issue.Labels) != 2 || showResp.Data.Issue.Labels[0] != "backend" || showResp.Data.Issue.Labels[1] != "urgent" {
+		t.Fatalf("expected labels [backend urgent], got %#v", showResp.Data.Issue.Labels)
 	}
 }

@@ -42,6 +42,8 @@ type Issue struct {
 	Title       string   `json:"title"`
 	ParentID    string   `json:"parent_id,omitempty"`
 	Status      string   `json:"status"`
+	Priority    string   `json:"priority,omitempty"`
+	Labels      []string `json:"labels,omitempty"`
 	Description string   `json:"description,omitempty"`
 	Acceptance  string   `json:"acceptance_criteria,omitempty"`
 	References  []string `json:"references,omitempty"`
@@ -103,6 +105,8 @@ type UpdateIssueStatusParams struct {
 type UpdateIssueParams struct {
 	IssueID            string
 	Status             *string
+	Priority           *string
+	Labels             *[]string
 	Description        *string
 	AcceptanceCriteria *string
 	References         *[]string
@@ -233,6 +237,10 @@ type issueUpdatedPayload struct {
 	IssueID                string    `json:"issue_id"`
 	StatusFrom             *string   `json:"status_from,omitempty"`
 	StatusTo               *string   `json:"status_to,omitempty"`
+	PriorityFrom           *string   `json:"priority_from,omitempty"`
+	PriorityTo             *string   `json:"priority_to,omitempty"`
+	LabelsFrom             *[]string `json:"labels_from,omitempty"`
+	LabelsTo               *[]string `json:"labels_to,omitempty"`
 	DescriptionFrom        *string   `json:"description_from,omitempty"`
 	DescriptionTo          *string   `json:"description_to,omitempty"`
 	AcceptanceCriteriaFrom *string   `json:"acceptance_criteria_from,omitempty"`
@@ -843,6 +851,28 @@ func (s *Store) UpdateIssue(ctx context.Context, p UpdateIssueParams) (Issue, Ev
 		targetStatus = statusTo
 		changed = true
 	}
+	if p.Priority != nil {
+		priorityTo, err := normalizePriority(*p.Priority)
+		if err != nil {
+			return Issue{}, Event{}, false, err
+		}
+		if currentIssue.Priority != priorityTo {
+			priorityFrom := currentIssue.Priority
+			payload.PriorityFrom = &priorityFrom
+			payload.PriorityTo = &priorityTo
+			changed = true
+		}
+	}
+	if p.Labels != nil {
+		labelsTo := normalizeLabels(*p.Labels)
+		if !equalStringSlices(currentIssue.Labels, labelsTo) {
+			labelsFrom := copyStringSlice(currentIssue.Labels)
+			labelsToCopy := copyStringSlice(labelsTo)
+			payload.LabelsFrom = &labelsFrom
+			payload.LabelsTo = &labelsToCopy
+			changed = true
+		}
+	}
 	if p.Description != nil {
 		descriptionTo := strings.TrimSpace(*p.Description)
 		if currentIssue.Description != descriptionTo {
@@ -873,7 +903,7 @@ func (s *Store) UpdateIssue(ctx context.Context, p UpdateIssueParams) (Issue, Ev
 	}
 
 	if !changed {
-		return Issue{}, Event{}, false, errors.New("--status, --description, --acceptance-criteria, or --reference is required")
+		return Issue{}, Event{}, false, errors.New("--status, --priority, --label, --description, --acceptance-criteria, or --reference is required")
 	}
 
 	if targetStatus == "Done" {
@@ -2106,6 +2136,7 @@ func (s *Store) ListIssues(ctx context.Context, p ListIssuesParams) ([]Issue, er
 	query := `
 		SELECT
 			id, type, title, COALESCE(parent_id, ''), status,
+			COALESCE(priority, ''), COALESCE(labels_json, '[]'),
 			COALESCE(description, ''), COALESCE(acceptance_criteria, ''), COALESCE(references_json, '[]'),
 			created_at, updated_at, last_event_id
 		FROM work_items
@@ -2124,6 +2155,7 @@ func (s *Store) ListIssues(ctx context.Context, p ListIssuesParams) ([]Issue, er
 	issues := make([]Issue, 0)
 	for rows.Next() {
 		var issue Issue
+		var labelsJSON string
 		var referencesJSON string
 		if err := rows.Scan(
 			&issue.ID,
@@ -2131,6 +2163,8 @@ func (s *Store) ListIssues(ctx context.Context, p ListIssuesParams) ([]Issue, er
 			&issue.Title,
 			&issue.ParentID,
 			&issue.Status,
+			&issue.Priority,
+			&labelsJSON,
 			&issue.Description,
 			&issue.Acceptance,
 			&referencesJSON,
@@ -2140,6 +2174,11 @@ func (s *Store) ListIssues(ctx context.Context, p ListIssuesParams) ([]Issue, er
 		); err != nil {
 			return nil, fmt.Errorf("scan work_item row: %w", err)
 		}
+		labels, err := parseLabelsJSON(labelsJSON)
+		if err != nil {
+			return nil, fmt.Errorf("scan work_item row labels: %w", err)
+		}
+		issue.Labels = labels
 		references, err := parseReferencesJSON(referencesJSON)
 		if err != nil {
 			return nil, fmt.Errorf("scan work_item row references: %w", err)
@@ -2158,8 +2197,9 @@ func (s *Store) NextIssue(ctx context.Context, agent string) (IssueNextResult, e
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			id, type, title, COALESCE(parent_id, ''), status,
+			COALESCE(priority, ''), COALESCE(labels_json, '[]'),
 			COALESCE(description, ''), COALESCE(acceptance_criteria, ''), COALESCE(references_json, '[]'),
-			created_at, updated_at, last_event_id, COALESCE(priority, '')
+			created_at, updated_at, last_event_id
 		FROM work_items
 		WHERE status IN ('Todo', 'InProgress')
 		ORDER BY id ASC
@@ -2173,8 +2213,8 @@ func (s *Store) NextIssue(ctx context.Context, agent string) (IssueNextResult, e
 	for rows.Next() {
 		var (
 			issue          Issue
+			labelsJSON     string
 			referencesJSON string
-			priority       string
 		)
 		if err := rows.Scan(
 			&issue.ID,
@@ -2182,23 +2222,29 @@ func (s *Store) NextIssue(ctx context.Context, agent string) (IssueNextResult, e
 			&issue.Title,
 			&issue.ParentID,
 			&issue.Status,
+			&issue.Priority,
+			&labelsJSON,
 			&issue.Description,
 			&issue.Acceptance,
 			&referencesJSON,
 			&issue.CreatedAt,
 			&issue.UpdatedAt,
 			&issue.LastEventID,
-			&priority,
 		); err != nil {
 			return IssueNextResult{}, fmt.Errorf("scan next-issue candidate row: %w", err)
 		}
+		labels, err := parseLabelsJSON(labelsJSON)
+		if err != nil {
+			return IssueNextResult{}, fmt.Errorf("decode candidate labels for issue %q: %w", issue.ID, err)
+		}
+		issue.Labels = labels
 		references, err := parseReferencesJSON(referencesJSON)
 		if err != nil {
 			return IssueNextResult{}, fmt.Errorf("decode candidate references for issue %q: %w", issue.ID, err)
 		}
 		issue.References = references
 
-		score, reasons := scoreIssueCandidate(issue, priority)
+		score, reasons := scoreIssueCandidate(issue, issue.Priority)
 		candidates = append(candidates, IssueNextCandidate{
 			Issue:   issue,
 			Score:   score,
@@ -2382,8 +2428,8 @@ func applyIssueUpdatedProjectionTx(ctx context.Context, tx *sql.Tx, event Event)
 		return fmt.Errorf("decode issue.updated payload for event %s: %w", event.EventID, err)
 	}
 
-	setClauses := make([]string, 0, 6)
-	args := make([]any, 0, 8)
+	setClauses := make([]string, 0, 8)
+	args := make([]any, 0, 10)
 
 	if payload.StatusTo != nil {
 		issueStatus, err := normalizeIssueStatus(*payload.StatusTo)
@@ -2392,6 +2438,18 @@ func applyIssueUpdatedProjectionTx(ctx context.Context, tx *sql.Tx, event Event)
 		}
 		setClauses = append(setClauses, "status = ?")
 		args = append(args, issueStatus)
+	}
+	if payload.PriorityTo != nil {
+		setClauses = append(setClauses, "priority = ?")
+		args = append(args, nullIfEmpty(strings.TrimSpace(*payload.PriorityTo)))
+	}
+	if payload.LabelsTo != nil {
+		labelsJSON, err := json.Marshal(normalizeLabels(*payload.LabelsTo))
+		if err != nil {
+			return fmt.Errorf("encode issue.updated labels payload for event %s: %w", event.EventID, err)
+		}
+		setClauses = append(setClauses, "labels_json = ?")
+		args = append(args, string(labelsJSON))
 	}
 	if payload.DescriptionTo != nil {
 		setClauses = append(setClauses, "description = ?")
@@ -2653,12 +2711,14 @@ func getIssueQueryable(ctx context.Context, q queryable, id string) (Issue, erro
 	row := q.QueryRowContext(ctx, `
 		SELECT
 			id, type, title, COALESCE(parent_id, ''), status,
+			COALESCE(priority, ''), COALESCE(labels_json, '[]'),
 			COALESCE(description, ''), COALESCE(acceptance_criteria, ''), COALESCE(references_json, '[]'),
 			created_at, updated_at, last_event_id
 		FROM work_items
 		WHERE id = ?
 	`, id)
 	var issue Issue
+	var labelsJSON string
 	var referencesJSON string
 	if err := row.Scan(
 		&issue.ID,
@@ -2666,6 +2726,8 @@ func getIssueQueryable(ctx context.Context, q queryable, id string) (Issue, erro
 		&issue.Title,
 		&issue.ParentID,
 		&issue.Status,
+		&issue.Priority,
+		&labelsJSON,
 		&issue.Description,
 		&issue.Acceptance,
 		&referencesJSON,
@@ -2675,6 +2737,11 @@ func getIssueQueryable(ctx context.Context, q queryable, id string) (Issue, erro
 	); err != nil {
 		return Issue{}, err
 	}
+	labels, err := parseLabelsJSON(labelsJSON)
+	if err != nil {
+		return Issue{}, err
+	}
+	issue.Labels = labels
 	references, err := parseReferencesJSON(referencesJSON)
 	if err != nil {
 		return Issue{}, err
@@ -3974,6 +4041,34 @@ func parseReferencesJSON(raw string) ([]string, error) {
 		return nil, fmt.Errorf("decode references_json: %w", err)
 	}
 	return normalizeReferences(references), nil
+}
+
+func normalizeLabels(labels []string) []string {
+	return normalizeReferences(labels)
+}
+
+func parseLabelsJSON(raw string) ([]string, error) {
+	labels, err := parseReferencesJSON(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode labels_json: %w", err)
+	}
+	return labels, nil
+}
+
+func normalizePriority(raw string) (string, error) {
+	priority := strings.ToUpper(strings.TrimSpace(raw))
+	if priority == "" {
+		return "", nil
+	}
+	if len(priority) > 32 {
+		return "", fmt.Errorf("invalid --priority %q (max length 32)", raw)
+	}
+	for _, ch := range priority {
+		if (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9') && ch != '-' && ch != '_' {
+			return "", fmt.Errorf("invalid --priority %q", raw)
+		}
+	}
+	return priority, nil
 }
 
 func equalStringSlices(a, b []string) bool {

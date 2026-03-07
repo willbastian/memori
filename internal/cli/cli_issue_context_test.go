@@ -125,7 +125,7 @@ func TestIssueUpdateRequiresAtLeastOneMutationField(t *testing.T) {
 		"--key", "mem-4444ccc",
 		"--command-id", "cmd-cli-rich-update-empty-1",
 	)
-	if err == nil || !strings.Contains(err.Error(), "one of --status, --description, --acceptance-criteria, or --reference is required") {
+	if err == nil || !strings.Contains(err.Error(), "one of --status, --priority, --label, --description, --acceptance-criteria, or --reference is required") {
 		t.Fatalf("expected mutation field validation error, got: %v", err)
 	}
 }
