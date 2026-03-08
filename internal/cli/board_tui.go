@@ -352,7 +352,10 @@ func renderBoardTUI(model boardTUIModel, colors bool) string {
 	} else {
 		listHeight := bodyHeight
 		if model.detailOpen {
-			listHeight = maxInt(bodyHeight-8, 6)
+			detailHeight := maxInt((bodyHeight*2)/3, 10)
+			maxDetailHeight := maxInt(bodyHeight-4, 1)
+			detailHeight = minInt(detailHeight, maxDetailHeight)
+			listHeight = maxInt(bodyHeight-detailHeight-1, 3)
 		}
 		lines = append(lines, boardListPanel(model, theme, width, listHeight)...)
 		if model.detailOpen {
@@ -518,24 +521,65 @@ func boardDetailPanel(model boardTUIModel, theme boardTheme, width, height int) 
 	lines = append(lines, padVisual(strings.Join(meta, " "), width))
 	lines = append(lines, theme.paintLine(theme.borderFG, "", false, strings.Repeat(".", width)))
 
-	for _, line := range boardWrappedSection("Reasons", strings.Join(orderBoardReasons(row.Reasons), "; "), width) {
-		lines = append(lines, theme.paintLine(theme.detailFG, "", false, line))
-	}
-	for _, line := range boardWrappedSection("Description", row.Issue.Description, width) {
-		lines = append(lines, theme.paintLine(theme.detailFG, "", false, line))
-	}
-	for _, line := range boardWrappedSection("Acceptance", row.Issue.Acceptance, width) {
-		lines = append(lines, theme.paintLine(theme.detailFG, "", false, line))
-	}
-	if len(row.Issue.References) > 0 {
-		for _, ref := range row.Issue.References {
-			lines = append(lines, theme.paintLine(theme.mutedFG, "", false, truncateBoardLine("ref: "+ref, width)))
+	sections := boardDetailSections(row, width, width < 100)
+	for _, section := range sections {
+		for _, line := range section.lines {
+			fg := theme.detailFG
+			if section.muted {
+				fg = theme.mutedFG
+			}
+			lines = append(lines, theme.paintLine(fg, "", false, line))
 		}
 	}
 	for len(lines) < height {
 		lines = append(lines, padRight("", width))
 	}
 	return lines[:minInt(len(lines), height)]
+}
+
+type boardDetailSection struct {
+	lines []string
+	muted bool
+}
+
+func boardDetailSections(row boardIssueRow, width int, compact bool) []boardDetailSection {
+	sections := make([]boardDetailSection, 0, 4)
+	appendSection := func(lines []string, muted bool) {
+		if len(lines) == 0 {
+			return
+		}
+		sections = append(sections, boardDetailSection{lines: lines, muted: muted})
+	}
+
+	description := boardWrappedSection("Description", row.Issue.Description, width)
+	acceptance := boardWrappedSection("Acceptance", row.Issue.Acceptance, width)
+	reasons := boardWrappedSection("Reasons", strings.Join(orderBoardReasons(row.Reasons), "; "), width)
+	references := boardReferenceSection(row.Issue.References, width)
+
+	if compact {
+		appendSection(description, false)
+		appendSection(acceptance, false)
+		appendSection(references, true)
+		appendSection(reasons, false)
+		return sections
+	}
+
+	appendSection(reasons, false)
+	appendSection(description, false)
+	appendSection(acceptance, false)
+	appendSection(references, true)
+	return sections
+}
+
+func boardReferenceSection(refs []string, width int) []string {
+	if len(refs) == 0 {
+		return nil
+	}
+	lines := []string{truncateBoardLine("REFERENCES:", width)}
+	for _, ref := range refs {
+		lines = append(lines, truncateBoardLine("  "+ref, width))
+	}
+	return lines
 }
 
 func boardWrappedSection(label, value string, width int) []string {

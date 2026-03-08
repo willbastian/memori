@@ -165,6 +165,48 @@ func TestRenderBoardTUIVeryNarrowStillShowsTickets(t *testing.T) {
 	}
 }
 
+func TestRenderBoardTUINarrowDetailPrefersFullIssueContent(t *testing.T) {
+	t.Parallel()
+
+	issue := boardTestIssue("mem-a111111", "Task", "Todo", "Narrow detail")
+	issue.Description = "Ship the full issue detail in narrow mode before continuity hints."
+	issue.Acceptance = "Description and acceptance criteria remain visible in compact panes."
+	issue.References = []string{"docs/board.md", "internal/cli/board_tui.go"}
+
+	model := newBoardTUIModel(boardSnapshot{
+		LikelyNext: []boardIssueRow{
+			{
+				Issue:   issue,
+				Reasons: []string{"active focus resume", "open loops waiting"},
+			},
+		},
+	}, 72, 18)
+	model.detailOpen = true
+
+	rendered := renderBoardTUI(model, false)
+	descriptionIndex := strings.Index(rendered, "DESCRIPTION:")
+	acceptanceIndex := strings.Index(rendered, "ACCEPTANCE:")
+	reasonsIndex := strings.Index(rendered, "REASONS:")
+	for _, want := range []string{
+		"DESCRIPTION:",
+		"Ship the full issue detail",
+		"ACCEPTANCE:",
+		"compact panes.",
+		"REFERENCES:",
+		"docs/board.md",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected narrow detail render to contain %q, got:\n%s", want, rendered)
+		}
+	}
+	if reasonsIndex != -1 && descriptionIndex != -1 && reasonsIndex < descriptionIndex {
+		t.Fatalf("expected reasons to come after full issue detail in narrow mode, got:\n%s", rendered)
+	}
+	if reasonsIndex != -1 && acceptanceIndex != -1 && reasonsIndex < acceptanceIndex {
+		t.Fatalf("expected reasons to come after acceptance details in narrow mode, got:\n%s", rendered)
+	}
+}
+
 func boardTestIssue(id, issueType, status, title string) store.Issue {
 	return store.Issue{ID: id, Type: issueType, Status: status, Title: title}
 }
