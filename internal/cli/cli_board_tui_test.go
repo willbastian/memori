@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"strings"
 	"testing"
 
@@ -252,6 +253,49 @@ func TestBoardTUISearchCancelRestoresPreviousSelection(t *testing.T) {
 	}
 }
 
+func TestBoardTUIApplySnapshotKeepsSearchStateAcrossRefresh(t *testing.T) {
+	t.Parallel()
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Ready one")},
+		},
+		Blocked: []boardIssueRow{
+			{Issue: boardTestIssue("mem-b222222", "Bug", "Blocked", "Blocked match")},
+		},
+	}, 120, 28)
+	model.lane = boardLaneReady
+	model = boardNormalizeModel(model)
+
+	var quit bool
+	model, quit = boardHandleInput(model, boardKeyInput{action: boardActionSearchOpen})
+	if quit {
+		t.Fatalf("did not expect search open to quit")
+	}
+	model, quit = boardHandleInput(model, boardKeyInput{text: "b22"})
+	if quit {
+		t.Fatalf("did not expect search text entry to quit")
+	}
+
+	updated := boardApplySnapshot(model, boardSnapshot{
+		Ready: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Ready one refreshed")},
+			{Issue: boardTestIssue("mem-c333333", "Task", "Todo", "Extra ready issue")},
+		},
+		Blocked: []boardIssueRow{
+			{Issue: boardTestIssue("mem-b222222", "Bug", "Blocked", "Blocked match refreshed")},
+		},
+	}, 120, 28)
+
+	if !updated.searchOpen || updated.searchQuery != "b22" {
+		t.Fatalf("expected refresh to preserve active search state, got %+v", updated)
+	}
+	results := boardSearchResults(updated)
+	if len(results) != 1 || results[0].row.Issue.ID != "mem-b222222" {
+		t.Fatalf("expected refreshed search results to stay focused on the blocked match, got %+v", results)
+	}
+}
+
 func TestRenderBoardTUIWideShowsDetailPane(t *testing.T) {
 	t.Parallel()
 
@@ -396,6 +440,43 @@ func TestRenderBoardTUIShowsSearchPanel(t *testing.T) {
 	}
 }
 
+func TestRenderBoardTUINarrowShowsSearchPanel(t *testing.T) {
+	t.Parallel()
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Ready one")},
+		},
+		Blocked: []boardIssueRow{
+			{Issue: boardTestIssue("mem-b222222", "Bug", "Blocked", "Blocked match")},
+		},
+	}, 72, 22)
+	model.lane = boardLaneReady
+	model = boardNormalizeModel(model)
+
+	var quit bool
+	model, quit = boardHandleInput(model, boardKeyInput{action: boardActionSearchOpen})
+	if quit {
+		t.Fatalf("did not expect search open to quit")
+	}
+	model, quit = boardHandleInput(model, boardKeyInput{text: "b22"})
+	if quit {
+		t.Fatalf("did not expect text entry to quit")
+	}
+
+	rendered := renderBoardTUI(model, false)
+	for _, want := range []string{
+		"SEARCH",
+		"/b22",
+		"BLOCKED",
+		"Search /b22",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected narrow search render to contain %q, got:\n%s", want, rendered)
+		}
+	}
+}
+
 func TestRenderBoardTUIVeryNarrowStillShowsTickets(t *testing.T) {
 	t.Parallel()
 
@@ -456,6 +537,42 @@ func TestRenderBoardTUINarrowDetailPrefersFullIssueContent(t *testing.T) {
 	}
 	if reasonsIndex != -1 && acceptanceIndex != -1 && reasonsIndex < acceptanceIndex {
 		t.Fatalf("expected reasons to come after acceptance details in narrow mode, got:\n%s", rendered)
+	}
+}
+
+func TestReadBoardInputParsesSearchKeysAndEscape(t *testing.T) {
+	t.Parallel()
+
+	searchOpen, err := readBoardInput(bufio.NewReader(strings.NewReader("/")))
+	if err != nil {
+		t.Fatalf("read search open: %v", err)
+	}
+	if searchOpen.action != boardActionSearchOpen {
+		t.Fatalf("expected / to open search, got %+v", searchOpen)
+	}
+
+	text, err := readBoardInput(bufio.NewReader(strings.NewReader("a")))
+	if err != nil {
+		t.Fatalf("read text: %v", err)
+	}
+	if text.text != "a" {
+		t.Fatalf("expected printable key to become search text, got %+v", text)
+	}
+
+	backspace, err := readBoardInput(bufio.NewReader(strings.NewReader("\x7f")))
+	if err != nil {
+		t.Fatalf("read backspace: %v", err)
+	}
+	if !backspace.backspace {
+		t.Fatalf("expected delete to map to backspace, got %+v", backspace)
+	}
+
+	escape, err := readBoardInput(bufio.NewReader(strings.NewReader("\x1b")))
+	if err != nil {
+		t.Fatalf("read escape: %v", err)
+	}
+	if escape.action != boardActionQuit {
+		t.Fatalf("expected bare escape to map to quit/cancel, got %+v", escape)
 	}
 }
 

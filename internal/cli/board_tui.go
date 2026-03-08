@@ -62,7 +62,6 @@ type boardTUIModel struct {
 	searchIndex   int
 	searchOrigin  string
 	searchLane    boardLane
-	searchPos     int
 }
 
 type boardTheme struct {
@@ -300,7 +299,6 @@ func boardHandleInput(model boardTUIModel, input boardKeyInput) (boardTUIModel, 
 		model.searchIndex = 0
 		model.searchOrigin = model.selectedIssue
 		model.searchLane = model.lane
-		model.searchPos = model.index
 		return boardNormalizeModel(model), false
 	}
 
@@ -947,9 +945,14 @@ func boardSearchPanel(model boardTUIModel, theme boardTheme, width, height int) 
 
 func boardSearchResults(model boardTUIModel) []boardSearchMatch {
 	query := strings.ToLower(strings.TrimSpace(model.searchQuery))
+	preference := boardLanePreference(model.lane)
+	laneRank := make(map[boardLane]int, len(preference))
+	for idx, lane := range preference {
+		laneRank[lane] = idx
+	}
 	seen := make(map[string]struct{})
 	results := make([]boardSearchMatch, 0)
-	for _, lane := range boardLanePreference(model.lane) {
+	for _, lane := range preference {
 		for _, row := range model.rawRowsForLane(lane) {
 			if _, ok := seen[row.Issue.ID]; ok {
 				continue
@@ -968,7 +971,7 @@ func boardSearchResults(model boardTUIModel) []boardSearchMatch {
 			return leftScore < rightScore
 		}
 		if results[i].lane != results[j].lane {
-			return results[i].lane < results[j].lane
+			return laneRank[results[i].lane] < laneRank[results[j].lane]
 		}
 		return results[i].row.Issue.ID < results[j].row.Issue.ID
 	})
