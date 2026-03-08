@@ -43,7 +43,9 @@ Use the same environment for `go run ./cmd/memori ...` if the binary is not inst
 6. Keep work decomposed.
    - If scope grows, create child tasks/bugs and link with `--parent` on creation or `issue link`.
    - `memori issue link --child <child_key> --parent <parent_key> --command-id "<unique-id>" --json`
-7. Rebuild projections from event ledger when validating consistency.
+7. Keep user-facing guidance in sync with product behavior.
+   - When Memori behavior, workflows, or recommended practices change, update `README.md` in the same unit of work so it reflects the latest supported state.
+8. Rebuild projections from event ledger when validating consistency.
    - `memori db replay --json`
    - Use replay when you need to recompute derived state such as gate projections, packets, focus, summaries, or open loops from the append-only ledger.
 
@@ -73,21 +75,22 @@ Before closing a task, run this checklist in order:
 
 1. Confirm scope is complete for the active issue key.
 2. Run validation for touched code (tests/build/lint as applicable) and ensure results are green.
-3. Recheck issue context and history:
+3. If the work changed Memori behavior, workflows, or recommended usage, update `README.md` before closing so docs match current practice and state.
+4. Recheck issue context and history:
    - `memori issue show --key <issue_key> --json`
    - `memori event log --entity <issue_key> --json`
-4. Ensure task status reflects reality:
+5. Ensure task status reflects reality:
    - Set `inprogress` at start of work.
    - Set `blocked` immediately if blocked.
-5. Stage and commit with a clear message:
+6. Stage and commit with a clear message:
    - `git add <files>`
    - `git commit -m "<message>"`
-6. Push commit(s) to remote:
+7. Push commit(s) to remote:
    - `git push origin <branch>`
-7. Verify remote push succeeded and local branch is clean:
+8. Verify remote push succeeded and local branch is clean:
    - `git status --short`
    - `git log -1 --oneline`
-8. Satisfy close gates for the current cycle before marking `done`:
+9. Satisfy close gates for the current cycle before marking `done`:
    - Inspect available template versions when needed.
    - `memori gate template list --json`
    - Instantiate an approved close template for the issue type.
@@ -96,9 +99,9 @@ Before closing a task, run this checklist in order:
    - `memori gate set lock --issue <issue_key> --command-id "<unique-id>" --json`
    - Verify required gates.
    - `memori gate verify --issue <issue_key> --gate <gate_id> --command-id "<unique-id>" --json`
-9. Mark task `done` in memori only after push is successful and the close gates pass:
+10. Mark task `done` in memori only after push is successful and the close gates pass:
    - `memori issue update --key <issue_key> --status done --command-id "<unique-id>" --json`
-10. Share closeout summary with:
+11. Share closeout summary with:
    - Issue key, commit SHA, push target branch, validation run, and any follow-up tasks.
 
 ## Governance Notes
