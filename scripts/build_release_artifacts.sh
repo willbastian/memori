@@ -10,6 +10,8 @@ fi
 VERSION="$1"
 OUTDIR="${2:-dist}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BUILD_COMMIT="$(git -C "${ROOT_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
 TARGETS=(
   "darwin amd64"
@@ -38,7 +40,11 @@ for target in "${TARGETS[@]}"; do
 
   (
     cd "${ROOT_DIR}"
-    CGO_ENABLED=0 GOOS="${GOOS}" GOARCH="${GOARCH}" go build -trimpath -o "${BIN_DIR}/memori" ./cmd/memori
+    CGO_ENABLED=0 GOOS="${GOOS}" GOARCH="${GOARCH}" go build \
+      -trimpath \
+      -ldflags "-X github.com/willbastian/memori/internal/cli.buildVersion=${VERSION} -X github.com/willbastian/memori/internal/cli.buildCommit=${BUILD_COMMIT} -X github.com/willbastian/memori/internal/cli.buildDate=${BUILD_DATE}" \
+      -o "${BIN_DIR}/memori" \
+      ./cmd/memori
   )
 
   cp "${ROOT_DIR}/README.md" "${STAGE_DIR}/README.md"

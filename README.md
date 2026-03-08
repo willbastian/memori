@@ -69,6 +69,7 @@ Install the CLI from source without cloning the repository:
 
 ```bash
 go install github.com/willbastian/memori/cmd/memori@latest
+memori version
 memori help
 ```
 
@@ -118,6 +119,26 @@ That workflow builds `tar.gz` archives plus `SHA256SUMS.txt` and attaches them t
 ```bash
 ./scripts/build_release_artifacts.sh v0.1.0 dist
 ```
+
+Release binaries embed:
+
+- the CLI version string
+- the source commit
+- the build timestamp
+- the binary's embedded schema head version
+
+You can inspect that metadata with:
+
+```bash
+memori version
+memori version --json
+```
+
+Schema compatibility expectations:
+
+- a binary can inspect and migrate an older memori database up to its embedded schema head version
+- if a database has already been migrated beyond the binary's reported `schema_head_version`, use a newer memori binary before making changes
+- use `memori db status` to compare the current database version with the binary's expected schema head
 
 ## Quick start
 
@@ -389,14 +410,16 @@ For day-to-day work, the shortest path is usually:
 1. `memori board` or `memori board --agent <id>` to see active, blocked, ready, and likely-next work.
 2. `memori issue next --agent <id> --json` when an agent needs a ranked continuity-aware recommendation.
 3. `memori issue show --key <issue>` and `memori event log --entity <issue> --json` before editing.
-4. `memori gate template list --json` when you need to find a close template before locking gates for a cycle.
-5. `memori gate template pending --json` when you need to review executable templates that are still awaiting human approval.
+4. `memori version --json` when you need the binary build metadata and embedded schema head version.
+5. `memori gate template list --json` when you need to find a close template before locking gates for a cycle.
+6. `memori gate template pending --json` when you need to review executable templates that are still awaiting human approval.
 
 ## Command map
 
 ### Inspection
 
 - `memori help`
+- `memori version`
 - `memori backlog`
 - `memori board`
 - `memori issue show`

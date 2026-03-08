@@ -103,7 +103,7 @@ var requiredTablesByVersion = []struct {
 var migrationsFS embed.FS
 
 func StatusOf(ctx context.Context, db *sql.DB) (Status, error) {
-	headVersion, err := headVersion()
+	headVersion, err := HeadVersion()
 	if err != nil {
 		return Status{}, err
 	}
@@ -120,6 +120,10 @@ func StatusOf(ctx context.Context, db *sql.DB) (Status, error) {
 		HeadVersion:       headVersion,
 		PendingMigrations: pending,
 	}, nil
+}
+
+func HeadVersion() (int, error) {
+	return headVersion()
 }
 
 func Migrate(ctx context.Context, db *sql.DB, to *int) (Status, error) {

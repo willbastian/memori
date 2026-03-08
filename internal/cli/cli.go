@@ -27,6 +27,11 @@ const responseSchemaVersion = 1
 
 var passwordPrompter = readPasswordNoEcho
 var authCommandTimeout = 5 * time.Second
+var buildVersion = "dev"
+var buildCommit = "unknown"
+var buildDate = "unknown"
+
+const buildModulePath = "github.com/willbastian/memori"
 
 func Run(args []string, stdout, stderr io.Writer) error {
 	_ = stderr
@@ -38,6 +43,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 	switch args[0] {
 	case "help", "--help", "-h":
 		return runHelp(args[1:], stdout)
+	case "version", "--version":
+		return runVersion(args[1:], stdout)
 	case "auth":
 		return runAuth(args[1:], stdout)
 	case "init":
@@ -74,6 +81,7 @@ func runHelp(args []string, out io.Writer) error {
 			"memori auth set-password [--db <path>] [--json]",
 			"memori auth status [--db <path>] [--json]",
 			"memori help [--json]",
+			"memori version [--json]",
 			"memori init [--db <path>] [--issue-prefix <prefix>] [--json]",
 			"memori issue create --type epic|story|task|bug --title <title> [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] [--command-id <id>] [--json]",
 			"memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] [--command-id <id>] [--json]",
@@ -116,6 +124,43 @@ func runHelp(args []string, out io.Writer) error {
 	}
 
 	printHelp(out)
+	return nil
+}
+
+func runVersion(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("version", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	headVersion, err := dbschema.HeadVersion()
+	if err != nil {
+		return err
+	}
+	data := versionData{
+		Version:           buildVersion,
+		Commit:            buildCommit,
+		BuildDate:         buildDate,
+		ModulePath:        buildModulePath,
+		SchemaHeadVersion: headVersion,
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       headVersion,
+			Command:               "version",
+			Data:                  data,
+		})
+	}
+
+	_, _ = fmt.Fprintf(out, "memori %s\n", data.Version)
+	_, _ = fmt.Fprintf(out, "commit: %s\n", data.Commit)
+	_, _ = fmt.Fprintf(out, "built: %s\n", data.BuildDate)
+	_, _ = fmt.Fprintf(out, "module: %s\n", data.ModulePath)
+	_, _ = fmt.Fprintf(out, "schema_head_version: %d\n", data.SchemaHeadVersion)
 	return nil
 }
 
@@ -2787,6 +2832,14 @@ type dbMigrateData struct {
 	BackupPath        string `json:"backup_path,omitempty"`
 }
 
+type versionData struct {
+	Version           string `json:"version"`
+	Commit            string `json:"commit"`
+	BuildDate         string `json:"build_date"`
+	ModulePath        string `json:"module_path"`
+	SchemaHeadVersion int    `json:"schema_head_version"`
+}
+
 type dbBackupData struct {
 	SourcePath string `json:"source_path"`
 	TargetPath string `json:"target_path"`
@@ -3044,6 +3097,7 @@ func printHelp(out io.Writer) {
 	ui.blank()
 	ui.section("Create And Update Work")
 	ui.bullet("memori help [--json]")
+	ui.bullet("memori version [--json]")
 	ui.bullet("memori auth set-password [--db <path>] [--json]")
 	ui.bullet("memori init [--db <path>] [--issue-prefix <prefix>] [--json]")
 	ui.bullet("memori issue create --type epic|story|task|bug --title <title> [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] [--command-id <id>] [--json]")
