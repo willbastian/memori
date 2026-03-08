@@ -2985,6 +2985,83 @@ func TestLinkIssueRejectsCycles(t *testing.T) {
 	}
 }
 
+func TestCreateIssueRejectsMissingParent(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	_, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:    "mem-c1c1c1c",
+		Type:       "story",
+		Title:      "Self-parented story",
+		ParentID:   "mem-c1c1c1c",
+		Actor:      "agent-1",
+		CommandID:  "cmd-link-self-parent-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), `issue "mem-c1c1c1c" not found`) {
+		t.Fatalf("expected missing parent lookup error, got: %v", err)
+	}
+}
+
+func TestLinkIssueRejectsAlreadyLinkedParentAndSelfLink(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	_, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   "mem-d1d1d1d",
+		Type:      "epic",
+		Title:     "Epic parent",
+		Actor:     "agent-1",
+		CommandID: "cmd-link-repeat-parent-1",
+	})
+	if err != nil {
+		t.Fatalf("create parent epic: %v", err)
+	}
+	_, _, _, err = s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   "mem-e1e1e1e",
+		Type:      "story",
+		Title:     "Child story",
+		Actor:     "agent-1",
+		CommandID: "cmd-link-repeat-child-1",
+	})
+	if err != nil {
+		t.Fatalf("create child story: %v", err)
+	}
+
+	_, _, _, err = s.LinkIssue(ctx, LinkIssueParams{
+		ChildIssueID:  "mem-e1e1e1e",
+		ParentIssueID: "mem-d1d1d1d",
+		Actor:         "agent-1",
+		CommandID:     "cmd-link-repeat-link-1",
+	})
+	if err != nil {
+		t.Fatalf("link child story: %v", err)
+	}
+
+	_, _, _, err = s.LinkIssue(ctx, LinkIssueParams{
+		ChildIssueID:  "mem-e1e1e1e",
+		ParentIssueID: "mem-d1d1d1d",
+		Actor:         "agent-1",
+		CommandID:     "cmd-link-repeat-link-2",
+	})
+	if err == nil || !strings.Contains(err.Error(), `already linked to parent "mem-d1d1d1d"`) {
+		t.Fatalf("expected already-linked validation error, got: %v", err)
+	}
+
+	_, _, _, err = s.LinkIssue(ctx, LinkIssueParams{
+		ChildIssueID:  "mem-d1d1d1d",
+		ParentIssueID: "mem-d1d1d1d",
+		Actor:         "agent-1",
+		CommandID:     "cmd-link-repeat-self-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "issue cannot be its own parent") {
+		t.Fatalf("expected self-link validation error, got: %v", err)
+	}
+}
+
 func TestReplayProjectionsAppliesIssueLinkedEvents(t *testing.T) {
 	t.Parallel()
 

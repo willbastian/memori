@@ -105,14 +105,111 @@ func TestProjectIssueKeyPrefixTxBackfillsNormalizesAndRejectsInvalidValues(t *te
 	}
 }
 
+func TestIssueLinkValidationHelpersCoverSelfParentAndLookupEdges(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback()
+
+	parent := Issue{ID: "mem-a1b2c3d", Type: "Epic"}
+	if err := validateIssueLinkForNewIssueTx(ctx, tx, "mem-a1b2c3d", "Story", parent); err == nil || !strings.Contains(err.Error(), "issue cannot be its own parent") {
+		t.Fatalf("expected self-parent validation error, got %v", err)
+	}
+
+	if _, err := parentIDForIssueTx(ctx, tx, "mem-deadbee"); err == nil || !strings.Contains(err.Error(), `issue "mem-deadbee" not found`) {
+		t.Fatalf("expected missing parent lookup error, got %v", err)
+	}
+}
+
 func TestStoreHelperNormalizationFunctions(t *testing.T) {
 	t.Parallel()
+
+	if got, err := normalizeIssueKey(" MEM-AbCdEf1 "); err != nil || got != "mem-abcdef1" {
+		t.Fatalf("expected normalized issue key, got %q err=%v", got, err)
+	}
+	if _, err := normalizeIssueKey("mem-abc"); err == nil || !strings.Contains(err.Error(), "shortSHA must be 7-12 hex chars") {
+		t.Fatalf("expected short issue key validation error, got %v", err)
+	}
+	if _, err := normalizeIssueKey("mem-zzzzzzz"); err == nil || !strings.Contains(err.Error(), "shortSHA must be hex") {
+		t.Fatalf("expected hex issue key validation error, got %v", err)
+	}
+	if _, err := normalizeIssueKey("1bad-abcdef1"); err == nil || !strings.Contains(err.Error(), "must start with a letter") {
+		t.Fatalf("expected invalid issue key prefix error, got %v", err)
+	}
+	if _, err := normalizeIssueKey("memabcdef1"); err == nil || !strings.Contains(err.Error(), "expected {prefix}-{shortSHA}") {
+		t.Fatalf("expected issue key shape validation error, got %v", err)
+	}
+
+	if got, err := normalizeIssueKeyPrefix(""); err != nil || got != DefaultIssueKeyPrefix {
+		t.Fatalf("expected default issue key prefix, got %q err=%v", got, err)
+	}
+	if got, err := normalizeIssueKeyPrefix(" AbC42 "); err != nil || got != "abc42" {
+		t.Fatalf("expected normalized issue key prefix, got %q err=%v", got, err)
+	}
+	if _, err := normalizeIssueKeyPrefix("a"); err == nil || !strings.Contains(err.Error(), "must be 2-16") {
+		t.Fatalf("expected short prefix validation error, got %v", err)
+	}
+	if _, err := normalizeIssueKeyPrefix("bad-prefix"); err == nil || !strings.Contains(err.Error(), "must use lowercase letters/digits") {
+		t.Fatalf("expected prefix character validation error, got %v", err)
+	}
+
+	if err := validateIssueTypeNotEmbeddedInKeyPrefix("mem-abcdef1"); err != nil {
+		t.Fatalf("expected non-reserved issue key prefix to pass, got %v", err)
+	}
+	if err := validateIssueTypeNotEmbeddedInKeyPrefix("task-abcdef1"); err == nil || !strings.Contains(err.Error(), "type must be in --type, not key prefix") {
+		t.Fatalf("expected embedded issue type validation error, got %v", err)
+	}
+	if err := validateIssueTypeNotEmbeddedInKeyPrefix("badkey"); err == nil || !strings.Contains(err.Error(), "expected {prefix}-{shortSHA}") {
+		t.Fatalf("expected malformed embedded type validation error, got %v", err)
+	}
+
+	if err := validateIssueKeyPrefixMatchesProject("mem-abcdef1", "mem"); err != nil {
+		t.Fatalf("expected matching project prefix to pass, got %v", err)
+	}
+	if err := validateIssueKeyPrefixMatchesProject("wrk-abcdef1", "mem"); err == nil || !strings.Contains(err.Error(), `prefix must match project prefix "mem"`) {
+		t.Fatalf("expected project prefix mismatch error, got %v", err)
+	}
+	if err := validateIssueKeyPrefixMatchesProject("not-a-key", "mem"); err == nil || !strings.Contains(err.Error(), "expected {prefix}-{shortSHA}") {
+		t.Fatalf("expected malformed project prefix key error, got %v", err)
+	}
+
+	if got, err := parseReferencesJSON(""); err != nil || !reflect.DeepEqual(got, []string{}) {
+		t.Fatalf("expected empty references for blank json, got %#v err=%v", got, err)
+	}
+	if got, err := parseReferencesJSON(`[" alpha ","beta","alpha",""," gamma "]`); err != nil || !reflect.DeepEqual(got, []string{"alpha", "beta", "gamma"}) {
+		t.Fatalf("unexpected normalized references: %#v err=%v", got, err)
+	}
+	if _, err := parseReferencesJSON(`{`); err == nil || !strings.Contains(err.Error(), "decode references_json") {
+		t.Fatalf("expected references json decode error, got %v", err)
+	}
+	if _, err := parseLabelsJSON(`{`); err == nil || !strings.Contains(err.Error(), "decode labels_json") {
+		t.Fatalf("expected labels json decode error, got %v", err)
+	}
 
 	if got := normalizeLabels(nil); !reflect.DeepEqual(got, []string{}) {
 		t.Fatalf("expected empty labels slice for nil input, got %#v", got)
 	}
 	if got := normalizeLabels([]string{" alpha ", "beta", "alpha", "", "beta", " gamma "}); !reflect.DeepEqual(got, []string{"alpha", "beta", "gamma"}) {
 		t.Fatalf("unexpected normalized labels: %#v", got)
+	}
+
+	if got, err := normalizePriority(" p1 "); err != nil || got != "P1" {
+		t.Fatalf("expected normalized priority, got %q err=%v", got, err)
+	}
+	if got, err := normalizePriority(" "); err != nil || got != "" {
+		t.Fatalf("expected blank priority to normalize to empty string, got %q err=%v", got, err)
+	}
+	if _, err := normalizePriority(strings.Repeat("a", 33)); err == nil || !strings.Contains(err.Error(), "max length 32") {
+		t.Fatalf("expected priority length validation error, got %v", err)
+	}
+	if _, err := normalizePriority("p1!"); err == nil || !strings.Contains(err.Error(), "invalid --priority") {
+		t.Fatalf("expected priority character validation error, got %v", err)
 	}
 
 	if normalizeGateEvaluationProof(nil) != nil {
@@ -165,8 +262,19 @@ func TestStoreHelperNormalizationFunctions(t *testing.T) {
 		t.Fatalf("expected nil anyToString to return empty string, got %q", got)
 	}
 
+	if got := newID("evt"); !strings.HasPrefix(got, "evt_") {
+		t.Fatalf("expected new id prefix, got %q", got)
+	}
+	if got := newIssueKey("mem"); !strings.HasPrefix(got, "mem-") || len(strings.TrimPrefix(got, "mem-")) != 7 {
+		t.Fatalf("expected new issue key prefix and short sha length, got %q", got)
+	}
+
 	if got := strings.TrimSpace(defaultActor()); got == "" {
 		t.Fatal("expected defaultActor to return a non-empty actor")
+	}
+
+	if err := validateParentChildTypeConstraint("Task", "Bug"); err == nil || !strings.Contains(err.Error(), "parent Task cannot have children") {
+		t.Fatalf("expected non-parent type validation error, got %v", err)
 	}
 }
 
