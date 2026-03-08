@@ -411,6 +411,51 @@ func TestReplayProjectionsDeterministicAcrossRuns(t *testing.T) {
 	assertIssueEqual(t, afterFirstTask, afterSecondTask)
 }
 
+func TestReplayProjectionsSurfacesMalformedEventPayloads(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   "mem-f1f1f1f",
+		Type:      "task",
+		Title:     "Replay corruption check",
+		Actor:     "agent-1",
+		CommandID: "cmd-replay-malformed-1",
+	}); err != nil {
+		t.Fatalf("create issue for replay corruption test: %v", err)
+	}
+
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO events(
+			event_id, event_order, entity_type, entity_id, entity_seq, event_type,
+			payload_json, actor, command_id, causation_id, correlation_id, created_at,
+			hash, prev_hash, event_payload_version
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, ?)
+	`, "evt_replay_bad_payload", 2, "issue", "mem-f2f2f2f", 1, "issue.created", `{"issue_id":"mem-f2f2f2f","type":"Feature","title":"Bad replay type","status":"Todo","created_at":"2026-03-08T00:00:00Z"}`, "agent-1", "cmd-replay-malformed-2", nowUTC(), "hash_replay_bad_payload", 1); err != nil {
+		t.Fatalf("insert invalid projected issue.created event: %v", err)
+	}
+
+	if _, err := s.ReplayProjections(ctx); err == nil || !strings.Contains(err.Error(), "upsert work_item from event") {
+		t.Fatalf("expected replay projection failure, got %v", err)
+	}
+}
+
+func TestReplayProjectionsFailsOnClosedDB(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	if _, err := s.ReplayProjections(ctx); err == nil || !strings.Contains(err.Error(), "begin tx") {
+		t.Fatalf("expected replay closed-db error, got %v", err)
+	}
+}
+
 func TestEventsTableAppendOnlyTriggersBlockMutation(t *testing.T) {
 	t.Parallel()
 

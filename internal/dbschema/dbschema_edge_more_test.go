@@ -362,3 +362,57 @@ func TestVerifyReportsDatabaseAheadOfBinaryHeadAndStatusClampsPending(t *testing
 		t.Fatalf("expected ahead-of-head verify check, got %v", verify.Checks)
 	}
 }
+
+func TestEmbeddedMigrationCatalogAndFilenameParsing(t *testing.T) {
+	t.Parallel()
+
+	if version, name, ok := parseMigrationFilename("001_create_schema.sql"); !ok || version != 1 || name != "create_schema" {
+		t.Fatalf("expected parsed migration filename, got version=%d name=%q ok=%v", version, name, ok)
+	}
+	if version, name, ok := parseMigrationFilename("015_add_packets"); !ok || version != 15 || name != "add_packets" {
+		t.Fatalf("expected parsed filename without extension, got version=%d name=%q ok=%v", version, name, ok)
+	}
+	if _, _, ok := parseMigrationFilename("not-a-migration.sql"); ok {
+		t.Fatal("expected invalid migration filename without numeric prefix to be rejected")
+	}
+	if _, _, ok := parseMigrationFilename("001missingunderscore.sql"); ok {
+		t.Fatal("expected invalid migration filename without underscore to be rejected")
+	}
+
+	definitions, err := readMigrationDefinitions()
+	if err != nil {
+		t.Fatalf("read embedded migration definitions: %v", err)
+	}
+	if len(definitions) == 0 {
+		t.Fatal("expected embedded migration definitions to be non-empty")
+	}
+
+	maxVersion := 0
+	for _, definition := range definitions {
+		if definition.Version <= 0 || definition.Name == "" || definition.Checksum == "" {
+			t.Fatalf("expected complete migration definition, got %#v", definition)
+		}
+		if definition.Version > maxVersion {
+			maxVersion = definition.Version
+		}
+	}
+
+	head, err := headVersion()
+	if err != nil {
+		t.Fatalf("read head version: %v", err)
+	}
+	if head != maxVersion {
+		t.Fatalf("expected head version %d to match max embedded migration version %d", head, maxVersion)
+	}
+
+	byVersion, err := migrationDefinitionMap()
+	if err != nil {
+		t.Fatalf("build migration definition map: %v", err)
+	}
+	if len(byVersion) != len(definitions) {
+		t.Fatalf("expected migration map size %d, got %d", len(definitions), len(byVersion))
+	}
+	if _, ok := byVersion[head]; !ok {
+		t.Fatalf("expected migration definition map to include head version %d", head)
+	}
+}
