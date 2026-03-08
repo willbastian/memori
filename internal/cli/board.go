@@ -65,6 +65,7 @@ func runBoard(args []string, out io.Writer) error {
 	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
 	agent := fs.String("agent", "", "optional agent id requesting continuity-aware recommendations")
 	watch := fs.Bool("watch", false, "continuously refresh the board")
+	interactive := fs.Bool("interactive", false, "force the interactive TUI")
 	interval := fs.Duration("interval", 5*time.Second, "refresh interval when --watch is enabled")
 	jsonOut := fs.Bool("json", false, "machine-readable output")
 	if err := fs.Parse(args); err != nil {
@@ -75,6 +76,9 @@ func runBoard(args []string, out io.Writer) error {
 	}
 	if *watch && *jsonOut {
 		return errors.New("--watch cannot be combined with --json")
+	}
+	if *interactive && *jsonOut {
+		return errors.New("--interactive cannot be combined with --json")
 	}
 
 	baseCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -116,6 +120,10 @@ func runBoard(args []string, out io.Writer) error {
 			Command:               "board",
 			Data:                  newBoardData(snapshot),
 		})
+	}
+
+	if (*interactive || boardSupportsInteractive(out)) && !*watch {
+		return runBoardTUI(baseCtx, s, *agent, *interval, out)
 	}
 
 	if !*watch {
