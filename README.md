@@ -267,15 +267,20 @@ go run ./cmd/memori context loops --issue mem-a111111 --json
 ```
 
 Use an issue-scoped packet when you want to set agent focus around a specific work item. Use a session-scoped packet when you want `context rehydrate` to return the latest saved session payload directly.
+When no saved session packet exists yet, `context rehydrate` now falls back to recent session context chunks before using a raw event-only payload.
 
 Issue packets currently include:
 
 - `goal`
 - `state`
+- `decision_summary`
+- `open_questions`
+- `linked_work_items`
 - `gates`
 - `open_loops`
 - `next_actions`
 - `risks`
+- `continuity` metadata, including compaction policy and recent relevant chunks
 - provenance metadata, including the event cursor used to build the packet
 
 `issue next` uses these continuity signals as part of triage, so an agent can prefer work that already has focus, packets, unresolved loops, or failing gates that need attention.

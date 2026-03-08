@@ -25,6 +25,17 @@ import (
 const DefaultIssueKeyPrefix = "mem"
 
 const (
+	packetSchemaVersion                 = 2
+	packetRelevantChunkLimit            = 3
+	compactionEventThreshold            = 25
+	compactionOpenLoopThreshold         = 1
+	compactionContextChunkThreshold     = 3
+	compactionPolicyVersion             = 1
+	compactionPolicyMode                = "deterministic-ledger-derivation"
+	compactionPolicyBuildReasonOnDemand = "on-demand-packet-build"
+)
+
+const (
 	entityTypeIssue        = "issue"
 	entityTypeSession      = "session"
 	entityTypePacket       = "packet"
@@ -1695,7 +1706,8 @@ func (s *Store) RehydrateSession(ctx context.Context, p RehydrateSessionParams) 
 	}
 	defer tx.Rollback()
 
-	if _, err := sessionByIDTx(ctx, tx, sessionID); err != nil {
+	session, err := sessionByIDTx(ctx, tx, sessionID)
+	if err != nil {
 		return SessionRehydrateResult{}, err
 	}
 
@@ -1715,27 +1727,42 @@ func (s *Store) RehydrateSession(ctx context.Context, p RehydrateSessionParams) 
 		if err != nil {
 			return SessionRehydrateResult{}, err
 		}
-		packetJSON := map[string]any{
-			"scope":      "session",
-			"scope_id":   sessionID,
-			"goal":       "Resume session context",
-			"state":      map[string]any{"session_id": sessionID},
-			"gates":      []any{},
-			"open_loops": []any{},
-			"next_actions": []any{
-				"Build or select a packet for this session",
-			},
-			"risks":  []any{},
-			"source": "raw-events-fallback",
+		relevantChunks, totalChunkCount, err := listRelevantContextChunksTx(ctx, tx, "session", sessionID, packetRelevantChunkLimit)
+		if err != nil {
+			return SessionRehydrateResult{}, err
 		}
+		eventCount, err := countEventsForEntityTx(ctx, tx, entityTypeSession, sessionID)
+		if err != nil {
+			return SessionRehydrateResult{}, err
+		}
+		packetJSON := newBasePacketJSON("session", sessionID)
+		packetJSON["goal"] = "Resume session context"
+		packetJSON["state"] = map[string]any{"session_id": sessionID}
+		packetJSON["decision_summary"] = buildSessionDecisionSummary(session, totalChunkCount)
+		continuity := packetJSON["continuity"].(map[string]any)
+		continuity["relevant_chunks"] = relevantChunks
+		continuity["compaction"] = buildCompactionPolicy("session", eventCount, 0, totalChunkCount)
 		if latestEventID != "" {
 			packetJSON["latest_event_id"] = latestEventID
 		}
-		result.Source = "raw-events-fallback"
+		if len(relevantChunks) > 0 {
+			packetJSON["next_actions"] = []any{
+				"Review the latest context chunks and resume the active thread of work",
+				"Build a fresh session packet once the session state is current",
+			}
+			packetJSON["source"] = "relevant-chunks-fallback"
+			result.Source = "relevant-chunks-fallback"
+		} else {
+			packetJSON["next_actions"] = []any{
+				"Build or select a packet for this session",
+			}
+			packetJSON["source"] = "raw-events-fallback"
+			result.Source = "raw-events-fallback"
+		}
 		result.Packet = RehydratePacket{
 			Scope:               "session",
 			Packet:              packetJSON,
-			PacketSchemaVersion: 1,
+			PacketSchemaVersion: packetSchemaVersion,
 			BuiltFromEventID:    latestEventID,
 			CreatedAt:           nowUTC(),
 		}
@@ -1774,16 +1801,7 @@ func (s *Store) BuildRehydratePacket(ctx context.Context, p BuildPacketParams) (
 	issueIDForSummary := ""
 	issueCycleNo := 0
 
-	packetJSON := map[string]any{
-		"scope":      scope,
-		"scope_id":   scopeID,
-		"gates":      []any{},
-		"open_loops": []any{},
-		"next_actions": []any{
-			"Review current state and continue execution",
-		},
-		"risks": []any{},
-	}
+	packetJSON := newBasePacketJSON(scope, scopeID)
 
 	switch scope {
 	case "issue":
@@ -1821,13 +1839,54 @@ func (s *Store) BuildRehydratePacket(ctx context.Context, p BuildPacketParams) (
 		if len(nextActions) > 0 {
 			packetJSON["next_actions"] = nextActions
 		}
+		openLoops, err := listOpenLoopsForIssueCycleTx(ctx, tx, issueIDForSummary, issueCycleNo)
+		if err != nil {
+			return RehydratePacket{}, err
+		}
+		packetJSON["open_loops"] = openLoopsToAny(openLoops)
+		linkedWorkItems, err := listLinkedWorkItemsForIssueTx(ctx, tx, issue)
+		if err != nil {
+			return RehydratePacket{}, err
+		}
+		packetJSON["linked_work_items"] = linkedWorkItems
+		packetJSON["decision_summary"] = buildIssueDecisionSummary(issue, issueCycleNo, gates, openLoops, linkedWorkItems)
+		packetJSON["open_questions"] = buildIssueOpenQuestions(gates, openLoops)
+		relevantChunks, totalChunkCount, err := listRelevantContextChunksTx(ctx, tx, "issue", issueIDForSummary, packetRelevantChunkLimit)
+		if err != nil {
+			return RehydratePacket{}, err
+		}
+		eventCount, err := countEventsForEntityTx(ctx, tx, entityTypeIssue, issueIDForSummary)
+		if err != nil {
+			return RehydratePacket{}, err
+		}
+		continuity := packetJSON["continuity"].(map[string]any)
+		continuity["relevant_chunks"] = relevantChunks
+		continuity["compaction"] = buildCompactionPolicy("issue", eventCount, countOpenLoops(openLoops), totalChunkCount)
 	case "session":
-		if _, err := sessionByIDTx(ctx, tx, scopeID); err != nil {
+		session, err := sessionByIDTx(ctx, tx, scopeID)
+		if err != nil {
 			return RehydratePacket{}, err
 		}
 		packetJSON["goal"] = "Resume session context"
 		packetJSON["state"] = map[string]any{
 			"session_id": scopeID,
+		}
+		relevantChunks, totalChunkCount, err := listRelevantContextChunksTx(ctx, tx, "session", scopeID, packetRelevantChunkLimit)
+		if err != nil {
+			return RehydratePacket{}, err
+		}
+		eventCount, err := countEventsForEntityTx(ctx, tx, entityTypeSession, scopeID)
+		if err != nil {
+			return RehydratePacket{}, err
+		}
+		packetJSON["decision_summary"] = buildSessionDecisionSummary(session, totalChunkCount)
+		continuity := packetJSON["continuity"].(map[string]any)
+		continuity["relevant_chunks"] = relevantChunks
+		continuity["compaction"] = buildCompactionPolicy("session", eventCount, 0, totalChunkCount)
+		if len(relevantChunks) > 0 {
+			packetJSON["next_actions"] = []any{
+				"Review recent context chunks and continue execution",
+			}
 		}
 	}
 
@@ -1850,18 +1909,11 @@ func (s *Store) BuildRehydratePacket(ctx context.Context, p BuildPacketParams) (
 		provenance["issue_cycle_no"] = issueCycleNo
 	}
 	packetJSON["provenance"] = provenance
-	if issueIDForSummary != "" {
-		openLoops, err := listOpenLoopsForIssueCycleTx(ctx, tx, issueIDForSummary, issueCycleNo)
-		if err != nil {
-			return RehydratePacket{}, err
-		}
-		packetJSON["open_loops"] = openLoopsToAny(openLoops)
-	}
 	payloadBytes, err := json.Marshal(packetBuiltPayload{
 		PacketID:            packetID,
 		Scope:               scope,
 		Packet:              packetJSON,
-		PacketSchemaVersion: 1,
+		PacketSchemaVersion: packetSchemaVersion,
 		BuiltFromEventID:    latestEventID,
 		CreatedAt:           createdAt,
 		IssueID:             issueIDForSummary,
@@ -3433,7 +3485,7 @@ func applyPacketBuiltProjectionTx(ctx context.Context, tx *sql.Tx, event Event) 
 	}
 
 	if strings.TrimSpace(payload.IssueID) != "" && payload.IssueCycleNo > 0 {
-		if err := upsertIssueSummaryForPacketTx(ctx, tx, payload.IssueID, payload.IssueCycleNo, string(packetJSON), payload.PacketID, payload.CreatedAt); err != nil {
+		if err := upsertIssueSummaryForPacketTx(ctx, tx, payload.IssueID, payload.IssueCycleNo, payload.Packet, payload.PacketID, payload.PacketSchemaVersion, payload.CreatedAt); err != nil {
 			return fmt.Errorf("upsert issue summary from event %s: %w", event.EventID, err)
 		}
 	}
@@ -5193,7 +5245,7 @@ func listOpenLoopsForIssueCycleTx(ctx context.Context, tx *sql.Tx, issueID strin
 	return loops, nil
 }
 
-func upsertIssueSummaryForPacketTx(ctx context.Context, tx *sql.Tx, issueID string, cycleNo int, summaryJSON, packetID, createdAt string) error {
+func upsertIssueSummaryForPacketTx(ctx context.Context, tx *sql.Tx, issueID string, cycleNo int, packet map[string]any, packetID string, packetSchemaVersion int, createdAt string) error {
 	var maxSeq int64
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(MAX(entity_seq), 0)
@@ -5203,12 +5255,20 @@ func upsertIssueSummaryForPacketTx(ctx context.Context, tx *sql.Tx, issueID stri
 		return fmt.Errorf("query max entity_seq for issue %q summary: %w", issueID, err)
 	}
 
+	summaryJSON, err := buildPacketSummaryJSON(packet, packetID, packetSchemaVersion)
+	if err != nil {
+		return fmt.Errorf("build packet summary for issue %q: %w", issueID, err)
+	}
+	parentSummaryID, err := latestPacketSummaryIDForIssueCycleTx(ctx, tx, issueID, cycleNo)
+	if err != nil {
+		return err
+	}
 	summaryID := "sum_" + strings.TrimSpace(packetID)
-	_, err := tx.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO issue_summaries(
 			summary_id, issue_id, cycle_no, summary_level, summary_json,
 			from_entity_seq, to_entity_seq, parent_summary_id, created_at
-		) VALUES(?, ?, ?, ?, ?, ?, ?, NULL, ?)
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(summary_id) DO UPDATE SET
 			issue_id=excluded.issue_id,
 			cycle_no=excluded.cycle_no,
@@ -5226,12 +5286,67 @@ func upsertIssueSummaryForPacketTx(ctx context.Context, tx *sql.Tx, issueID stri
 		summaryJSON,
 		1,
 		maxSeq,
+		nullIfEmpty(parentSummaryID),
 		createdAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert issue summary for issue %q: %w", issueID, err)
 	}
 	return nil
+}
+
+func buildPacketSummaryJSON(packet map[string]any, packetID string, packetSchemaVersion int) (string, error) {
+	summary := map[string]any{
+		"packet_id":             packetID,
+		"packet_schema_version": packetSchemaVersion,
+	}
+	for _, key := range []string{
+		"scope",
+		"scope_id",
+		"goal",
+		"state",
+		"decision_summary",
+		"open_questions",
+		"linked_work_items",
+		"gates",
+		"open_loops",
+		"next_actions",
+		"risks",
+		"continuity",
+		"provenance",
+	} {
+		if value, ok := packet[key]; ok {
+			summary[key] = value
+		}
+	}
+	encoded, err := json.Marshal(summary)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+func latestPacketSummaryIDForIssueCycleTx(ctx context.Context, tx *sql.Tx, issueID string, cycleNo int) (string, error) {
+	var summaryID sql.NullString
+	err := tx.QueryRowContext(ctx, `
+		SELECT summary_id
+		FROM issue_summaries
+		WHERE issue_id = ?
+			AND cycle_no = ?
+			AND summary_level = 'packet'
+		ORDER BY to_entity_seq DESC, created_at DESC, summary_id DESC
+		LIMIT 1
+	`, issueID, cycleNo).Scan(&summaryID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("query latest packet summary for issue %q cycle %d: %w", issueID, cycleNo, err)
+	}
+	if !summaryID.Valid {
+		return "", nil
+	}
+	return summaryID.String, nil
 }
 
 func openLoopsToAny(loops []OpenLoop) []any {
@@ -5250,6 +5365,321 @@ func openLoopsToAny(loops []OpenLoop) []any {
 		})
 	}
 	return items
+}
+
+func newBasePacketJSON(scope, scopeID string) map[string]any {
+	return map[string]any{
+		"scope":             scope,
+		"scope_id":          scopeID,
+		"gates":             []any{},
+		"open_loops":        []any{},
+		"next_actions":      []any{"Review current state and continue execution"},
+		"risks":             []any{},
+		"decision_summary":  map[string]any{},
+		"open_questions":    []any{},
+		"linked_work_items": []any{},
+		"continuity": map[string]any{
+			"relevant_chunks": []any{},
+			"compaction":      map[string]any{},
+		},
+	}
+}
+
+func buildSessionDecisionSummary(session Session, totalChunkCount int) map[string]any {
+	summary := map[string]any{
+		"session_id":          session.SessionID,
+		"trigger":             session.Trigger,
+		"started_at":          session.StartedAt,
+		"context_chunk_count": totalChunkCount,
+	}
+	if strings.TrimSpace(session.EndedAt) != "" {
+		summary["ended_at"] = session.EndedAt
+	}
+	if strings.TrimSpace(session.SummaryEventID) != "" {
+		summary["summary_event_id"] = session.SummaryEventID
+	}
+	return summary
+}
+
+func buildIssueDecisionSummary(issue Issue, cycleNo int, gates []any, openLoops []OpenLoop, linkedWorkItems []any) map[string]any {
+	gateCounts := map[string]any{
+		"pass":                 0,
+		"fail":                 0,
+		"blocked":              0,
+		"missing":              0,
+		"required_outstanding": 0,
+	}
+	closeReady := true
+	for _, rawGate := range gates {
+		gate, ok := rawGate.(map[string]any)
+		if !ok {
+			continue
+		}
+		result := strings.ToUpper(strings.TrimSpace(anyToString(gate["result"])))
+		required, _ := gate["required"].(bool)
+		switch result {
+		case "PASS":
+			gateCounts["pass"] = anyToInt(gateCounts["pass"]) + 1
+		case "FAIL":
+			gateCounts["fail"] = anyToInt(gateCounts["fail"]) + 1
+		case "BLOCKED":
+			gateCounts["blocked"] = anyToInt(gateCounts["blocked"]) + 1
+		default:
+			gateCounts["missing"] = anyToInt(gateCounts["missing"]) + 1
+		}
+		if required && result != "PASS" {
+			gateCounts["required_outstanding"] = anyToInt(gateCounts["required_outstanding"]) + 1
+			closeReady = false
+		}
+	}
+	openLoopCount := countOpenLoops(openLoops)
+	if openLoopCount > 0 {
+		closeReady = false
+	}
+
+	summary := map[string]any{
+		"issue_id":               issue.ID,
+		"issue_type":             issue.Type,
+		"status":                 issue.Status,
+		"cycle_no":               cycleNo,
+		"latest_event_id":        issue.LastEventID,
+		"gate_counts":            gateCounts,
+		"open_loop_count":        openLoopCount,
+		"linked_work_item_count": len(linkedWorkItems),
+		"close_ready":            closeReady,
+	}
+	if strings.TrimSpace(issue.ParentID) != "" {
+		summary["parent_id"] = issue.ParentID
+	}
+	return summary
+}
+
+func buildIssueOpenQuestions(gates []any, openLoops []OpenLoop) []any {
+	questions := make([]any, 0)
+	for _, rawGate := range gates {
+		gate, ok := rawGate.(map[string]any)
+		if !ok {
+			continue
+		}
+		result := strings.ToUpper(strings.TrimSpace(anyToString(gate["result"])))
+		required, _ := gate["required"].(bool)
+		if !required || result == "PASS" {
+			continue
+		}
+		gateID := strings.TrimSpace(anyToString(gate["gate_id"]))
+		if gateID == "" {
+			continue
+		}
+		questions = append(questions, map[string]any{
+			"kind":     "gate",
+			"gate_id":  gateID,
+			"status":   result,
+			"question": fmt.Sprintf("What is still needed to resolve required gate %s?", gateID),
+		})
+	}
+	for _, loop := range openLoops {
+		if !strings.EqualFold(strings.TrimSpace(loop.Status), "Open") {
+			continue
+		}
+		questions = append(questions, map[string]any{
+			"kind":       "open_loop",
+			"loop_id":    loop.LoopID,
+			"loop_type":  loop.LoopType,
+			"owner":      loop.Owner,
+			"priority":   loop.Priority,
+			"updated_at": loop.UpdatedAt,
+			"question":   fmt.Sprintf("What closes the %s loop for this issue cycle?", loop.LoopType),
+		})
+	}
+	return questions
+}
+
+func buildCompactionPolicy(scope string, eventCount, openLoopCount, contextChunkCount int) map[string]any {
+	reasons := make([]any, 0, 3)
+	if eventCount >= compactionEventThreshold {
+		reasons = append(reasons, "event-threshold")
+	}
+	if openLoopCount >= compactionOpenLoopThreshold {
+		reasons = append(reasons, "open-loop-threshold")
+	}
+	if contextChunkCount >= compactionContextChunkThreshold {
+		reasons = append(reasons, "context-chunk-threshold")
+	}
+	return map[string]any{
+		"policy_version": compactionPolicyVersion,
+		"mode":           compactionPolicyMode,
+		"build_reason":   compactionPolicyBuildReasonOnDemand,
+		"scope":          scope,
+		"triggered":      len(reasons) > 0,
+		"reasons":        reasons,
+		"thresholds": map[string]any{
+			"event_count":    compactionEventThreshold,
+			"open_loops":     compactionOpenLoopThreshold,
+			"context_chunks": compactionContextChunkThreshold,
+		},
+		"observed": map[string]any{
+			"event_count":    eventCount,
+			"open_loops":     openLoopCount,
+			"context_chunks": contextChunkCount,
+		},
+	}
+}
+
+func listLinkedWorkItemsForIssueTx(ctx context.Context, tx *sql.Tx, issue Issue) ([]any, error) {
+	items := make([]any, 0)
+	if strings.TrimSpace(issue.ParentID) != "" {
+		parent, err := getIssueTx(ctx, tx, issue.ParentID)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, issueToLinkedWorkItem(parent, "parent"))
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, type, title, status
+		FROM work_items
+		WHERE parent_id = ?
+			AND status NOT IN ('Done', 'WontDo')
+		ORDER BY id ASC
+	`, issue.ID)
+	if err != nil {
+		return nil, fmt.Errorf("query child work items for %q: %w", issue.ID, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var childID, childType, title, status string
+		if err := rows.Scan(&childID, &childType, &title, &status); err != nil {
+			return nil, fmt.Errorf("scan child work item for %q: %w", issue.ID, err)
+		}
+		items = append(items, map[string]any{
+			"relation": "child",
+			"issue_id": childID,
+			"type":     childType,
+			"title":    title,
+			"status":   status,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate child work items for %q: %w", issue.ID, err)
+	}
+	return items, nil
+}
+
+func issueToLinkedWorkItem(issue Issue, relation string) map[string]any {
+	item := map[string]any{
+		"relation": relation,
+		"issue_id": issue.ID,
+		"type":     issue.Type,
+		"title":    issue.Title,
+		"status":   issue.Status,
+	}
+	if strings.TrimSpace(issue.ParentID) != "" {
+		item["parent_id"] = issue.ParentID
+	}
+	return item
+}
+
+func listRelevantContextChunksTx(ctx context.Context, tx *sql.Tx, scope, scopeID string, limit int) ([]any, int, error) {
+	if limit <= 0 {
+		limit = packetRelevantChunkLimit
+	}
+
+	var (
+		countQuery string
+		listQuery  string
+		countArgs  []any
+		listArgs   []any
+	)
+	switch scope {
+	case "session":
+		countQuery = `SELECT COUNT(1) FROM context_chunks WHERE session_id = ?`
+		listQuery = `
+			SELECT chunk_id, kind, content, metadata_json, created_at
+			FROM context_chunks
+			WHERE session_id = ?
+			ORDER BY created_at DESC, chunk_id DESC
+			LIMIT ?
+		`
+		countArgs = []any{scopeID}
+		listArgs = []any{scopeID, limit}
+	case "issue":
+		countQuery = `SELECT COUNT(1) FROM context_chunks WHERE entity_type = ? AND entity_id = ?`
+		listQuery = `
+			SELECT chunk_id, kind, content, metadata_json, created_at
+			FROM context_chunks
+			WHERE entity_type = ? AND entity_id = ?
+			ORDER BY created_at DESC, chunk_id DESC
+			LIMIT ?
+		`
+		countArgs = []any{entityTypeIssue, scopeID}
+		listArgs = []any{entityTypeIssue, scopeID, limit}
+	default:
+		return []any{}, 0, nil
+	}
+
+	var total int
+	if err := tx.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count context chunks for %s %q: %w", scope, scopeID, err)
+	}
+
+	rows, err := tx.QueryContext(ctx, listQuery, listArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query context chunks for %s %q: %w", scope, scopeID, err)
+	}
+	defer rows.Close()
+
+	chunks := make([]map[string]any, 0)
+	for rows.Next() {
+		var chunkID, kind, content, metadataJSON, createdAt string
+		if err := rows.Scan(&chunkID, &kind, &content, &metadataJSON, &createdAt); err != nil {
+			return nil, 0, fmt.Errorf("scan context chunk for %s %q: %w", scope, scopeID, err)
+		}
+		metadata := make(map[string]any)
+		if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil {
+			return nil, 0, fmt.Errorf("decode context chunk metadata for %s %q: %w", scope, scopeID, err)
+		}
+		chunks = append(chunks, map[string]any{
+			"chunk_id":   chunkID,
+			"kind":       kind,
+			"content":    content,
+			"metadata":   metadata,
+			"created_at": createdAt,
+			"relevance":  "recent",
+			"scope":      scope,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate context chunks for %s %q: %w", scope, scopeID, err)
+	}
+
+	items := make([]any, 0, len(chunks))
+	for i := len(chunks) - 1; i >= 0; i-- {
+		items = append(items, chunks[i])
+	}
+	return items, total, nil
+}
+
+func countEventsForEntityTx(ctx context.Context, tx *sql.Tx, entityType, entityID string) (int, error) {
+	var count int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(1)
+		FROM events
+		WHERE entity_type = ? AND entity_id = ?
+	`, entityType, entityID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count events for %s %q: %w", entityType, entityID, err)
+	}
+	return count, nil
+}
+
+func countOpenLoops(loops []OpenLoop) int {
+	count := 0
+	for _, loop := range loops {
+		if strings.EqualFold(strings.TrimSpace(loop.Status), "Open") {
+			count++
+		}
+	}
+	return count
 }
 
 func deterministicLoopID(issueID string, cycleNo int, loopType, key string) string {
@@ -5526,6 +5956,19 @@ func anyToInt(value any) int {
 		}
 	}
 	return 0
+}
+
+func anyToString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case fmt.Stringer:
+		return typed.String()
+	case nil:
+		return ""
+	default:
+		return fmt.Sprintf("%v", value)
+	}
 }
 
 func scoreIssueCandidate(issue Issue, priority string, signals issueNextContinuitySignals) (int, []string) {

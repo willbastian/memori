@@ -348,8 +348,8 @@ func TestContextCheckpointPacketAndRehydrateCommands(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &fallback); err != nil {
 		t.Fatalf("decode context rehydrate fallback json: %v\nstdout: %s", err, stdout)
 	}
-	if fallback.Data.Source != "raw-events-fallback" {
-		t.Fatalf("expected raw-events-fallback source, got %+v", fallback)
+	if fallback.Data.Source != "relevant-chunks-fallback" {
+		t.Fatalf("expected relevant-chunks-fallback source, got %+v", fallback)
 	}
 
 	stdout, stderr, err = runMemoriForTest(

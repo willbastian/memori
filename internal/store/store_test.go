@@ -3218,6 +3218,30 @@ func TestSessionCheckpointPacketAndRehydrateFlow(t *testing.T) {
 	if !ok || len(openLoopsRaw) == 0 {
 		t.Fatalf("expected issue packet to include open loops, got %#v", issuePacket.Packet["open_loops"])
 	}
+	decisionSummaryRaw, ok := issuePacket.Packet["decision_summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected issue packet decision summary, got %#v", issuePacket.Packet["decision_summary"])
+	}
+	if _, ok := decisionSummaryRaw["linked_work_item_count"]; !ok {
+		t.Fatalf("expected issue decision summary to include linked work count, got %#v", decisionSummaryRaw)
+	}
+	openQuestionsRaw, ok := issuePacket.Packet["open_questions"].([]any)
+	if !ok || len(openQuestionsRaw) == 0 {
+		t.Fatalf("expected issue packet open questions, got %#v", issuePacket.Packet["open_questions"])
+	}
+	linkedWorkItemsRaw, ok := issuePacket.Packet["linked_work_items"].([]any)
+	if !ok {
+		t.Fatalf("expected issue packet linked work items, got %#v", issuePacket.Packet["linked_work_items"])
+	}
+	_ = linkedWorkItemsRaw
+	continuityRaw, ok := issuePacket.Packet["continuity"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected issue packet continuity metadata, got %#v", issuePacket.Packet["continuity"])
+	}
+	compactionRaw, ok := continuityRaw["compaction"].(map[string]any)
+	if !ok || anyToInt(compactionRaw["policy_version"]) != 1 {
+		t.Fatalf("expected issue packet compaction policy metadata, got %#v", continuityRaw["compaction"])
+	}
 	loops, err := s.ListOpenLoops(ctx, ListOpenLoopsParams{IssueID: issueID})
 	if err != nil {
 		t.Fatalf("list open loops: %v", err)
@@ -3231,6 +3255,46 @@ func TestSessionCheckpointPacketAndRehydrateFlow(t *testing.T) {
 	}
 	if summaryCount == 0 {
 		t.Fatalf("expected issue summaries to persist after packet build")
+	}
+	var firstSummaryJSON string
+	var firstParentSummaryID sql.NullString
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT summary_json, parent_summary_id
+		FROM issue_summaries
+		WHERE summary_id = ?
+	`, "sum_"+issuePacket.PacketID).Scan(&firstSummaryJSON, &firstParentSummaryID); err != nil {
+		t.Fatalf("read packet-derived issue summary: %v", err)
+	}
+	if firstParentSummaryID.Valid {
+		t.Fatalf("expected first packet summary to have no parent, got %q", firstParentSummaryID.String)
+	}
+	var firstSummary map[string]any
+	if err := json.Unmarshal([]byte(firstSummaryJSON), &firstSummary); err != nil {
+		t.Fatalf("decode packet-derived issue summary: %v", err)
+	}
+	if _, ok := firstSummary["decision_summary"].(map[string]any); !ok {
+		t.Fatalf("expected issue summary decision summary, got %#v", firstSummary["decision_summary"])
+	}
+
+	secondIssuePacket, err := s.BuildRehydratePacket(ctx, BuildPacketParams{
+		Scope:     "issue",
+		ScopeID:   issueID,
+		Actor:     "agent-1",
+		CommandID: "cmd-context-packet-issue-2",
+	})
+	if err != nil {
+		t.Fatalf("build second issue packet: %v", err)
+	}
+	var secondParentSummaryID sql.NullString
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT parent_summary_id
+		FROM issue_summaries
+		WHERE summary_id = ?
+	`, "sum_"+secondIssuePacket.PacketID).Scan(&secondParentSummaryID); err != nil {
+		t.Fatalf("read second packet-derived issue summary: %v", err)
+	}
+	if !secondParentSummaryID.Valid || secondParentSummaryID.String != "sum_"+issuePacket.PacketID {
+		t.Fatalf("expected second packet summary parent %q, got %#v", "sum_"+issuePacket.PacketID, secondParentSummaryID)
 	}
 
 	storedIssuePacket, err := s.GetRehydratePacket(ctx, GetPacketParams{PacketID: issuePacket.PacketID})
@@ -3289,8 +3353,16 @@ func TestSessionCheckpointPacketAndRehydrateFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rehydrate session (fallback): %v", err)
 	}
-	if rehydratedFallback.Source != "raw-events-fallback" {
+	if rehydratedFallback.Source != "relevant-chunks-fallback" {
 		t.Fatalf("expected fallback source, got %q", rehydratedFallback.Source)
+	}
+	fallbackContinuity, ok := rehydratedFallback.Packet.Packet["continuity"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected fallback continuity metadata, got %#v", rehydratedFallback.Packet.Packet["continuity"])
+	}
+	fallbackChunks, ok := fallbackContinuity["relevant_chunks"].([]any)
+	if !ok || len(fallbackChunks) == 0 {
+		t.Fatalf("expected fallback to include relevant chunks, got %#v", fallbackContinuity["relevant_chunks"])
 	}
 
 	sessionPacket, err := s.BuildRehydratePacket(ctx, BuildPacketParams{
@@ -3304,6 +3376,10 @@ func TestSessionCheckpointPacketAndRehydrateFlow(t *testing.T) {
 	}
 	if sessionPacket.Scope != "session" {
 		t.Fatalf("expected session scope packet, got %#v", sessionPacket)
+	}
+	sessionDecisionSummary, ok := sessionPacket.Packet["decision_summary"].(map[string]any)
+	if !ok || anyToInt(sessionDecisionSummary["context_chunk_count"]) == 0 {
+		t.Fatalf("expected session packet decision summary with context chunks, got %#v", sessionPacket.Packet["decision_summary"])
 	}
 
 	if _, err := s.ReplayProjections(ctx); err != nil {
@@ -3436,6 +3512,23 @@ func TestReplayRebuildsEventSourcedPacketsAndIssueSummaries(t *testing.T) {
 	if summaryCount == 0 {
 		t.Fatalf("expected replay to rebuild packet-derived issue summaries")
 	}
+	var replayedSummaryJSON string
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT summary_json
+		FROM issue_summaries
+		WHERE summary_level = 'packet' AND issue_id = ?
+		ORDER BY created_at DESC, summary_id DESC
+		LIMIT 1
+	`, issueID).Scan(&replayedSummaryJSON); err != nil {
+		t.Fatalf("read replayed packet summary json: %v", err)
+	}
+	var replayedSummary map[string]any
+	if err := json.Unmarshal([]byte(replayedSummaryJSON), &replayedSummary); err != nil {
+		t.Fatalf("decode replayed packet summary json: %v", err)
+	}
+	if _, ok := replayedSummary["decision_summary"].(map[string]any); !ok {
+		t.Fatalf("expected replayed summary to include decision summary, got %#v", replayedSummary["decision_summary"])
+	}
 
 	var loopCount int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM open_loops WHERE issue_id = ?`, issueID).Scan(&loopCount); err != nil {
@@ -3476,6 +3569,28 @@ func TestReplayRebuildsEventSourcedPacketsAndIssueSummaries(t *testing.T) {
 	}
 	if loopSourceEventID != gateEvent.EventID {
 		t.Fatalf("expected replayed loop source_event_id %q, got %q", gateEvent.EventID, loopSourceEventID)
+	}
+}
+
+func TestBuildCompactionPolicyUsesDeterministicThresholds(t *testing.T) {
+	t.Parallel()
+
+	triggered := buildCompactionPolicy("issue", compactionEventThreshold, compactionOpenLoopThreshold, compactionContextChunkThreshold)
+	if triggered["triggered"] != true {
+		t.Fatalf("expected compaction policy to trigger at thresholds, got %#v", triggered)
+	}
+	reasons, ok := triggered["reasons"].([]any)
+	if !ok || len(reasons) != 3 {
+		t.Fatalf("expected compaction reasons for all threshold breaches, got %#v", triggered["reasons"])
+	}
+	observed, ok := triggered["observed"].(map[string]any)
+	if !ok || anyToInt(observed["event_count"]) != compactionEventThreshold {
+		t.Fatalf("expected observed counts in compaction policy, got %#v", triggered["observed"])
+	}
+
+	notTriggered := buildCompactionPolicy("session", compactionEventThreshold-1, 0, compactionContextChunkThreshold-1)
+	if notTriggered["triggered"] != false {
+		t.Fatalf("expected compaction policy to stay inactive below thresholds, got %#v", notTriggered)
 	}
 }
 
