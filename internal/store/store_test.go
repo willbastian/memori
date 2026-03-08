@@ -877,6 +877,69 @@ func TestListIssuesFiltersByTypeStatusAndParent(t *testing.T) {
 	}
 }
 
+func TestListPendingExecutableGateTemplates(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	pending, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "pending-exec",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"build","criteria":{"command":"go test ./..."}}]}`,
+		Actor:          "llm:openai:gpt-5",
+		CommandID:      "cmd-pending-template-1",
+	})
+	if err != nil {
+		t.Fatalf("create pending executable template: %v", err)
+	}
+
+	if _, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "approved-exec",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"lint","criteria":{"command":"go test ./internal/store"}}]}`,
+		Actor:          "human:alice",
+		CommandID:      "cmd-approved-template-1",
+	}); err != nil {
+		t.Fatalf("create approved executable template: %v", err)
+	}
+
+	if _, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "manual-check",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"review","criteria":{"ref":"manual-validation"}}]}`,
+		Actor:          "llm:openai:gpt-5",
+		CommandID:      "cmd-manual-template-1",
+	}); err != nil {
+		t.Fatalf("create non-executable template: %v", err)
+	}
+
+	templates, err := s.ListPendingExecutableGateTemplates(ctx)
+	if err != nil {
+		t.Fatalf("list pending executable gate templates: %v", err)
+	}
+	if len(templates) != 1 {
+		t.Fatalf("expected 1 pending executable template, got %d", len(templates))
+	}
+
+	got := templates[0]
+	if got.TemplateID != pending.TemplateID || got.Version != pending.Version {
+		t.Fatalf("expected pending template %s@%d, got %s@%d", pending.TemplateID, pending.Version, got.TemplateID, got.Version)
+	}
+	if !got.Executable {
+		t.Fatalf("expected pending template to be executable")
+	}
+	if got.ApprovedBy != "" || got.ApprovedAt != "" {
+		t.Fatalf("expected pending template approval fields to be empty, got approved_by=%q approved_at=%q", got.ApprovedBy, got.ApprovedAt)
+	}
+	if got.DefinitionHash == "" || got.CreatedBy == "" || got.CreatedAt == "" {
+		t.Fatalf("expected pending template provenance metadata, got %+v", got)
+	}
+}
+
 func TestCreateIssueKeyPolicyValidation(t *testing.T) {
 	t.Parallel()
 

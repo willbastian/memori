@@ -202,9 +202,10 @@ go run ./cmd/memori issue next \
 
 For executable gates, the expected flow is:
 
-1. a human approves the exact gate template version once with `gate template approve`, or creates it as a human-governed actor
-2. the agent instantiates and locks that approved gate set for the issue
-3. the agent runs `gate verify` and then marks the issue `done`
+1. agents can create executable templates, but unapproved versions stay pending human review
+2. humans can inspect the pending review queue with `gate template pending` and approve the exact template version with `gate template approve`, or create it as a human-governed actor
+3. the agent instantiates and locks that approved gate set for the issue
+4. the agent runs `gate verify` and then marks the issue `done`
 
 ### 3. Live board view for terminal splits
 
@@ -299,6 +300,7 @@ For day-to-day work, the shortest path is usually:
 2. `memori issue next --agent <id> --json` when an agent needs a ranked continuity-aware recommendation.
 3. `memori issue show --key <issue>` and `memori event log --entity <issue> --json` before editing.
 4. `memori gate template list --json` when you need to find a close template before locking gates for a cycle.
+5. `memori gate template pending --json` when you need to review executable templates that are still awaiting human approval.
 
 ## Command map
 
@@ -323,6 +325,7 @@ For day-to-day work, the shortest path is usually:
 - `memori gate template create`
 - `memori gate template approve`
 - `memori gate template list`
+- `memori gate template pending`
 - `memori gate set instantiate`
 - `memori gate set lock`
 - `memori gate evaluate`

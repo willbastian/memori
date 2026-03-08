@@ -2419,6 +2419,25 @@ func (s *Store) ListGateTemplates(ctx context.Context, p ListGateTemplatesParams
 	return templates, nil
 }
 
+func (s *Store) ListPendingExecutableGateTemplates(ctx context.Context) ([]GateTemplate, error) {
+	templates, err := s.ListGateTemplates(ctx, ListGateTemplatesParams{})
+	if err != nil {
+		return nil, err
+	}
+
+	pending := make([]GateTemplate, 0, len(templates))
+	for _, template := range templates {
+		if !template.Executable {
+			continue
+		}
+		if actorIsHumanGoverned(template.ApprovedBy) {
+			continue
+		}
+		pending = append(pending, template)
+	}
+	return pending, nil
+}
+
 func (s *Store) InstantiateGateSet(ctx context.Context, p InstantiateGateSetParams) (GateSet, bool, error) {
 	if p.Actor == "" {
 		p.Actor = defaultActor()

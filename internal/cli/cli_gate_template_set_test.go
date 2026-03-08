@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -336,6 +337,85 @@ func TestGateTemplateApproveEnablesExecutableTemplateInstantiation(t *testing.T)
 	}
 	if instantiated.Data.GateSet.GateSetID == "" {
 		t.Fatalf("expected instantiated gate set id after approval")
+	}
+}
+
+func TestGateTemplatePendingListsPendingExecutableTemplates(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-gate-template-pending.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	if _, _, err := s.CreateGateTemplate(ctx, store.CreateGateTemplateParams{
+		TemplateID:     "pending-exec",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"build","criteria":{"command":"go test ./..."}}]}`,
+		Actor:          "llm:openai:gpt-5",
+		CommandID:      "cmd-cli-gtemplate-pending-create-1",
+	}); err != nil {
+		t.Fatalf("create pending executable template: %v", err)
+	}
+	if _, _, err := s.CreateGateTemplate(ctx, store.CreateGateTemplateParams{
+		TemplateID:     "approved-exec",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"lint","criteria":{"command":"go test ./internal/store"}}]}`,
+		Actor:          "human:alice",
+		CommandID:      "cmd-cli-gtemplate-pending-create-2",
+	}); err != nil {
+		t.Fatalf("create approved executable template: %v", err)
+	}
+	if _, _, err := s.CreateGateTemplate(ctx, store.CreateGateTemplateParams{
+		TemplateID:     "manual-check",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"review","criteria":{"ref":"manual-validation"}}]}`,
+		Actor:          "llm:openai:gpt-5",
+		CommandID:      "cmd-cli-gtemplate-pending-create-3",
+	}); err != nil {
+		t.Fatalf("create manual template: %v", err)
+	}
+
+	stdout, stderr, err := runMemoriForTest("gate", "template", "pending", "--db", dbPath, "--json")
+	if err != nil {
+		t.Fatalf("gate template pending json: %v\nstderr: %s", err, stderr)
+	}
+	var pending gateTemplateListEnvelope
+	if err := json.Unmarshal([]byte(stdout), &pending); err != nil {
+		t.Fatalf("decode gate template pending json: %v\nstdout: %s", err, stdout)
+	}
+	if pending.Command != "gate template pending" {
+		t.Fatalf("expected gate template pending command, got %q", pending.Command)
+	}
+	if pending.Data.Count != 1 || len(pending.Data.Templates) != 1 {
+		t.Fatalf("expected exactly one pending template, got count=%d templates=%d", pending.Data.Count, len(pending.Data.Templates))
+	}
+	if pending.Data.Templates[0].TemplateID != "pending-exec" {
+		t.Fatalf("expected pending-exec template, got %+v", pending.Data.Templates[0])
+	}
+	if pending.Data.Templates[0].ApprovedBy != "" || !pending.Data.Templates[0].Executable {
+		t.Fatalf("expected unapproved executable template, got %+v", pending.Data.Templates[0])
+	}
+
+	stdout, stderr, err = runMemoriForTest("gate", "template", "pending", "--db", dbPath)
+	if err != nil {
+		t.Fatalf("gate template pending text: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "pending-exec@1") || !strings.Contains(stdout, "approval=pending-human-review") {
+		t.Fatalf("expected readable pending approval output, got %q", stdout)
+	}
+	if strings.Contains(stdout, "approved-exec") || strings.Contains(stdout, "manual-check") {
+		t.Fatalf("expected only pending executable template in text output, got %q", stdout)
 	}
 }
 

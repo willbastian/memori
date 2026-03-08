@@ -84,6 +84,7 @@ func runHelp(args []string, out io.Writer) error {
 			"memori gate template create --id <template-id> --version <n> --applies-to epic|story|task|bug [--applies-to ...] --file <path> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate template approve --id <template-id> --version <n> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate template list [--type epic|story|task|bug] [--json]",
+			"memori gate template pending [--db <path>] [--json]",
 			"memori gate set instantiate --issue <prefix-shortSHA> --template <template-id@version> [--template ...] [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate set lock --issue <prefix-shortSHA> [--cycle <n>] [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] [--command-id <id>] [--json]",
@@ -1190,7 +1191,7 @@ func runContextLoops(args []string, out io.Writer) error {
 
 func runGateTemplate(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("gate template subcommand required: create|approve|list")
+		return errors.New("gate template subcommand required: create|approve|list|pending")
 	}
 	switch args[0] {
 	case "create":
@@ -1199,6 +1200,8 @@ func runGateTemplate(args []string, out io.Writer) error {
 		return runGateTemplateApprove(args[1:], out)
 	case "list":
 		return runGateTemplateList(args[1:], out)
+	case "pending":
+		return runGateTemplatePending(args[1:], out)
 	default:
 		return fmt.Errorf("unknown gate template subcommand %q", args[0])
 	}
@@ -1402,6 +1405,60 @@ func runGateTemplateList(args []string, out io.Writer) error {
 			template.Version,
 			strings.Join(template.AppliesTo, ","),
 			template.DefinitionHash,
+		)
+	}
+	return nil
+}
+
+func runGateTemplatePending(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("gate template pending", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	templates, err := s.ListPendingExecutableGateTemplates(ctx)
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "gate template pending",
+			Data: gateTemplateListData{
+				Count:     len(templates),
+				Templates: templates,
+			},
+		})
+	}
+
+	if len(templates) == 0 {
+		_, _ = fmt.Fprintln(out, "No pending executable gate templates.")
+		return nil
+	}
+	for _, template := range templates {
+		_, _ = fmt.Fprintf(
+			out,
+			"- %s@%d applies_to=%s hash=%s created_by=%s created_at=%s approval=pending-human-review\n",
+			template.TemplateID,
+			template.Version,
+			strings.Join(template.AppliesTo, ","),
+			template.DefinitionHash,
+			template.CreatedBy,
+			template.CreatedAt,
 		)
 	}
 	return nil
@@ -2823,6 +2880,7 @@ func printHelp(out io.Writer) {
 	ui.bullet("memori gate template create --id <template-id> --version <n> --applies-to epic|story|task|bug [--applies-to ...] --file <path> [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori gate template approve --id <template-id> --version <n> [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori gate template list [--type epic|story|task|bug] [--json]")
+	ui.bullet("memori gate template pending [--db <path>] [--json]")
 	ui.bullet("memori gate set instantiate --issue <prefix-shortSHA> --template <template-id@version> [--template ...] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori gate set lock --issue <prefix-shortSHA> [--cycle <n>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] [--command-id <id>] [--json]")
