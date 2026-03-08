@@ -296,3 +296,69 @@ func TestSyncSchemaMetaFailsOnClosedDB(t *testing.T) {
 		t.Fatalf("expected syncSchemaMeta closed-db error, got %v", err)
 	}
 }
+
+func TestStatusOfMigrateAndVerifySurfaceClosedDBErrors(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestDB(t)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	if _, err := StatusOf(ctx, db); err == nil || !containsCheck([]string{err.Error()}, "read goose_db_version") {
+		t.Fatalf("expected StatusOf closed-db error, got %v", err)
+	}
+	if _, err := Migrate(ctx, db, nil); err == nil || !containsCheck([]string{err.Error()}, "read goose_db_version") {
+		t.Fatalf("expected Migrate closed-db error, got %v", err)
+	}
+	if _, err := Verify(ctx, db); err == nil || !containsCheck([]string{err.Error()}, "read goose_db_version") {
+		t.Fatalf("expected Verify closed-db error, got %v", err)
+	}
+}
+
+func TestVerifyReportsDatabaseAheadOfBinaryHeadAndStatusClampsPending(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestDB(t)
+	status, err := Migrate(ctx, db, nil)
+	if err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+
+	aheadVersion := status.HeadVersion + 1
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO goose_db_version(version_id, is_applied, tstamp)
+		VALUES(?, 1, CURRENT_TIMESTAMP)
+	`, aheadVersion); err != nil {
+		t.Fatalf("insert ahead-of-head goose version: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE schema_meta SET value = ? WHERE key = 'db_schema_version'
+	`, aheadVersion); err != nil {
+		t.Fatalf("update schema_meta ahead version: %v", err)
+	}
+
+	gotStatus, err := StatusOf(ctx, db)
+	if err != nil {
+		t.Fatalf("status of ahead-of-head database: %v", err)
+	}
+	if gotStatus.CurrentVersion != aheadVersion {
+		t.Fatalf("expected current version %d, got %d", aheadVersion, gotStatus.CurrentVersion)
+	}
+	if gotStatus.PendingMigrations != 0 {
+		t.Fatalf("expected pending migrations to clamp at 0, got %d", gotStatus.PendingMigrations)
+	}
+
+	verify, err := Verify(ctx, db)
+	if err != nil {
+		t.Fatalf("verify ahead-of-head database: %v", err)
+	}
+	if verify.OK {
+		t.Fatal("expected verify to fail when database is ahead of binary head")
+	}
+	if !containsCheck(verify.Checks, "ahead of binary head") {
+		t.Fatalf("expected ahead-of-head verify check, got %v", verify.Checks)
+	}
+}

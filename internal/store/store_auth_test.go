@@ -47,9 +47,18 @@ func TestOpenCreatesParentDirectoryAndSchemaVersionHandlesUnsetAndInvalidValues(
 		t.Fatalf("initialize store: %v", err)
 	}
 	if _, err := s.db.ExecContext(context.Background(), `
-		UPDATE schema_meta SET value = 'not-a-number' WHERE key = 'db_schema_version'
+		DELETE FROM schema_meta WHERE key = 'db_schema_version'
 	`); err != nil {
-		t.Fatalf("tamper schema version: %v", err)
+		t.Fatalf("delete schema version: %v", err)
+	}
+	if got, err := s.SchemaVersion(context.Background()); err != nil || got != 0 {
+		t.Fatalf("expected missing schema version row to read as 0, got %d err=%v", got, err)
+	}
+
+	if _, err := s.db.ExecContext(context.Background(), `
+		INSERT INTO schema_meta(key, value, updated_at) VALUES('db_schema_version', 'not-a-number', ?)
+	`, nowUTC()); err != nil {
+		t.Fatalf("insert invalid schema version: %v", err)
 	}
 
 	if _, err := s.SchemaVersion(context.Background()); err == nil || !strings.Contains(err.Error(), "parse schema version") {
@@ -147,5 +156,86 @@ func TestHumanAuthCredentialRoundTripAndRotation(t *testing.T) {
 	}
 	if second.RotatedBy != "human:bob" {
 		t.Fatalf("expected rotated credential actor %q, got %q", "human:bob", second.RotatedBy)
+	}
+}
+
+func TestHumanAuthCredentialValidationAndClosedDBErrors(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	cases := []struct {
+		name string
+		p    UpsertHumanAuthCredentialParams
+		want string
+	}{
+		{
+			name: "missing algorithm",
+			p: UpsertHumanAuthCredentialParams{
+				Iterations: 1,
+				SaltHex:    "aa",
+				HashHex:    "bb",
+			},
+			want: "algorithm is required",
+		},
+		{
+			name: "non-positive iterations",
+			p: UpsertHumanAuthCredentialParams{
+				Algorithm: "pbkdf2-sha256",
+				Iterations: 0,
+				SaltHex:    "aa",
+				HashHex:    "bb",
+			},
+			want: "iterations must be > 0",
+		},
+		{
+			name: "missing salt",
+			p: UpsertHumanAuthCredentialParams{
+				Algorithm: "pbkdf2-sha256",
+				Iterations: 1,
+				HashHex:    "bb",
+			},
+			want: "salt_hex is required",
+		},
+		{
+			name: "missing hash",
+			p: UpsertHumanAuthCredentialParams{
+				Algorithm: "pbkdf2-sha256",
+				Iterations: 1,
+				SaltHex:    "aa",
+			},
+			want: "hash_hex is required",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := s.UpsertHumanAuthCredential(ctx, tc.p); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected validation error %q, got %v", tc.want, err)
+			}
+		})
+	}
+
+	closed, err := Open(filepath.Join(t.TempDir(), "closed-auth.db"))
+	if err != nil {
+		t.Fatalf("open closed auth store: %v", err)
+	}
+	if err := closed.Initialize(ctx, InitializeParams{IssueKeyPrefix: "mem"}); err != nil {
+		t.Fatalf("initialize closed auth store: %v", err)
+	}
+	if err := closed.Close(); err != nil {
+		t.Fatalf("close auth store: %v", err)
+	}
+
+	if _, _, err := closed.GetHumanAuthCredential(ctx); err == nil || !strings.Contains(err.Error(), "query human auth credential") {
+		t.Fatalf("expected get credential closed-db error, got %v", err)
+	}
+	if _, _, err := closed.UpsertHumanAuthCredential(ctx, UpsertHumanAuthCredentialParams{
+		Algorithm:  "pbkdf2-sha256",
+		Iterations: 1,
+		SaltHex:    "aa",
+		HashHex:    "bb",
+	}); err == nil || !strings.Contains(err.Error(), "begin tx") {
+		t.Fatalf("expected upsert closed-db error, got %v", err)
 	}
 }
