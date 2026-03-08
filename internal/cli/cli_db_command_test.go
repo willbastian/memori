@@ -32,6 +32,19 @@ type dbVerifyEnvelope struct {
 	} `json:"data"`
 }
 
+type dbMigrateEnvelope struct {
+	ResponseSchemaVersion int    `json:"response_schema_version"`
+	DBSchemaVersion       int    `json:"db_schema_version"`
+	Command               string `json:"command"`
+	Data                  struct {
+		FromVersion       int    `json:"from_version"`
+		CurrentVersion    int    `json:"current_version"`
+		HeadVersion       int    `json:"head_version"`
+		PendingMigrations int    `json:"pending_migrations"`
+		BackupPath        string `json:"backup_path"`
+	} `json:"data"`
+}
+
 type dbBackupEnvelope struct {
 	ResponseSchemaVersion int    `json:"response_schema_version"`
 	DBSchemaVersion       int    `json:"db_schema_version"`
@@ -63,8 +76,20 @@ func TestDBStatusMigrateAndVerifyJSON(t *testing.T) {
 		t.Fatalf("expected pending migrations before migrate")
 	}
 
-	if _, stderr, err := runMemoriForTest("db", "migrate", "--db", dbPath, "--json"); err != nil {
+	stdout, stderr, err := runMemoriForTest("db", "migrate", "--db", dbPath, "--json")
+	if err != nil {
 		t.Fatalf("run db migrate: %v\nstderr: %s", err, stderr)
+	}
+	var migrate dbMigrateEnvelope
+	if err := json.Unmarshal([]byte(stdout), &migrate); err != nil {
+		t.Fatalf("decode db migrate json output: %v\nstdout: %s", err, stdout)
+	}
+	assertEnvelopeMetadata(t, migrate.ResponseSchemaVersion, migrate.DBSchemaVersion)
+	if migrate.Command != "db migrate" || migrate.Data.BackupPath == "" {
+		t.Fatalf("expected db migrate backup metadata, got %+v", migrate)
+	}
+	if _, err := os.Stat(migrate.Data.BackupPath); err != nil {
+		t.Fatalf("migration backup missing: %v", err)
 	}
 
 	after := runDBStatusJSONForTest(t, dbPath)
@@ -76,7 +101,7 @@ func TestDBStatusMigrateAndVerifyJSON(t *testing.T) {
 		t.Fatalf("expected no pending migrations after migrate, got %d", after.Data.PendingMigrations)
 	}
 
-	stdout, stderr, err := runMemoriForTest("db", "verify", "--db", dbPath, "--json")
+	stdout, stderr, err = runMemoriForTest("db", "verify", "--db", dbPath, "--json")
 	if err != nil {
 		t.Fatalf("run db verify: %v\nstderr: %s", err, stderr)
 	}
@@ -205,6 +230,41 @@ func TestDBVerifyFailsWhenWorkItemsTableMissing(t *testing.T) {
 	}
 	if !containsString(verify.Data.Checks, "required table missing: work_items") {
 		t.Fatalf("expected missing work_items check in JSON response, got %v", verify.Data.Checks)
+	}
+}
+
+func TestDBVerifyFailsWhenSchemaMigrationChecksumDrifts(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-db-cli-schema-migration-drift.db")
+	if _, stderr, err := runMemoriForTest("db", "migrate", "--db", dbPath, "--json"); err != nil {
+		t.Fatalf("run db migrate: %v\nstderr: %s", err, stderr)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`UPDATE schema_migrations SET checksum = 'tampered-checksum' WHERE version = (SELECT MAX(version) FROM schema_migrations)`); err != nil {
+		t.Fatalf("tamper schema_migrations checksum: %v", err)
+	}
+
+	stdout, stderr, err := runMemoriForTest("db", "verify", "--db", dbPath, "--json")
+	if err == nil || !strings.Contains(err.Error(), "schema_migrations checksum mismatch") {
+		t.Fatalf("expected schema_migrations checksum mismatch error, got err=%v stderr=%s stdout=%s", err, stderr, stdout)
+	}
+
+	var verify dbVerifyEnvelope
+	if err := json.Unmarshal([]byte(stdout), &verify); err != nil {
+		t.Fatalf("decode db verify json output: %v\nstdout: %s", err, stdout)
+	}
+	if verify.Data.OK {
+		t.Fatalf("expected db verify to fail when schema_migrations checksum drifts")
+	}
+	if !containsString(verify.Data.Checks, "schema_migrations checksum mismatch") {
+		t.Fatalf("expected checksum drift check in JSON response, got %v", verify.Data.Checks)
 	}
 }
 

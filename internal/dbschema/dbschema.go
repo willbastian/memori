@@ -36,6 +36,12 @@ type VerifyResult struct {
 	Checks            []string `json:"checks"`
 }
 
+type migrationDefinition struct {
+	Version  int
+	Name     string
+	Checksum string
+}
+
 var requiredTablesByVersion = []struct {
 	version int
 	tables  []string
@@ -83,6 +89,12 @@ var requiredTablesByVersion = []struct {
 		version: 12,
 		tables: []string{
 			"gate_template_approvals",
+		},
+	},
+	{
+		version: 15,
+		tables: []string{
+			"schema_migrations",
 		},
 	},
 }
@@ -153,6 +165,9 @@ func Migrate(ctx context.Context, db *sql.DB, to *int) (Status, error) {
 	if err := syncSchemaMeta(ctx, db, statusAfter.CurrentVersion); err != nil {
 		return Status{}, err
 	}
+	if err := syncMigrationAudit(ctx, db); err != nil {
+		return Status{}, err
+	}
 
 	return statusAfter, nil
 }
@@ -208,6 +223,17 @@ func Verify(ctx context.Context, db *sql.DB) (VerifyResult, error) {
 		result.Checks = append(result.Checks, requiredTableFailures...)
 	}
 
+	migrationAuditFailures, err := verifyMigrationAudit(ctx, db, status.CurrentVersion)
+	if err != nil {
+		result.OK = false
+		result.Checks = append(result.Checks, fmt.Sprintf("migration audit verification failed: %v", err))
+		return result, nil
+	}
+	if len(migrationAuditFailures) > 0 {
+		result.OK = false
+		result.Checks = append(result.Checks, migrationAuditFailures...)
+	}
+
 	hashChainFailures, err := verifyEventHashChain(ctx, db)
 	if err != nil {
 		result.OK = false
@@ -221,6 +247,7 @@ func Verify(ctx context.Context, db *sql.DB) (VerifyResult, error) {
 
 	if result.OK {
 		result.Checks = append(result.Checks, "schema versions are consistent")
+		result.Checks = append(result.Checks, "migration audit matches applied migrations")
 		result.Checks = append(result.Checks, "event hash chain is valid")
 	}
 	return result, nil
@@ -485,6 +512,247 @@ func headVersion() (int, error) {
 		}
 	}
 	return maxVersion, nil
+}
+
+func readMigrationDefinitions() ([]migrationDefinition, error) {
+	entries, err := fs.ReadDir(migrationsFS, migrationsDir)
+	if err != nil {
+		return nil, fmt.Errorf("read embedded migrations: %w", err)
+	}
+
+	definitions := make([]migrationDefinition, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		version, migrationName, ok := parseMigrationFilename(name)
+		if !ok {
+			continue
+		}
+		body, err := fs.ReadFile(migrationsFS, migrationsDir+"/"+name)
+		if err != nil {
+			return nil, fmt.Errorf("read embedded migration %q: %w", name, err)
+		}
+		sum := sha256.Sum256(body)
+		definitions = append(definitions, migrationDefinition{
+			Version:  version,
+			Name:     migrationName,
+			Checksum: hex.EncodeToString(sum[:]),
+		})
+	}
+	return definitions, nil
+}
+
+func parseMigrationFilename(name string) (int, string, bool) {
+	prefix, rest, hasUnderscore := strings.Cut(name, "_")
+	if !hasUnderscore {
+		return 0, "", false
+	}
+	version, err := strconv.Atoi(prefix)
+	if err != nil {
+		return 0, "", false
+	}
+	migrationName := strings.TrimSuffix(rest, filepathExt(rest))
+	if migrationName == "" {
+		migrationName = rest
+	}
+	return version, migrationName, true
+}
+
+func filepathExt(name string) string {
+	if dot := strings.LastIndexByte(name, '.'); dot >= 0 {
+		return name[dot:]
+	}
+	return ""
+}
+
+func migrationDefinitionMap() (map[int]migrationDefinition, error) {
+	definitions, err := readMigrationDefinitions()
+	if err != nil {
+		return nil, err
+	}
+	byVersion := make(map[int]migrationDefinition, len(definitions))
+	for _, definition := range definitions {
+		byVersion[definition.Version] = definition
+	}
+	return byVersion, nil
+}
+
+func syncMigrationAudit(ctx context.Context, db *sql.DB) error {
+	exists, err := sqliteTableExists(ctx, db, "schema_migrations")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+
+	definitions, err := migrationDefinitionMap()
+	if err != nil {
+		return err
+	}
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT version_id, COALESCE(tstamp, '')
+		FROM goose_db_version
+		WHERE is_applied = 1
+		ORDER BY version_id ASC
+	`)
+	if err != nil {
+		return fmt.Errorf("query applied goose migrations: %w", err)
+	}
+	applied := make([]struct {
+		version   int
+		appliedAt string
+	}, 0)
+	for rows.Next() {
+		var item struct {
+			version   int
+			appliedAt string
+		}
+		if err := rows.Scan(&item.version, &item.appliedAt); err != nil {
+			return fmt.Errorf("scan applied goose migration: %w", err)
+		}
+		if item.version == 0 {
+			continue
+		}
+		applied = append(applied, item)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate applied goose migrations: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close applied goose migration rows: %w", err)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx for migration audit sync: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, item := range applied {
+		definition, ok := definitions[item.version]
+		if !ok {
+			return fmt.Errorf("applied migration version %d missing from embedded catalog", item.version)
+		}
+		if item.appliedAt == "" {
+			item.appliedAt = nowUTC()
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO schema_migrations(
+				version, name, checksum, applied_at, applied_by, duration_ms, success, error_message
+			) VALUES(?, ?, ?, ?, ?, ?, 1, NULL)
+			ON CONFLICT(version) DO UPDATE SET
+				name=excluded.name,
+				checksum=excluded.checksum,
+				applied_at=excluded.applied_at,
+				applied_by=excluded.applied_by,
+				duration_ms=excluded.duration_ms,
+				success=excluded.success,
+				error_message=NULL
+		`, item.version, definition.Name, definition.Checksum, item.appliedAt, "memori/dbschema", 0); err != nil {
+			return fmt.Errorf("upsert migration audit for version %d: %w", item.version, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration audit sync tx: %w", err)
+	}
+	return nil
+}
+
+func verifyMigrationAudit(ctx context.Context, db *sql.DB, currentVersion int) ([]string, error) {
+	if currentVersion < 15 {
+		return nil, nil
+	}
+
+	definitions, err := migrationDefinitionMap()
+	if err != nil {
+		return nil, err
+	}
+
+	type auditRow struct {
+		Version  int
+		Name     string
+		Checksum string
+		Success  int
+	}
+	audits := make(map[int]auditRow)
+	rows, err := db.QueryContext(ctx, `
+		SELECT version, name, checksum, success
+		FROM schema_migrations
+		ORDER BY version ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query schema_migrations: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var row auditRow
+		if err := rows.Scan(&row.Version, &row.Name, &row.Checksum, &row.Success); err != nil {
+			return nil, fmt.Errorf("scan schema_migrations row: %w", err)
+		}
+		audits[row.Version] = row
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate schema_migrations rows: %w", err)
+	}
+
+	failures := make([]string, 0)
+	gooseRows, err := db.QueryContext(ctx, `
+		SELECT version_id
+		FROM goose_db_version
+		WHERE is_applied = 1
+		ORDER BY version_id ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query goose_db_version for audit verify: %w", err)
+	}
+	defer gooseRows.Close()
+
+	applied := make(map[int]struct{})
+	for gooseRows.Next() {
+		var version int
+		if err := gooseRows.Scan(&version); err != nil {
+			return nil, fmt.Errorf("scan goose_db_version row: %w", err)
+		}
+		if version == 0 {
+			continue
+		}
+		applied[version] = struct{}{}
+
+		definition, ok := definitions[version]
+		if !ok {
+			failures = append(failures, fmt.Sprintf("embedded migration missing for applied version %d", version))
+			continue
+		}
+		audit, ok := audits[version]
+		if !ok {
+			failures = append(failures, fmt.Sprintf("schema_migrations missing row for version %d", version))
+			continue
+		}
+		if audit.Name != definition.Name {
+			failures = append(failures, fmt.Sprintf("schema_migrations name mismatch for version %d", version))
+		}
+		if audit.Checksum != definition.Checksum {
+			failures = append(failures, fmt.Sprintf("schema_migrations checksum mismatch for version %d", version))
+		}
+		if audit.Success != 1 {
+			failures = append(failures, fmt.Sprintf("schema_migrations marks version %d as unsuccessful", version))
+		}
+	}
+	if err := gooseRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate goose_db_version rows: %w", err)
+	}
+
+	for version := range audits {
+		if _, ok := applied[version]; !ok {
+			failures = append(failures, fmt.Sprintf("schema_migrations has unexpected row for unapplied version %d", version))
+		}
+	}
+	return failures, nil
 }
 
 func syncSchemaMeta(ctx context.Context, db *sql.DB, currentVersion int) error {

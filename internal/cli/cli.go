@@ -2158,8 +2158,23 @@ func runDBMigrate(args []string, out io.Writer) error {
 	if toSet {
 		toPtr = to
 	}
+	if toPtr != nil {
+		if *toPtr < before.CurrentVersion {
+			return fmt.Errorf("invalid --to %d (must be >= current version %d)", *toPtr, before.CurrentVersion)
+		}
+		if *toPtr > before.HeadVersion {
+			return fmt.Errorf("invalid --to %d (must be <= head version %d)", *toPtr, before.HeadVersion)
+		}
+	}
+	backupPath, err := createMigrationBackup(ctx, s.DB(), *dbPath)
+	if err != nil {
+		return err
+	}
 	after, err := dbschema.Migrate(ctx, s.DB(), toPtr)
 	if err != nil {
+		if backupPath != "" {
+			return fmt.Errorf("%w (restore from %s)", err, backupPath)
+		}
 		return err
 	}
 
@@ -2178,11 +2193,15 @@ func runDBMigrate(args []string, out io.Writer) error {
 				CurrentVersion:    after.CurrentVersion,
 				HeadVersion:       after.HeadVersion,
 				PendingMigrations: after.PendingMigrations,
+				BackupPath:        backupPath,
 			},
 		})
 	}
 
 	_, _ = fmt.Fprintf(out, "Migrated database from version %d to %d\n", before.CurrentVersion, after.CurrentVersion)
+	if backupPath != "" {
+		_, _ = fmt.Fprintf(out, "Backup path: %s\n", backupPath)
+	}
 	_, _ = fmt.Fprintf(out, "Head schema version: %d\n", after.HeadVersion)
 	_, _ = fmt.Fprintf(out, "Pending migrations: %d\n", after.PendingMigrations)
 	return nil
@@ -2337,6 +2356,22 @@ func runDBBackup(args []string, out io.Writer) error {
 
 	_, _ = fmt.Fprintf(out, "Backed up %s -> %s\n", absSource, absTarget)
 	return nil
+}
+
+func createMigrationBackup(ctx context.Context, db *sql.DB, dbPath string) (string, error) {
+	absSource, err := filepath.Abs(dbPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve --db path: %w", err)
+	}
+	timestamp := time.Now().UTC().Format("20060102T150405.000000000Z")
+	backupPath := absSource + ".pre-migrate-" + timestamp + ".bak"
+	if err := os.MkdirAll(filepath.Dir(backupPath), 0o755); err != nil {
+		return "", fmt.Errorf("create migration backup directory: %w", err)
+	}
+	if err := sqliteVacuumInto(ctx, db, backupPath); err != nil {
+		return "", fmt.Errorf("backup database before migrate to %s: %w", backupPath, err)
+	}
+	return backupPath, nil
 }
 
 func sqliteVacuumInto(ctx context.Context, db *sql.DB, outPath string) error {
@@ -2749,6 +2784,7 @@ type dbMigrateData struct {
 	CurrentVersion    int `json:"current_version"`
 	HeadVersion       int `json:"head_version"`
 	PendingMigrations int `json:"pending_migrations"`
+	BackupPath        string `json:"backup_path,omitempty"`
 }
 
 type dbBackupData struct {

@@ -308,10 +308,14 @@ go run ./cmd/memori db replay --json
 When you want to confirm the database and event chain are internally consistent, use:
 
 ```bash
+go run ./cmd/memori db migrate --json
 go run ./cmd/memori db verify --json
 go run ./cmd/memori db status --json
 go run ./cmd/memori db backup --out /tmp/memori-backup.db --json
 ```
+
+`db migrate` now creates a restore-point backup before applying schema changes and returns the backup path in JSON output.
+`db verify` checks both the event hash chain and the `schema_migrations` audit ledger so checksum drift or missing migration audit rows are reported alongside schema-version issues.
 
 Use replay when projections need to be recomputed. Use rehydrate when a worker needs to resume efficiently from the latest packet or fallback context.
 

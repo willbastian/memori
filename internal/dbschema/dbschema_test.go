@@ -48,6 +48,14 @@ func TestStatusMigrateAndVerify(t *testing.T) {
 	if !verify.OK {
 		t.Fatalf("expected verify OK, got checks: %v", verify.Checks)
 	}
+
+	var auditCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(1) FROM schema_migrations WHERE success = 1`).Scan(&auditCount); err != nil {
+		t.Fatalf("count schema_migrations rows: %v", err)
+	}
+	if auditCount != after.CurrentVersion {
+		t.Fatalf("expected schema_migrations rows for each applied version, got %d want %d", auditCount, after.CurrentVersion)
+	}
 }
 
 func TestMigrateRejectsInvalidToVersion(t *testing.T) {
@@ -326,6 +334,62 @@ func TestVerifyChecksTablesForCurrentMigrationLevelOnly(t *testing.T) {
 	}
 	if containsCheck(verify.Checks, "required table missing: context_chunks") {
 		t.Fatalf("did not expect version 5 tables to be required at version %d: %v", targetVersion, verify.Checks)
+	}
+}
+
+func TestVerifyFailsWhenSchemaMigrationAuditRowMissing(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestDB(t)
+	status, err := Migrate(ctx, db, nil)
+	if err != nil {
+		t.Fatalf("migrate to head: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version = ?`, status.CurrentVersion); err != nil {
+		t.Fatalf("delete schema_migrations row: %v", err)
+	}
+
+	verify, err := Verify(ctx, db)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if verify.OK {
+		t.Fatalf("expected verify to fail when schema_migrations row is missing")
+	}
+	if !containsCheck(verify.Checks, "schema_migrations missing row for version") {
+		t.Fatalf("expected missing schema_migrations check, got %v", verify.Checks)
+	}
+}
+
+func TestVerifyFailsWhenSchemaMigrationChecksumDrifts(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestDB(t)
+	status, err := Migrate(ctx, db, nil)
+	if err != nil {
+		t.Fatalf("migrate to head: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		UPDATE schema_migrations
+		SET checksum = 'tampered-checksum'
+		WHERE version = ?
+	`, status.CurrentVersion); err != nil {
+		t.Fatalf("tamper schema_migrations checksum: %v", err)
+	}
+
+	verify, err := Verify(ctx, db)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if verify.OK {
+		t.Fatalf("expected verify to fail when schema_migrations checksum drifts")
+	}
+	if !containsCheck(verify.Checks, "schema_migrations checksum mismatch for version") {
+		t.Fatalf("expected schema_migrations checksum mismatch check, got %v", verify.Checks)
 	}
 }
 
