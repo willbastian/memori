@@ -92,6 +92,34 @@ func TestBoardTUIApplySnapshotKeepsDetailOpenOnNarrowRefresh(t *testing.T) {
 	}
 }
 
+func TestBoardTUIApplySnapshotPreservesExpansionStateForHierarchyRows(t *testing.T) {
+	t.Parallel()
+
+	parent := boardIssueRow{
+		Issue: boardTestIssue("mem-a111111", "Story", "Todo", "Parent story"),
+		Hierarchy: boardIssueHierarchy{
+			HasChildren: true,
+			ChildCount:  2,
+		},
+	}
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{parent},
+	}, 100, 24)
+
+	if !model.expanded["mem-a111111"] {
+		t.Fatalf("expected hierarchy row to default expanded, got %+v", model.expanded)
+	}
+
+	model.expanded["mem-a111111"] = false
+	updated := boardApplySnapshot(model, boardSnapshot{
+		Ready: []boardIssueRow{parent},
+	}, 100, 24)
+
+	if updated.expanded["mem-a111111"] {
+		t.Fatalf("expected explicit collapsed state to survive refresh, got %+v", updated.expanded)
+	}
+}
+
 func TestRenderBoardTUIWideShowsDetailPane(t *testing.T) {
 	t.Parallel()
 

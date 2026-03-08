@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"memori/internal/store"
 )
@@ -115,6 +116,96 @@ func TestBoardCommandJSONIncludesCountsAndContinuityDrivenLikelyNext(t *testing.
 			t.Fatalf("expected likely next reasons to contain %q, got:\n%s", want, reasons)
 		}
 	}
+}
+
+func TestBuildBoardSnapshotIncludesHierarchyMetadata(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-board-hierarchy.db")
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	if err := s.Initialize(ctx, store.InitializeParams{IssueKeyPrefix: "mem"}); err != nil {
+		t.Fatalf("initialize store: %v", err)
+	}
+
+	create := func(id, issueType, title, parent, commandID string) {
+		t.Helper()
+		if _, _, _, err := s.CreateIssue(ctx, store.CreateIssueParams{
+			IssueID:   id,
+			Type:      issueType,
+			Title:     title,
+			ParentID:  parent,
+			Actor:     "test",
+			CommandID: commandID,
+		}); err != nil {
+			t.Fatalf("create issue %s: %v", id, err)
+		}
+	}
+	update := func(id, status, commandID string) {
+		t.Helper()
+		if _, _, _, err := s.UpdateIssueStatus(ctx, store.UpdateIssueStatusParams{
+			IssueID:   id,
+			Status:    status,
+			Actor:     "test",
+			CommandID: commandID,
+		}); err != nil {
+			t.Fatalf("update issue %s to %s: %v", id, status, err)
+		}
+	}
+
+	create("mem-e111111", "epic", "Hierarchy epic", "", "cmd-hierarchy-create-1")
+	create("mem-a222222", "story", "Hierarchy story", "mem-e111111", "cmd-hierarchy-create-2")
+	create("mem-c333333", "task", "Hierarchy task", "mem-a222222", "cmd-hierarchy-create-3")
+	create("mem-b444444", "bug", "Hierarchy bug", "mem-a222222", "cmd-hierarchy-create-4")
+	update("mem-b444444", "blocked", "cmd-hierarchy-blocked-1")
+
+	snapshot, err := buildBoardSnapshot(ctx, s, "", time.Date(2026, time.March, 8, 1, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("build board snapshot: %v", err)
+	}
+
+	storyRow := mustFindBoardRow(t, snapshot.Ready, "mem-a222222")
+	if storyRow.Hierarchy.Depth != 1 {
+		t.Fatalf("expected story depth 1, got %+v", storyRow.Hierarchy)
+	}
+	if storyRow.Hierarchy.ParentID != "mem-e111111" || storyRow.Hierarchy.ParentTitle != "Hierarchy epic" || !storyRow.Hierarchy.HasChildren || storyRow.Hierarchy.ChildCount != 2 {
+		t.Fatalf("expected story parent and child metadata, got %+v", storyRow.Hierarchy)
+	}
+	if got := strings.Join(storyRow.Hierarchy.Path, " > "); got != "mem-e111111 > mem-a222222" {
+		t.Fatalf("expected story path to include epic ancestry, got %q", got)
+	}
+
+	taskRow := mustFindBoardRow(t, snapshot.Ready, "mem-c333333")
+	if taskRow.Hierarchy.Depth != 2 {
+		t.Fatalf("expected task depth 2, got %+v", taskRow.Hierarchy)
+	}
+	if got := strings.Join(taskRow.Hierarchy.AncestorIDs, " > "); got != "mem-e111111 > mem-a222222" {
+		t.Fatalf("expected task ancestors to include epic and story, got %q", got)
+	}
+	if taskRow.Hierarchy.ChildCount != 0 || taskRow.Hierarchy.HasChildren {
+		t.Fatalf("expected task leaf hierarchy, got %+v", taskRow.Hierarchy)
+	}
+
+	blockedBug := mustFindBoardRow(t, snapshot.Blocked, "mem-b444444")
+	if blockedBug.Hierarchy.ParentType != "Story" || blockedBug.Hierarchy.ParentStatus != "Todo" {
+		t.Fatalf("expected blocked bug to include parent type/status context, got %+v", blockedBug.Hierarchy)
+	}
+}
+
+func mustFindBoardRow(t *testing.T, rows []boardIssueRow, issueID string) boardIssueRow {
+	t.Helper()
+	for _, row := range rows {
+		if row.Issue.ID == issueID {
+			return row
+		}
+	}
+	t.Fatalf("expected to find issue %s in rows: %+v", issueID, rows)
+	return boardIssueRow{}
 }
 
 func seedBoardTestDB(t *testing.T) string {

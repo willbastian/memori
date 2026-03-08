@@ -45,6 +45,7 @@ type boardTUIModel struct {
 	detailOpen    bool
 	helpOpen      bool
 	selectedIssue string
+	expanded      map[string]bool
 }
 
 type boardTheme struct {
@@ -148,15 +149,21 @@ func newBoardTUIModel(snapshot boardSnapshot, width, height int) boardTUIModel {
 		height:     maxInt(height, 10),
 		lane:       boardLaneNext,
 		detailOpen: width >= 100,
+		expanded:   make(map[string]bool),
 	}
 	return boardNormalizeModel(model)
 }
 
 func boardApplySnapshot(model boardTUIModel, snapshot boardSnapshot, width, height int) boardTUIModel {
 	selectedIssue := model.selectedIssue
+	expanded := make(map[string]bool, len(model.expanded))
+	for issueID, open := range model.expanded {
+		expanded[issueID] = open
+	}
 	model.snapshot = snapshot
 	model.width = maxInt(width, 24)
 	model.height = maxInt(height, 10)
+	model.expanded = expanded
 	model = boardNormalizeModel(model)
 	if selectedIssue == "" {
 		return model
@@ -207,6 +214,7 @@ func boardReduce(model boardTUIModel, action boardAction) boardTUIModel {
 }
 
 func boardNormalizeModel(model boardTUIModel) boardTUIModel {
+	model = boardSyncExpandedState(model)
 	lanes := model.availableLanes()
 	if len(lanes) == 0 {
 		model.lane = boardLaneNext
@@ -221,6 +229,52 @@ func boardNormalizeModel(model boardTUIModel) boardTUIModel {
 	}
 
 	return boardClampSelection(model)
+}
+
+func boardSyncExpandedState(model boardTUIModel) boardTUIModel {
+	if model.expanded == nil {
+		model.expanded = make(map[string]bool)
+	}
+	valid := make(map[string]struct{})
+	for _, row := range model.snapshot.LikelyNext {
+		if row.Hierarchy.HasChildren {
+			valid[row.Issue.ID] = struct{}{}
+			if _, ok := model.expanded[row.Issue.ID]; !ok {
+				model.expanded[row.Issue.ID] = true
+			}
+		}
+	}
+	for _, row := range model.snapshot.Active {
+		if row.Hierarchy.HasChildren {
+			valid[row.Issue.ID] = struct{}{}
+			if _, ok := model.expanded[row.Issue.ID]; !ok {
+				model.expanded[row.Issue.ID] = true
+			}
+		}
+	}
+	for _, row := range model.snapshot.Blocked {
+		if row.Hierarchy.HasChildren {
+			valid[row.Issue.ID] = struct{}{}
+			if _, ok := model.expanded[row.Issue.ID]; !ok {
+				model.expanded[row.Issue.ID] = true
+			}
+		}
+	}
+	for _, row := range model.snapshot.Ready {
+		if row.Hierarchy.HasChildren {
+			valid[row.Issue.ID] = struct{}{}
+			if _, ok := model.expanded[row.Issue.ID]; !ok {
+				model.expanded[row.Issue.ID] = true
+			}
+		}
+	}
+	for issueID := range model.expanded {
+		if _, ok := valid[issueID]; ok {
+			continue
+		}
+		delete(model.expanded, issueID)
+	}
+	return model
 }
 
 func boardClampSelection(model boardTUIModel) boardTUIModel {
