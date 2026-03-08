@@ -52,6 +52,28 @@ memori is already useful for local workflow design and disciplined execution, bu
 - no external integrations beyond the CLI and local filesystem
 - source checkout and Go toolchain expected for evaluation
 
+## Adoption policy
+
+License:
+
+- memori is available under the MIT license. See [LICENSE](/Users/will/code/memori/LICENSE).
+
+Intended audience:
+
+- teams experimenting with local-first human-and-agent workflows
+- repositories that want issue tracking, replay, continuity, and gate-backed completion in one CLI
+
+Stability expectations:
+
+- the CLI is usable today, but the product is still early and evolving
+- database migrations are supported forward through `memori db migrate`, but older binaries may not understand newer schema versions
+- automation should prefer JSON output and explicit command IDs where reproducibility matters
+
+Support expectations:
+
+- this repository is maintained as an actively developed project, not a hosted service with uptime or compatibility guarantees
+- adopters should review release notes, keep database backups, and validate upgrades with `memori db status` and `memori db verify`
+
 ## Install and run
 
 Prerequisites:
