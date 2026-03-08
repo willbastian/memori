@@ -84,7 +84,10 @@ Before closing a task, run this checklist in order:
    - Set `blocked` immediately if blocked.
 6. Stage and commit with a clear message:
    - `git add <files>`
-   - `git commit -m "<message>"`
+   - Use conventional commit syntax.
+   - Make the subject expressive enough to describe the behavior or workflow change, not just the file touched.
+   - Include the active ticket id in the commit message whenever the work is tracked by a memori issue.
+   - `git commit -m "<type>(<scope>): <summary> (<issue_key>)"`
 7. Push commit(s) to remote:
    - `git push origin <branch>`
 8. Verify remote push succeeded and local branch is clean:
