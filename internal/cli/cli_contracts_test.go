@@ -1,8 +1,8 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -147,7 +147,7 @@ func TestGateEvaluateGeneratesCommandIDWhenOmitted(t *testing.T) {
 		"--db", dbPath,
 		"--issue", "mem-c111111",
 		"--gate", "build",
-		"--result", "PASS",
+		"--result", "FAIL",
 		"--evidence", "ci://run/1",
 		"--json",
 	)
@@ -262,20 +262,22 @@ func TestIssueDoneRequiresChildIssuesClosed(t *testing.T) {
 		t.Fatalf("parent issue update inprogress: %v\nstderr: %s", err, stderr)
 	}
 
-	gateDefPath := filepath.Join(t.TempDir(), "story-close-gates.json")
-	if err := os.WriteFile(gateDefPath, []byte(`{"gates":[{"id":"review","kind":"check","required":true}]}`), 0o644); err != nil {
-		t.Fatalf("write gate definition: %v", err)
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
 	}
-	if _, stderr, err := runMemoriForTest(
-		"gate", "template", "create",
-		"--db", dbPath,
-		"--id", "story-close",
-		"--version", "1",
-		"--applies-to", "story",
-		"--file", gateDefPath,
-		"--json",
-	); err != nil {
-		t.Fatalf("gate template create: %v\nstderr: %s", err, stderr)
+	if _, _, err := s.CreateGateTemplate(context.Background(), store.CreateGateTemplateParams{
+		TemplateID:     "story-close",
+		Version:        1,
+		AppliesTo:      []string{"story"},
+		DefinitionJSON: `{"gates":[{"id":"review","kind":"check","required":true,"criteria":{"command":"echo verified"}}]}`,
+		Actor:          "human:alice",
+		CommandID:      "cmd-cli-done-children-template-1",
+	}); err != nil {
+		t.Fatalf("create gate template via store: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
 	}
 	if _, stderr, err := runMemoriForTest(
 		"gate", "set", "instantiate",
@@ -295,19 +297,17 @@ func TestIssueDoneRequiresChildIssuesClosed(t *testing.T) {
 		t.Fatalf("gate set lock: %v\nstderr: %s", err, stderr)
 	}
 	if _, stderr, err := runMemoriForTest(
-		"gate", "evaluate",
+		"gate", "verify",
 		"--db", dbPath,
 		"--issue", "mem-a111111",
 		"--gate", "review",
-		"--result", "PASS",
-		"--evidence", "test://story-close/review",
 		"--command-id", "cmd-cli-done-children-parent-eval-1",
 		"--json",
 	); err != nil {
-		t.Fatalf("gate evaluate: %v\nstderr: %s", err, stderr)
+		t.Fatalf("gate verify: %v\nstderr: %s", err, stderr)
 	}
 
-	_, _, err := runMemoriForTest(
+	_, _, err = runMemoriForTest(
 		"issue", "update",
 		"--db", dbPath,
 		"--key", "mem-a111111",

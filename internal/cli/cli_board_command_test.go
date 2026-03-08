@@ -205,7 +205,7 @@ func seedBoardSnapshotTestDB(t *testing.T) string {
 		TemplateID:     "board-quality",
 		Version:        1,
 		AppliesTo:      []string{"task"},
-		DefinitionJSON: `{"gates":[{"id":"build","kind":"check","required":true}]}`,
+		DefinitionJSON: `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"echo board-quality"}}]}`,
 		Actor:          "human:alice",
 		CommandID:      "cmd-board-template-1",
 	}); err != nil {

@@ -1227,15 +1227,45 @@ func (s *Store) EvaluateGate(ctx context.Context, p EvaluateGateParams) (GateEva
 		proof.GateSetHash = gateSet.GateSetHash
 	}
 
-	var gateCount int
+	var (
+		requiredInt  int
+		criteriaJSON string
+	)
 	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(1)
+		SELECT required, criteria_json
 		FROM gate_set_items
 		WHERE gate_set_id = ? AND gate_id = ?
-	`, gateSet.GateSetID, gateID).Scan(&gateCount); err != nil {
+	`, gateSet.GateSetID, gateID).Scan(&requiredInt, &criteriaJSON); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return GateEvaluation{}, Event{}, false, fmt.Errorf(
+				"gate %q is not defined in locked gate_set %q for issue %q",
+				gateID,
+				gateSet.GateSetID,
+				issueID,
+			)
+		}
 		return GateEvaluation{}, Event{}, false, fmt.Errorf("lookup gate %q in gate_set %q: %w", gateID, gateSet.GateSetID, err)
 	}
-	if gateCount == 0 {
+
+	var criteria any
+	if err := json.Unmarshal([]byte(criteriaJSON), &criteria); err != nil {
+		return GateEvaluation{}, Event{}, false, fmt.Errorf("decode criteria_json for gate %q in gate_set %q: %w", gateID, gateSet.GateSetID, err)
+	}
+	if result == "PASS" && gateCriteriaCommand(criteria) != "" && proof == nil {
+		return GateEvaluation{}, Event{}, false, fmt.Errorf(
+			"gate %q uses executable criteria.command; use memori gate verify --issue %s --gate %s to record PASS",
+			gateID,
+			issueID,
+			gateID,
+		)
+	}
+	if requiredInt == 0 {
+		// Optional gates may still use manual PASS/FAIL/BLOCKED recording for informational workflows.
+	} else if result == "PASS" && gateCriteriaCommand(criteria) == "" && proof != nil {
+		return GateEvaluation{}, Event{}, false, fmt.Errorf("gate %q has no executable criteria.command and cannot accept verifier proof", gateID)
+	}
+
+	if strings.TrimSpace(criteriaJSON) == "" {
 		return GateEvaluation{}, Event{}, false, fmt.Errorf(
 			"gate %q is not defined in locked gate_set %q for issue %q",
 			gateID,
@@ -4239,6 +4269,9 @@ func buildGateSetDefinitionsTx(ctx context.Context, tx *sql.Tx, issueType string
 	if len(gates) == 0 {
 		return nil, errors.New("instantiated gate set has no gates")
 	}
+	if err := validateRequiredGateDefinitionsForCLIClosure(gates); err != nil {
+		return nil, err
+	}
 	return gates, nil
 }
 
@@ -4315,6 +4348,25 @@ func gateDefinitionContainsExecutableCommand(definitionJSON string) bool {
 		return false
 	}
 	return gateDefinitionsIncludeExecutableCommand(defs)
+}
+
+func validateRequiredGateDefinitionsForCLIClosure(defs []GateSetDefinition) error {
+	nonExecutableRequired := make([]string, 0)
+	for _, def := range defs {
+		if !def.Required {
+			continue
+		}
+		if gateCriteriaCommand(def.Criteria) == "" {
+			nonExecutableRequired = append(nonExecutableRequired, def.GateID)
+		}
+	}
+	if len(nonExecutableRequired) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"required gate(s) lack executable criteria.command and cannot be closed through the CLI: %s",
+		strings.Join(nonExecutableRequired, ", "),
+	)
 }
 
 func gateCriteriaCommand(criteria any) string {

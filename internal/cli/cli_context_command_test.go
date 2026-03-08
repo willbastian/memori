@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"testing"
+
+	"memori/internal/store"
 )
 
 type contextCheckpointEnvelope struct {
@@ -109,20 +111,22 @@ func TestContextCheckpointPacketAndRehydrateCommands(t *testing.T) {
 		t.Fatalf("issue update inprogress: %v\nstderr: %s", err, stderr)
 	}
 
-	gateDefPath := filepath.Join(t.TempDir(), "context-gates.json")
-	if err := os.WriteFile(gateDefPath, []byte(`{"gates":[{"id":"build","kind":"check","required":true}]}`), 0o644); err != nil {
-		t.Fatalf("write gate template file: %v", err)
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
 	}
-	if _, stderr, err := runMemoriForTest(
-		"gate", "template", "create",
-		"--db", dbPath,
-		"--id", "context-ci",
-		"--version", "1",
-		"--applies-to", "task",
-		"--file", gateDefPath,
-		"--json",
-	); err != nil {
-		t.Fatalf("gate template create: %v\nstderr: %s", err, stderr)
+	if _, _, err := s.CreateGateTemplate(context.Background(), store.CreateGateTemplateParams{
+		TemplateID:     "context-ci",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"echo context-ci"}}]}`,
+		Actor:          "human:alice",
+		CommandID:      "cmd-cli-context-template-1",
+	}); err != nil {
+		t.Fatalf("create gate template via store: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
 	}
 	if _, stderr, err := runMemoriForTest(
 		"gate", "set", "instantiate",

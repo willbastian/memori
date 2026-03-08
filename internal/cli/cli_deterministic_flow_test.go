@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"memori/internal/store"
 )
 
 func TestDeterministicReplayJSONAndRehydrateContinuity(t *testing.T) {
@@ -48,26 +50,29 @@ func TestDeterministicReplayJSONAndRehydrateContinuity(t *testing.T) {
 		"--json",
 	)
 
-	gateDefPath := filepath.Join(t.TempDir(), "deterministic-gates.json")
-	if err := os.WriteFile(gateDefPath, []byte(`{"gates":[{"id":"build","kind":"check","required":true}]}`), 0o644); err != nil {
-		t.Fatalf("write gate template file: %v", err)
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
 	}
-	run("gate", "template", "create",
-		"--db", dbPath,
-		"--id", "deterministic",
-		"--version", "1",
-		"--applies-to", "task",
-		"--file", gateDefPath,
-		"--json",
-	)
+	if _, _, err := s.CreateGateTemplate(context.Background(), store.CreateGateTemplateParams{
+		TemplateID:     "deterministic",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"echo deterministic"}}]}`,
+		Actor:          "human:alice",
+		CommandID:      "cmd-det-template-1",
+	}); err != nil {
+		t.Fatalf("create deterministic gate template via store: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
 	run("gate", "set", "instantiate", "--db", dbPath, "--issue", "mem-d111111", "--template", "deterministic@1", "--json")
 	run("gate", "set", "lock", "--db", dbPath, "--issue", "mem-d111111", "--json")
-	run("gate", "evaluate",
+	run("gate", "verify",
 		"--db", dbPath,
 		"--issue", "mem-d111111",
 		"--gate", "build",
-		"--result", "PASS",
-		"--evidence", "ci://deterministic/1",
 		"--command-id", "cmd-det-gate-eval-1",
 		"--json",
 	)

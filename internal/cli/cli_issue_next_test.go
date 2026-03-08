@@ -131,7 +131,7 @@ func TestIssueNextPrefersContinuitySignalsForAgentResume(t *testing.T) {
 	createIssue("mem-b555555", "task", "Continuity-heavy task", "test", "cmd-next-cont-create-2")
 	updateStatus("mem-a444444", "inprogress", "test", "cmd-next-cont-progress-1")
 
-	definitionJSON := `{"gates":[{"id":"build","kind":"check","required":true}]}`
+	definitionJSON := `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"echo resume-quality"}}]}`
 	if _, _, err := s.CreateGateTemplate(ctx, store.CreateGateTemplateParams{
 		TemplateID:     "resume-quality",
 		Version:        1,

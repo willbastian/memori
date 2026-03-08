@@ -70,7 +70,7 @@ func TestGateTemplateCreateListInstantiateAndLockFlow(t *testing.T) {
 	}
 
 	defPath := filepath.Join(t.TempDir(), "quality-gates.json")
-	definition := `{"gates":[{"id":"build","kind":"check","required":true},{"id":"lint","kind":"check","required":false}]}`
+	definition := `{"gates":[{"id":"build","kind":"check","required":false,"criteria":{"ref":"manual-build"}},{"id":"lint","kind":"check","required":false,"criteria":{"ref":"manual-lint"}}]}`
 	if err := os.WriteFile(defPath, []byte(definition), 0o644); err != nil {
 		t.Fatalf("write template definition file: %v", err)
 	}

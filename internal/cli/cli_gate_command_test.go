@@ -55,7 +55,7 @@ func TestGateEvaluateAndStatusJSON(t *testing.T) {
 		"--db", dbPath,
 		"--issue", "mem-c111111",
 		"--gate", "build",
-		"--result", "pass",
+		"--result", "fail",
 		"--evidence", "ci://run/123",
 		"--command-id", "cmd-cli-gate-eval-1",
 		"--json",
@@ -75,8 +75,8 @@ func TestGateEvaluateAndStatusJSON(t *testing.T) {
 	if evalResp.Data.Idempotent {
 		t.Fatalf("expected first gate evaluation to be non-idempotent")
 	}
-	if evalResp.Data.Evaluation.Result != "PASS" {
-		t.Fatalf("expected normalized PASS result, got %q", evalResp.Data.Evaluation.Result)
+	if evalResp.Data.Evaluation.Result != "FAIL" {
+		t.Fatalf("expected normalized FAIL result, got %q", evalResp.Data.Evaluation.Result)
 	}
 
 	stdout, stderr, err = runMemoriForTest(
@@ -113,11 +113,31 @@ func TestGateEvaluateAndStatusJSON(t *testing.T) {
 			lintResult = gate.Result
 		}
 	}
-	if buildResult != "PASS" {
-		t.Fatalf("expected build gate PASS, got %q", buildResult)
+	if buildResult != "FAIL" {
+		t.Fatalf("expected build gate FAIL, got %q", buildResult)
 	}
 	if lintResult != "MISSING" {
 		t.Fatalf("expected lint gate MISSING, got %q", lintResult)
+	}
+}
+
+func TestGateEvaluateRejectsPASSForExecutableGate(t *testing.T) {
+	t.Parallel()
+
+	dbPath := seedGateCommandTestDB(t)
+
+	_, _, err := runMemoriForTest(
+		"gate", "evaluate",
+		"--db", dbPath,
+		"--issue", "mem-c111111",
+		"--gate", "build",
+		"--result", "PASS",
+		"--evidence", "ci://run/pass-without-proof",
+		"--command-id", "cmd-cli-gate-eval-pass-without-proof-1",
+		"--json",
+	)
+	if err == nil || !strings.Contains(err.Error(), "use memori gate verify") {
+		t.Fatalf("expected executable PASS rejection directing user to gate verify, got: %v", err)
 	}
 }
 

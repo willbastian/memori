@@ -2162,6 +2162,52 @@ func TestApproveGateTemplateAllowsAgentAuthoredExecutableTemplateAfterHumanAppro
 	}
 }
 
+func TestInstantiateGateSetRejectsRequiredNonExecutableTemplate(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-5878787"
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Manual required gate instantiate test",
+		Actor:     "human:alice",
+		CommandID: "cmd-gate-manual-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "human:alice",
+		CommandID: "cmd-gate-manual-progress-1",
+	}); err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+	if _, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "manual-required",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"review","kind":"check","required":true,"criteria":{"ref":"manual-review"}}]}`,
+		Actor:          "human:alice",
+		CommandID:      "cmd-gate-manual-template-1",
+	}); err != nil {
+		t.Fatalf("create manual gate template: %v", err)
+	}
+
+	_, _, err := s.InstantiateGateSet(ctx, InstantiateGateSetParams{
+		IssueID:      issueID,
+		TemplateRefs: []string{"manual-required@1"},
+		Actor:        "human:alice",
+		CommandID:    "cmd-gate-manual-instantiate-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "required gate(s) lack executable criteria.command") {
+		t.Fatalf("expected required non-executable gate rejection, got: %v", err)
+	}
+}
+
 func TestLookupGateVerificationSpecRejectsExecutableCommandFromNonHumanTemplate(t *testing.T) {
 	t.Parallel()
 
@@ -2590,13 +2636,13 @@ func TestNextIssuePrefersContinuitySignalsForAgentResume(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create continuity issue: %v", err)
 	}
-	definition := `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"ref":"ci"}}]}`
+	definition := `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"echo continuity"}}]}`
 	if _, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
 		TemplateID:     "next-continuity",
 		Version:        1,
 		AppliesTo:      []string{"task"},
 		DefinitionJSON: definition,
-		Actor:          "agent-1",
+		Actor:          "human:alice",
 		CommandID:      "cmd-next-template-1",
 	}); err != nil {
 		t.Fatalf("create continuity gate template: %v", err)
@@ -3132,13 +3178,13 @@ func createLockedGateSetEventSourcedForTest(t *testing.T, s *Store, issueID, tem
 	t.Helper()
 
 	ctx := context.Background()
-	definition := fmt.Sprintf(`{"gates":[{"id":%q,"kind":"check","required":true,"criteria":{"ref":"test"}}]}`, gateID)
+	definition := fmt.Sprintf(`{"gates":[{"id":%q,"kind":"check","required":true,"criteria":{"command":"echo verified"}}]}`, gateID)
 	if _, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
 		TemplateID:     templateID,
 		Version:        1,
 		AppliesTo:      []string{"task"},
 		DefinitionJSON: definition,
-		Actor:          "agent-1",
+		Actor:          "human:alice",
 		CommandID:      commandPrefix + "-template-1",
 	}); err != nil {
 		t.Fatalf("create event-sourced gate template %s@1: %v", templateID, err)
