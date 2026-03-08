@@ -18,9 +18,9 @@ import (
 	"strings"
 	"time"
 
-	"memori/internal/dbschema"
-	"memori/internal/provenance"
-	"memori/internal/store"
+	"github.com/willbastian/memori/internal/dbschema"
+	"github.com/willbastian/memori/internal/provenance"
+	"github.com/willbastian/memori/internal/store"
 )
 
 const responseSchemaVersion = 1

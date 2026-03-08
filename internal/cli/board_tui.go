@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"memori/internal/store"
+	"github.com/willbastian/memori/internal/store"
 )
 
 type boardLane int

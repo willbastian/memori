@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"memori/internal/dbschema"
+	"github.com/willbastian/memori/internal/dbschema"
 )
 
 func TestCreateIssueIdempotencyByActorAndCommandID(t *testing.T) {

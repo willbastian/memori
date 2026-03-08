@@ -57,7 +57,28 @@ memori is already useful for local workflow design and disciplined execution, bu
 Prerequisites:
 
 - Go 1.25+
-- a local checkout of this repository
+- access to `github.com/willbastian/memori`
+
+Public module path:
+
+```text
+github.com/willbastian/memori
+```
+
+Install the CLI from source without cloning the repository:
+
+```bash
+go install github.com/willbastian/memori/cmd/memori@latest
+memori help
+```
+
+If you want the current branch directly instead of the latest resolved module version, use:
+
+```bash
+go install github.com/willbastian/memori/cmd/memori@main
+```
+
+Or run from a local checkout:
 
 Run directly from source:
 

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"memori/internal/provenance"
-	"memori/internal/store"
+	"github.com/willbastian/memori/internal/provenance"
+	"github.com/willbastian/memori/internal/store"
 )
 
 func TestResolveMutationIdentityRequiresConfiguredHumanAuth(t *testing.T) {

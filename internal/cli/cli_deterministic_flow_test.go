@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"memori/internal/store"
+	"github.com/willbastian/memori/internal/store"
 )
 
 func TestDeterministicReplayJSONAndRehydrateContinuity(t *testing.T) {

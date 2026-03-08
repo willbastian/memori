@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"memori/internal/store"
+	"github.com/willbastian/memori/internal/store"
 )
 
 func TestBoardTUIReduceNavigationAndDetailToggle(t *testing.T) {

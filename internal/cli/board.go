@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"memori/internal/store"
+	"github.com/willbastian/memori/internal/store"
 )
 
 type boardData struct {

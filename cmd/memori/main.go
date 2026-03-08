@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"memori/internal/cli"
+	"github.com/willbastian/memori/internal/cli"
 )
 
 func main() {

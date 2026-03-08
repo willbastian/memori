@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"memori/internal/dbschema"
+	"github.com/willbastian/memori/internal/dbschema"
 
 	_ "modernc.org/sqlite"
 )

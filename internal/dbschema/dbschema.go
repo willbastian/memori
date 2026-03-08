@@ -652,7 +652,7 @@ func syncMigrationAudit(ctx context.Context, db *sql.DB) error {
 				duration_ms=excluded.duration_ms,
 				success=excluded.success,
 				error_message=NULL
-		`, item.version, definition.Name, definition.Checksum, item.appliedAt, "memori/dbschema", 0); err != nil {
+		`, item.version, definition.Name, definition.Checksum, item.appliedAt, "github.com/willbastian/memori/internal/dbschema", 0); err != nil {
 			return fmt.Errorf("upsert migration audit for version %d: %w", item.version, err)
 		}
 	}

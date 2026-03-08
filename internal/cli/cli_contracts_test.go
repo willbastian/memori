@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"memori/internal/store"
+	"github.com/willbastian/memori/internal/store"
 )
 
 type mutationEventEnvelope struct {

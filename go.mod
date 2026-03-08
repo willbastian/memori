@@ -1,4 +1,4 @@
-module memori
+module github.com/willbastian/memori
 
 go 1.25.0
 

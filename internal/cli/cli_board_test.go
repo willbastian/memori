@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"memori/internal/store"
+	"github.com/willbastian/memori/internal/store"
 )
 
 type boardEnvelope struct {
