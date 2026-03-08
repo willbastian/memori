@@ -2484,6 +2484,147 @@ func TestLookupGateVerificationSpecReturnsLockedCriteriaCommand(t *testing.T) {
 	}
 }
 
+func TestLookupGateVerificationSpecGovernanceFallbacksAndDrift(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	t.Run("legacy human created gate set without template refs is allowed", func(t *testing.T) {
+		t.Parallel()
+
+		s := newTestStore(t)
+		issueID := "mem-5787878"
+		if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+			IssueID:   issueID,
+			Type:      "task",
+			Title:     "Legacy gate set provenance",
+			Actor:     "agent-1",
+			CommandID: "cmd-gate-verify-legacy-create-1",
+		}); err != nil {
+			t.Fatalf("create issue: %v", err)
+		}
+		seedLockedGateSetWithProvenanceForTest(
+			t,
+			s,
+			issueID,
+			"gs_verify_legacy_1",
+			`[]`,
+			`{"gates":[{"id":"build","criteria":{"command":"go test ./..."}}]}`,
+			"human:alice",
+		)
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO gate_set_items(gate_set_id, gate_id, kind, required, criteria_json)
+			VALUES(?, ?, ?, ?, ?)
+		`, "gs_verify_legacy_1", "build", "check", 1, `{"command":"go test ./..."}`); err != nil {
+			t.Fatalf("insert legacy gate_set_item: %v", err)
+		}
+
+		spec, err := s.LookupGateVerificationSpec(ctx, issueID, "build")
+		if err != nil {
+			t.Fatalf("lookup gate verification spec: %v", err)
+		}
+		if spec.GateSetID != "gs_verify_legacy_1" || spec.Command != "go test ./..." {
+			t.Fatalf("unexpected verification spec: %#v", spec)
+		}
+	})
+
+	t.Run("missing or drifted template provenance is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		cases := []struct {
+			name             string
+			gateSetID        string
+			templateRefsJSON string
+			createdBy        string
+			setup            func(t *testing.T, s *Store)
+			criteriaJSON     string
+			wantErr          string
+		}{
+			{
+				name:             "no refs non human creator",
+				gateSetID:        "gs_verify_missing_refs",
+				templateRefsJSON: `[]`,
+				createdBy:        "llm:openai:gpt-5",
+				criteriaJSON:     `{"command":"go test ./..."}`,
+				wantErr:          "without approved template provenance",
+			},
+			{
+				name:             "missing template row",
+				gateSetID:        "gs_verify_missing_template",
+				templateRefsJSON: `["missing@1"]`,
+				createdBy:        "agent-1",
+				criteriaJSON:     `{"command":"go test ./..."}`,
+				wantErr:          "references missing template missing@1",
+			},
+			{
+				name:             "command mismatch from approved template",
+				gateSetID:        "gs_verify_command_mismatch",
+				templateRefsJSON: `["tmpl-default@1"]`,
+				createdBy:        "agent-1",
+				setup: func(t *testing.T, s *Store) {
+					t.Helper()
+					seedGateTemplateRowForTest(t, s, "tmpl-default", 1, []string{"Task"}, `{"gates":[{"id":"build","criteria":{"command":"go test ./..."}}]}`, "human:alice")
+				},
+				criteriaJSON: `{"command":"go test ./internal/store"}`,
+				wantErr:      "command does not match approved template provenance",
+			},
+			{
+				name:             "existing but unapproved executable template",
+				gateSetID:        "gs_verify_unapproved_template",
+				templateRefsJSON: `["tmpl-pending@1"]`,
+				createdBy:        "agent-1",
+				setup: func(t *testing.T, s *Store) {
+					t.Helper()
+					seedGateTemplateRowForTest(t, s, "tmpl-pending", 1, []string{"Task"}, `{"gates":[{"id":"build","criteria":{"command":"go test ./..."}}]}`, "llm:openai:gpt-5")
+				},
+				criteriaJSON: `{"command":"go test ./..."}`,
+				wantErr:      "uses executable criteria.command from unapproved template tmpl-pending@1",
+			},
+		}
+
+		for _, tc := range cases {
+			tc := tc
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				s := newTestStore(t)
+				issueID := "mem-5797979"
+				if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+					IssueID:   issueID,
+					Type:      "task",
+					Title:     "Gate provenance drift",
+					Actor:     "agent-1",
+					CommandID: "cmd-gate-verify-drift-create-" + tc.gateSetID,
+				}); err != nil {
+					t.Fatalf("create issue: %v", err)
+				}
+				if tc.setup != nil {
+					tc.setup(t, s)
+				}
+				seedLockedGateSetWithProvenanceForTest(
+					t,
+					s,
+					issueID,
+					tc.gateSetID,
+					tc.templateRefsJSON,
+					`{"gates":[{"id":"build","criteria":{"command":"go test ./..."}}]}`,
+					tc.createdBy,
+				)
+				if _, err := s.db.ExecContext(ctx, `
+					INSERT INTO gate_set_items(gate_set_id, gate_id, kind, required, criteria_json)
+					VALUES(?, ?, ?, ?, ?)
+				`, tc.gateSetID, "build", "check", 1, tc.criteriaJSON); err != nil {
+					t.Fatalf("insert gate_set_item: %v", err)
+				}
+
+				if _, err := s.LookupGateVerificationSpec(ctx, issueID, "build"); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected verification governance error %q, got %v", tc.wantErr, err)
+				}
+			})
+		}
+	})
+}
+
 func TestInstantiateGateSetRejectsExecutableTemplateWithoutHumanGovernance(t *testing.T) {
 	t.Parallel()
 
@@ -4201,13 +4342,19 @@ func newTestStoreWithPrefix(t *testing.T, prefix string) *Store {
 func seedLockedGateSetForTest(t *testing.T, s *Store, issueID, gateSetID string) {
 	t.Helper()
 
+	seedLockedGateSetWithProvenanceForTest(t, s, issueID, gateSetID, `["tmpl-default@1"]`, `{"gates":[{"id":"build"}]}`, "agent-1")
+}
+
+func seedLockedGateSetWithProvenanceForTest(t *testing.T, s *Store, issueID, gateSetID, templateRefsJSON, frozenDefinitionJSON, createdBy string) {
+	t.Helper()
+
 	ctx := context.Background()
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO gate_sets(
 			gate_set_id, issue_id, cycle_no, template_refs_json, frozen_definition_json,
 			gate_set_hash, locked_at, created_at, created_by
 		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, gateSetID, issueID, 1, `["tmpl-default@1"]`, `{"gates":[{"id":"build"}]}`, gateSetID+"_hash", nowUTC(), nowUTC(), "agent-1")
+	`, gateSetID, issueID, 1, templateRefsJSON, frozenDefinitionJSON, gateSetID+"_hash", nowUTC(), nowUTC(), createdBy)
 	if err != nil {
 		t.Fatalf("insert locked gate set %s: %v", gateSetID, err)
 	}

@@ -376,6 +376,126 @@ func TestGateTemplateApproveEnablesExecutableTemplateInstantiation(t *testing.T)
 	}
 }
 
+func TestGateTemplateTextFlowsCoverCreateListAndApproveMessages(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-gate-template-text.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+
+	defPath := filepath.Join(t.TempDir(), "approval-text-gates.json")
+	definition := `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}}]}`
+	if err := os.WriteFile(defPath, []byte(definition), 0o644); err != nil {
+		t.Fatalf("write template definition file: %v", err)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"gate", "template", "create",
+		"--db", dbPath,
+		"--id", "approval-text",
+		"--version", "1",
+		"--applies-to", "task",
+		"--file", defPath,
+		"--command-id", "cmd-cli-gtemplate-text-create-1",
+	)
+	if err != nil {
+		t.Fatalf("gate template create text: %v\nstderr: %s", err, stderr)
+	}
+	for _, want := range []string{
+		"Created gate template approval-text@1",
+		"Applies To: Task",
+		"Definition Hash:",
+		"Approval: pending human approval before instantiate/verify",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected create output to contain %q, got:\n%s", want, stdout)
+		}
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"gate", "template", "create",
+		"--db", dbPath,
+		"--id", "approval-text",
+		"--version", "1",
+		"--applies-to", "task",
+		"--file", defPath,
+		"--command-id", "cmd-cli-gtemplate-text-create-1",
+	)
+	if err != nil {
+		t.Fatalf("gate template idempotent create text: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "Gate template approval-text@1 already exists.") {
+		t.Fatalf("expected idempotent create output, got:\n%s", stdout)
+	}
+
+	stdout, stderr, err = runMemoriForTest("gate", "template", "list", "--db", dbPath, "--type", "bug")
+	if err != nil {
+		t.Fatalf("gate template empty list text: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "No gate templates matched.") {
+		t.Fatalf("expected empty list message, got:\n%s", stdout)
+	}
+
+	stdout, stderr, err = runMemoriForTest("gate", "template", "list", "--db", dbPath, "--type", "task")
+	if err != nil {
+		t.Fatalf("gate template list text: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "- approval-text@1 applies_to=Task hash=") {
+		t.Fatalf("expected task list output, got:\n%s", stdout)
+	}
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	seedCLIHumanCredential(t, s, "correct horse battery")
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	t.Setenv("MEMORI_PRINCIPAL", "human")
+	originalPrompter := passwordPrompter
+	passwordPrompter = func(string) (string, error) {
+		return "correct horse battery", nil
+	}
+	defer func() {
+		passwordPrompter = originalPrompter
+	}()
+
+	stdout, stderr, err = runMemoriForTest(
+		"gate", "template", "approve",
+		"--db", dbPath,
+		"--id", "approval-text",
+		"--version", "1",
+		"--command-id", "cmd-cli-gtemplate-text-approve-1",
+	)
+	if err != nil {
+		t.Fatalf("gate template approve text: %v\nstderr: %s", err, stderr)
+	}
+	for _, want := range []string{
+		"Approved gate template approval-text@1",
+		"Approved By: human:",
+		"Approved At:",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected approve output to contain %q, got:\n%s", want, stdout)
+		}
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"gate", "template", "approve",
+		"--db", dbPath,
+		"--id", "approval-text",
+		"--version", "1",
+		"--command-id", "cmd-cli-gtemplate-text-approve-2",
+	)
+	if err != nil {
+		t.Fatalf("gate template already-approved text: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "Gate template approval-text@1 is already approved.") {
+		t.Fatalf("expected already-approved output, got:\n%s", stdout)
+	}
+}
+
 func TestGateTemplatePendingListsPendingExecutableTemplates(t *testing.T) {
 	t.Parallel()
 
