@@ -1577,6 +1577,194 @@ func TestGateCommandRetriesReapplyMissingProjectionsFromEvents(t *testing.T) {
 	}
 }
 
+func TestApproveGateTemplateRetryFailsWhenTemplateProjectionIsMissing(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	template, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "approval-missing-template",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}}]}`,
+		Actor:          "llm:openai:gpt-5",
+		CommandID:      "cmd-approval-missing-template-create-1",
+	})
+	if err != nil {
+		t.Fatalf("create executable template: %v", err)
+	}
+
+	if _, _, err := s.ApproveGateTemplate(ctx, ApproveGateTemplateParams{
+		TemplateID: template.TemplateID,
+		Version:    template.Version,
+		Actor:      "human:alice",
+		CommandID:  "cmd-approval-missing-template-approve-1",
+	}); err != nil {
+		t.Fatalf("approve executable template: %v", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin projection cleanup tx: %v", err)
+	}
+	if err := dropReplayProjectionDeleteTriggersTx(ctx, tx); err != nil {
+		t.Fatalf("drop replay delete triggers: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM gate_template_approvals WHERE template_id = ? AND version = ?`, template.TemplateID, template.Version); err != nil {
+		t.Fatalf("delete gate template approval projection: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM gate_templates WHERE template_id = ? AND version = ?`, template.TemplateID, template.Version); err != nil {
+		t.Fatalf("delete gate template projection: %v", err)
+	}
+	if err := restoreReplayProjectionDeleteTriggersTx(ctx, tx); err != nil {
+		t.Fatalf("restore replay delete triggers: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit projection cleanup tx: %v", err)
+	}
+
+	if _, _, err := s.ApproveGateTemplate(ctx, ApproveGateTemplateParams{
+		TemplateID: template.TemplateID,
+		Version:    template.Version,
+		Actor:      "human:alice",
+		CommandID:  "cmd-approval-missing-template-approve-1",
+	}); err == nil || !strings.Contains(err.Error(), `template approval-missing-template@1 not found`) {
+		t.Fatalf("expected approval replay to fail without template projection, got %v", err)
+	}
+}
+
+func TestLockGateSetRetryFailsWhenGateSetProjectionIsMissing(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   "mem-c0ffee1",
+		Type:      "task",
+		Title:     "Lock retry missing projection",
+		Actor:     "agent-1",
+		CommandID: "cmd-lock-missing-projection-issue-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+
+	template, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "lock-missing-projection",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"docs","kind":"check","required":true,"criteria":{"ref":"manual-validation"}}]}`,
+		Actor:          "agent-1",
+		CommandID:      "cmd-lock-missing-projection-template-1",
+	})
+	if err != nil {
+		t.Fatalf("create template: %v", err)
+	}
+
+	gateSet, _, err := s.InstantiateGateSet(ctx, InstantiateGateSetParams{
+		IssueID:      "mem-c0ffee1",
+		TemplateRefs: []string{template.TemplateID + "@1"},
+		Actor:        "agent-1",
+		CommandID:    "cmd-lock-missing-projection-instantiate-1",
+	})
+	if err != nil {
+		t.Fatalf("instantiate gate set: %v", err)
+	}
+
+	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{
+		IssueID:   "mem-c0ffee1",
+		Actor:     "agent-1",
+		CommandID: "cmd-lock-missing-projection-lock-1",
+	}); err != nil {
+		t.Fatalf("lock gate set: %v", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin gate set cleanup tx: %v", err)
+	}
+	if err := dropReplayProjectionDeleteTriggersTx(ctx, tx); err != nil {
+		t.Fatalf("drop replay delete triggers: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM gate_set_items WHERE gate_set_id = ?`, gateSet.GateSetID); err != nil {
+		t.Fatalf("delete gate set items projection: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM gate_sets WHERE gate_set_id = ?`, gateSet.GateSetID); err != nil {
+		t.Fatalf("delete gate set projection: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE work_items SET active_gate_set_id = NULL WHERE id = ?`, "mem-c0ffee1"); err != nil {
+		t.Fatalf("clear active gate set reference: %v", err)
+	}
+	if err := restoreReplayProjectionDeleteTriggersTx(ctx, tx); err != nil {
+		t.Fatalf("restore replay delete triggers: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit gate set cleanup tx: %v", err)
+	}
+
+	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{
+		IssueID:   "mem-c0ffee1",
+		Actor:     "agent-1",
+		CommandID: "cmd-lock-missing-projection-lock-1",
+	}); err == nil || !strings.Contains(err.Error(), `gate set "`+gateSet.GateSetID+`" not found`) {
+		t.Fatalf("expected lock replay to fail without gate set projection, got %v", err)
+	}
+}
+
+func TestReplayProjectionsRestoresImmutableDeleteTriggers(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   "mem-d00df00",
+		Type:      "task",
+		Title:     "Replay restore delete guards",
+		Actor:     "agent-1",
+		CommandID: "cmd-replay-delete-guards-issue-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+
+	template, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "replay-delete-guards",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"docs","kind":"check","required":true,"criteria":{"ref":"manual-validation"}}]}`,
+		Actor:          "agent-1",
+		CommandID:      "cmd-replay-delete-guards-template-1",
+	})
+	if err != nil {
+		t.Fatalf("create template: %v", err)
+	}
+
+	gateSet, _, err := s.InstantiateGateSet(ctx, InstantiateGateSetParams{
+		IssueID:      "mem-d00df00",
+		TemplateRefs: []string{template.TemplateID + "@1"},
+		Actor:        "agent-1",
+		CommandID:    "cmd-replay-delete-guards-instantiate-1",
+	})
+	if err != nil {
+		t.Fatalf("instantiate gate set: %v", err)
+	}
+
+	if _, err := s.ReplayProjections(ctx); err != nil {
+		t.Fatalf("replay projections: %v", err)
+	}
+
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM gate_templates WHERE template_id = ? AND version = ?`, template.TemplateID, template.Version); err == nil || !strings.Contains(err.Error(), "gate_templates are immutable") {
+		t.Fatalf("expected gate_templates delete guard after replay, got %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM gate_sets WHERE gate_set_id = ?`, gateSet.GateSetID); err == nil || !strings.Contains(err.Error(), "gate_sets are immutable") {
+		t.Fatalf("expected gate_sets delete guard after replay, got %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM gate_set_items WHERE gate_set_id = ?`, gateSet.GateSetID); err == nil || !strings.Contains(err.Error(), "gate_set_items are immutable") {
+		t.Fatalf("expected gate_set_items delete guard after replay, got %v", err)
+	}
+}
+
 func appendStoreEventForTest(t *testing.T, s *Store, entityType, entityID, eventType string, payload any, actor, commandID, correlationID string) {
 	t.Helper()
 
