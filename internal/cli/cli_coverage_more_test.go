@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -63,6 +64,55 @@ func TestRunAuthDispatchesStatusAndRejectsInvalidSubcommands(t *testing.T) {
 
 	if err := runAuth([]string{"rotate"}, io.Discard); err == nil || !strings.Contains(err.Error(), `unknown auth subcommand "rotate"`) {
 		t.Fatalf("expected unknown auth subcommand error, got %v", err)
+	}
+}
+
+func TestRunHelpJSONListsMachineReadableCommands(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	if err := runHelp([]string{"--json"}, &out); err != nil {
+		t.Fatalf("run help json: %v", err)
+	}
+
+	var resp struct {
+		ResponseSchemaVersion int    `json:"response_schema_version"`
+		DBSchemaVersion       int    `json:"db_schema_version"`
+		Command               string `json:"command"`
+		Data                  struct {
+			Commands []string `json:"commands"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("decode help json: %v\nstdout: %s", err, out.String())
+	}
+	if resp.ResponseSchemaVersion != responseSchemaVersion {
+		t.Fatalf("expected response schema version %d, got %d", responseSchemaVersion, resp.ResponseSchemaVersion)
+	}
+	if resp.DBSchemaVersion != 0 || resp.Command != "help" {
+		t.Fatalf("unexpected help envelope metadata: %+v", resp)
+	}
+	if len(resp.Data.Commands) == 0 {
+		t.Fatal("expected help json to list commands")
+	}
+	for _, want := range []string{
+		"memori auth status [--db <path>] [--json]",
+		"memori gate template create --id <template-id> --version <n> --applies-to epic|story|task|bug [--applies-to ...] --file <path> [--actor <actor>] [--command-id <id>] [--json]",
+		"memori db replay [--json]",
+	} {
+		found := false
+		for _, command := range resp.Data.Commands {
+			if command == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected help json commands to include %q, got %#v", want, resp.Data.Commands)
+		}
+	}
+	if !sort.StringsAreSorted(resp.Data.Commands) {
+		t.Fatalf("expected help json commands to be sorted, got %#v", resp.Data.Commands)
 	}
 }
 
