@@ -32,16 +32,17 @@ const (
 	entityTypeGateTemplate = "gate_template"
 	entityTypeGateSet      = "gate_set"
 
-	eventTypeIssueCreate        = "issue.created"
-	eventTypeIssueUpdate        = "issue.updated"
-	eventTypeIssueLink          = "issue.linked"
-	eventTypeGateEval           = "gate.evaluated"
-	eventTypeSessionCheckpoint  = "session.checkpointed"
-	eventTypePacketBuilt        = "packet.built"
-	eventTypeFocusUsed          = "focus.used"
-	eventTypeGateTemplateCreate = "gate_template.created"
-	eventTypeGateSetCreate      = "gate_set.instantiated"
-	eventTypeGateSetLock        = "gate_set.locked"
+	eventTypeIssueCreate         = "issue.created"
+	eventTypeIssueUpdate         = "issue.updated"
+	eventTypeIssueLink           = "issue.linked"
+	eventTypeGateEval            = "gate.evaluated"
+	eventTypeSessionCheckpoint   = "session.checkpointed"
+	eventTypePacketBuilt         = "packet.built"
+	eventTypeFocusUsed           = "focus.used"
+	eventTypeGateTemplateCreate  = "gate_template.created"
+	eventTypeGateTemplateApprove = "gate_template.approved"
+	eventTypeGateSetCreate       = "gate_set.instantiated"
+	eventTypeGateSetLock         = "gate_set.locked"
 )
 
 type Store struct {
@@ -203,6 +204,13 @@ type CreateGateTemplateParams struct {
 	CommandID      string
 }
 
+type ApproveGateTemplateParams struct {
+	TemplateID string
+	Version    int
+	Actor      string
+	CommandID  string
+}
+
 type ListGateTemplatesParams struct {
 	IssueType string
 }
@@ -330,6 +338,14 @@ type gateTemplateCreatedPayload struct {
 	DefinitionHash string   `json:"definition_hash"`
 	CreatedAt      string   `json:"created_at"`
 	CreatedBy      string   `json:"created_by"`
+}
+
+type gateTemplateApprovedPayload struct {
+	TemplateID     string `json:"template_id"`
+	Version        int    `json:"version"`
+	DefinitionHash string `json:"definition_hash"`
+	ApprovedAt     string `json:"approved_at"`
+	ApprovedBy     string `json:"approved_by"`
 }
 
 type gateSetInstantiatedPayload struct {
@@ -471,6 +487,9 @@ type GateTemplate struct {
 	AppliesTo      []string `json:"applies_to"`
 	DefinitionJSON string   `json:"definition_json"`
 	DefinitionHash string   `json:"definition_hash"`
+	Executable     bool     `json:"executable"`
+	ApprovedAt     string   `json:"approved_at,omitempty"`
+	ApprovedBy     string   `json:"approved_by,omitempty"`
 	CreatedAt      string   `json:"created_at"`
 	CreatedBy      string   `json:"created_by"`
 }
@@ -2097,19 +2116,15 @@ func (s *Store) CreateGateTemplate(ctx context.Context, p CreateGateTemplatePara
 		existingAppliesToJSON string
 		existingDefinition    string
 		existingHash          string
-		existingCreatedAt     string
-		existingCreatedBy     string
 	)
 	err = tx.QueryRowContext(ctx, `
-		SELECT applies_to_json, definition_json, definition_hash, created_at, created_by
+		SELECT applies_to_json, definition_json, definition_hash
 		FROM gate_templates
 		WHERE template_id = ? AND version = ?
 	`, templateID, p.Version).Scan(
 		&existingAppliesToJSON,
 		&existingDefinition,
 		&existingHash,
-		&existingCreatedAt,
-		&existingCreatedBy,
 	)
 	if err == nil {
 		existingAppliesTo, parseErr := parseAppliesToJSON(existingAppliesToJSON)
@@ -2119,18 +2134,17 @@ func (s *Store) CreateGateTemplate(ctx context.Context, p CreateGateTemplatePara
 		if existingHash == definitionHash &&
 			existingDefinition == definitionJSON &&
 			equalStringSlices(existingAppliesTo, appliesTo) {
+			template, found, err := gateTemplateByIDVersionTx(ctx, tx, templateID, p.Version)
+			if err != nil {
+				return GateTemplate{}, false, err
+			}
+			if !found {
+				return GateTemplate{}, false, fmt.Errorf("gate template %s@%d not found after idempotent lookup", templateID, p.Version)
+			}
 			if err := tx.Commit(); err != nil {
 				return GateTemplate{}, false, fmt.Errorf("commit tx: %w", err)
 			}
-			return GateTemplate{
-				TemplateID:     templateID,
-				Version:        p.Version,
-				AppliesTo:      existingAppliesTo,
-				DefinitionJSON: existingDefinition,
-				DefinitionHash: existingHash,
-				CreatedAt:      existingCreatedAt,
-				CreatedBy:      existingCreatedBy,
-			}, true, nil
+			return template, true, nil
 		}
 		return GateTemplate{}, false, fmt.Errorf("template %s@%d already exists (create a new version to change it)", templateID, p.Version)
 	}
@@ -2189,6 +2203,128 @@ func (s *Store) CreateGateTemplate(ctx context.Context, p CreateGateTemplatePara
 	return template, appendRes.AlreadyExists, nil
 }
 
+func (s *Store) ApproveGateTemplate(ctx context.Context, p ApproveGateTemplateParams) (GateTemplate, bool, error) {
+	if p.Actor == "" {
+		p.Actor = defaultActor()
+	}
+	if strings.TrimSpace(p.CommandID) == "" {
+		return GateTemplate{}, false, errors.New("--command-id is required")
+	}
+	if !actorIsHumanGoverned(p.Actor) {
+		return GateTemplate{}, false, errors.New("executable gate template approval requires a human-governed actor")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return GateTemplate{}, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if existingEvent, found, err := findEventByActorCommandTx(ctx, tx, p.Actor, p.CommandID); err != nil {
+		return GateTemplate{}, false, err
+	} else if found {
+		if existingEvent.EventType != eventTypeGateTemplateApprove {
+			return GateTemplate{}, false, fmt.Errorf("command id already used by %q", existingEvent.EventType)
+		}
+		payload, err := decodeGateTemplateApprovedPayload(existingEvent.PayloadJSON)
+		if err != nil {
+			return GateTemplate{}, false, err
+		}
+		template, found, err := gateTemplateByIDVersionTx(ctx, tx, payload.TemplateID, payload.Version)
+		if err != nil {
+			return GateTemplate{}, false, err
+		}
+		if !found || !actorIsHumanGoverned(template.ApprovedBy) {
+			if err := applyGateTemplateApprovedProjectionTx(ctx, tx, existingEvent); err != nil {
+				return GateTemplate{}, false, err
+			}
+			template, found, err = gateTemplateByIDVersionTx(ctx, tx, payload.TemplateID, payload.Version)
+			if err != nil {
+				return GateTemplate{}, false, err
+			}
+			if !found {
+				return GateTemplate{}, false, fmt.Errorf("gate template %s@%d not found after replaying event %s", payload.TemplateID, payload.Version, existingEvent.EventID)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return GateTemplate{}, false, fmt.Errorf("commit tx: %w", err)
+		}
+		return template, true, nil
+	}
+
+	templateID, err := normalizeGateTemplateID(p.TemplateID)
+	if err != nil {
+		return GateTemplate{}, false, err
+	}
+	if p.Version <= 0 {
+		return GateTemplate{}, false, errors.New("--version must be > 0")
+	}
+
+	template, found, err := gateTemplateByIDVersionTx(ctx, tx, templateID, p.Version)
+	if err != nil {
+		return GateTemplate{}, false, err
+	}
+	if !found {
+		return GateTemplate{}, false, fmt.Errorf("gate template %s@%d not found", templateID, p.Version)
+	}
+	if !template.Executable {
+		return GateTemplate{}, false, fmt.Errorf("gate template %s@%d has no executable criteria.command and does not require approval", templateID, p.Version)
+	}
+	if actorIsHumanGoverned(template.ApprovedBy) {
+		if err := tx.Commit(); err != nil {
+			return GateTemplate{}, false, fmt.Errorf("commit tx: %w", err)
+		}
+		return template, true, nil
+	}
+
+	payload := gateTemplateApprovedPayload{
+		TemplateID:     templateID,
+		Version:        p.Version,
+		DefinitionHash: template.DefinitionHash,
+		ApprovedAt:     nowUTC(),
+		ApprovedBy:     p.Actor,
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return GateTemplate{}, false, fmt.Errorf("marshal payload: %w", err)
+	}
+
+	appendRes, err := s.appendEventTx(ctx, tx, appendEventRequest{
+		EntityType:          entityTypeGateTemplate,
+		EntityID:            gateTemplateEntityID(templateID, p.Version),
+		EventType:           eventTypeGateTemplateApprove,
+		PayloadJSON:         string(payloadBytes),
+		Actor:               p.Actor,
+		CommandID:           p.CommandID,
+		EventPayloadVersion: 1,
+	})
+	if err != nil {
+		return GateTemplate{}, false, err
+	}
+	if appendRes.Event.EventType != eventTypeGateTemplateApprove {
+		return GateTemplate{}, false, fmt.Errorf("command id already used by %q", appendRes.Event.EventType)
+	}
+
+	if !appendRes.AlreadyExists {
+		if err := applyGateTemplateApprovedProjectionTx(ctx, tx, appendRes.Event); err != nil {
+			return GateTemplate{}, false, err
+		}
+	}
+
+	template, found, err = gateTemplateByIDVersionTx(ctx, tx, templateID, p.Version)
+	if err != nil {
+		return GateTemplate{}, false, err
+	}
+	if !found {
+		return GateTemplate{}, false, fmt.Errorf("gate template %s@%d not found after approval", templateID, p.Version)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return GateTemplate{}, false, fmt.Errorf("commit tx: %w", err)
+	}
+	return template, appendRes.AlreadyExists, nil
+}
+
 func (s *Store) ListGateTemplates(ctx context.Context, p ListGateTemplatesParams) ([]GateTemplate, error) {
 	var issueTypeFilter string
 	if strings.TrimSpace(p.IssueType) != "" {
@@ -2200,9 +2336,14 @@ func (s *Store) ListGateTemplates(ctx context.Context, p ListGateTemplatesParams
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT template_id, version, applies_to_json, definition_json, definition_hash, created_at, created_by
+		SELECT t.template_id, t.version, t.applies_to_json, t.definition_json, t.definition_hash,
+			COALESCE(a.approved_at, ''), COALESCE(a.approved_by, ''), t.created_at, t.created_by
 		FROM gate_templates
-		ORDER BY template_id ASC, version ASC
+		AS t
+		LEFT JOIN gate_template_approvals AS a
+			ON a.template_id = t.template_id
+			AND a.version = t.version
+		ORDER BY t.template_id ASC, t.version ASC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("query gate_templates: %w", err)
@@ -2221,6 +2362,8 @@ func (s *Store) ListGateTemplates(ctx context.Context, p ListGateTemplatesParams
 			&appliesToJSON,
 			&template.DefinitionJSON,
 			&template.DefinitionHash,
+			&template.ApprovedAt,
+			&template.ApprovedBy,
 			&template.CreatedAt,
 			&template.CreatedBy,
 		); err != nil {
@@ -2234,6 +2377,7 @@ func (s *Store) ListGateTemplates(ctx context.Context, p ListGateTemplatesParams
 		if issueTypeFilter != "" && !stringSliceContains(appliesTo, issueTypeFilter) {
 			continue
 		}
+		template.Executable = gateDefinitionContainsExecutableCommand(template.DefinitionJSON)
 		templates = append(templates, template)
 	}
 	if err := rows.Err(); err != nil {
@@ -2803,6 +2947,9 @@ func (s *Store) ReplayProjections(ctx context.Context) (ReplayResult, error) {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM gate_sets`); err != nil {
 		return ReplayResult{}, fmt.Errorf("clear gate_sets: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM gate_template_approvals`); err != nil {
+		return ReplayResult{}, fmt.Errorf("clear gate_template_approvals: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM gate_templates`); err != nil {
 		return ReplayResult{}, fmt.Errorf("clear gate_templates: %w", err)
 	}
@@ -2887,6 +3034,8 @@ func applyEventProjectionTx(ctx context.Context, tx *sql.Tx, event Event) error 
 		return applyFocusUsedProjectionTx(ctx, tx, event)
 	case eventTypeGateTemplateCreate:
 		return applyGateTemplateCreatedProjectionTx(ctx, tx, event)
+	case eventTypeGateTemplateApprove:
+		return applyGateTemplateApprovedProjectionTx(ctx, tx, event)
 	case eventTypeGateSetCreate:
 		return applyGateSetInstantiatedProjectionTx(ctx, tx, event)
 	case eventTypeGateSetLock:
@@ -3267,10 +3416,50 @@ func applyGateTemplateCreatedProjectionTx(ctx context.Context, tx *sql.Tx, event
 		) VALUES(?, ?, ?, ?, ?, ?, ?)
 	`, payload.TemplateID, payload.Version, string(appliesToJSON), payload.DefinitionJSON, payload.DefinitionHash, payload.CreatedAt, payload.CreatedBy)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed: gate_templates.template_id, gate_templates.version") {
-			return nil
+		if !strings.Contains(err.Error(), "UNIQUE constraint failed: gate_templates.template_id, gate_templates.version") {
+			return fmt.Errorf("insert gate template from event %s: %w", event.EventID, err)
 		}
-		return fmt.Errorf("insert gate template from event %s: %w", event.EventID, err)
+	}
+	if gateDefinitionContainsExecutableCommand(payload.DefinitionJSON) && actorIsHumanGoverned(payload.CreatedBy) {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO gate_template_approvals(template_id, version, approved_at, approved_by)
+			VALUES(?, ?, ?, ?)
+			ON CONFLICT(template_id, version) DO NOTHING
+		`, payload.TemplateID, payload.Version, payload.CreatedAt, payload.CreatedBy); err != nil {
+			return fmt.Errorf("auto-approve gate template from event %s: %w", event.EventID, err)
+		}
+	}
+	return nil
+}
+
+func applyGateTemplateApprovedProjectionTx(ctx context.Context, tx *sql.Tx, event Event) error {
+	payload, err := decodeGateTemplateApprovedPayload(event.PayloadJSON)
+	if err != nil {
+		return fmt.Errorf("decode gate_template.approved payload for event %s: %w", event.EventID, err)
+	}
+
+	var currentDefinitionHash string
+	err = tx.QueryRowContext(ctx, `
+		SELECT definition_hash
+		FROM gate_templates
+		WHERE template_id = ? AND version = ?
+	`, payload.TemplateID, payload.Version).Scan(&currentDefinitionHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("approve gate template from event %s: template %s@%d not found", event.EventID, payload.TemplateID, payload.Version)
+	}
+	if err != nil {
+		return fmt.Errorf("lookup gate template for approval from event %s: %w", event.EventID, err)
+	}
+	if currentDefinitionHash != payload.DefinitionHash {
+		return fmt.Errorf("approve gate template from event %s: definition hash mismatch for %s@%d", event.EventID, payload.TemplateID, payload.Version)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO gate_template_approvals(template_id, version, approved_at, approved_by)
+		VALUES(?, ?, ?, ?)
+		ON CONFLICT(template_id, version) DO NOTHING
+	`, payload.TemplateID, payload.Version, payload.ApprovedAt, payload.ApprovedBy); err != nil {
+		return fmt.Errorf("approve gate template from event %s: %w", event.EventID, err)
 	}
 	return nil
 }
@@ -3776,6 +3965,35 @@ func decodeGateTemplateCreatedPayload(payloadJSON string) (gateTemplateCreatedPa
 	return payload, nil
 }
 
+func decodeGateTemplateApprovedPayload(payloadJSON string) (gateTemplateApprovedPayload, error) {
+	var payload gateTemplateApprovedPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return gateTemplateApprovedPayload{}, err
+	}
+	templateID, err := normalizeGateTemplateID(payload.TemplateID)
+	if err != nil {
+		return gateTemplateApprovedPayload{}, fmt.Errorf("invalid template_id: %w", err)
+	}
+	if payload.Version <= 0 {
+		return gateTemplateApprovedPayload{}, errors.New("version must be > 0")
+	}
+
+	payload.TemplateID = templateID
+	payload.DefinitionHash = strings.TrimSpace(payload.DefinitionHash)
+	payload.ApprovedAt = strings.TrimSpace(payload.ApprovedAt)
+	payload.ApprovedBy = strings.TrimSpace(payload.ApprovedBy)
+	if payload.DefinitionHash == "" {
+		return gateTemplateApprovedPayload{}, errors.New("definition_hash is required")
+	}
+	if payload.ApprovedAt == "" {
+		return gateTemplateApprovedPayload{}, errors.New("approved_at is required")
+	}
+	if !actorIsHumanGoverned(payload.ApprovedBy) {
+		return gateTemplateApprovedPayload{}, errors.New("approved_by must be human-governed")
+	}
+	return payload, nil
+}
+
 func decodeGateSetInstantiatedPayload(payloadJSON string) (gateSetInstantiatedPayload, error) {
 	var payload gateSetInstantiatedPayload
 	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
@@ -3971,13 +4189,16 @@ func buildGateSetDefinitionsTx(ctx context.Context, tx *sql.Tx, issueType string
 		var (
 			appliesToJSON  string
 			definitionJSON string
-			createdBy      string
+			approvedBy     string
 		)
 		err := tx.QueryRowContext(ctx, `
-			SELECT applies_to_json, definition_json, created_by
-			FROM gate_templates
-			WHERE template_id = ? AND version = ?
-		`, ref.TemplateID, ref.Version).Scan(&appliesToJSON, &definitionJSON, &createdBy)
+			SELECT t.applies_to_json, t.definition_json, COALESCE(a.approved_by, '')
+			FROM gate_templates AS t
+			LEFT JOIN gate_template_approvals AS a
+				ON a.template_id = t.template_id
+				AND a.version = t.version
+			WHERE t.template_id = ? AND t.version = ?
+		`, ref.TemplateID, ref.Version).Scan(&appliesToJSON, &definitionJSON, &approvedBy)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("gate template %s@%d not found", ref.TemplateID, ref.Version)
 		}
@@ -3997,8 +4218,8 @@ func buildGateSetDefinitionsTx(ctx context.Context, tx *sql.Tx, issueType string
 		if err != nil {
 			return nil, fmt.Errorf("invalid gate definition in template %s@%d: %w", ref.TemplateID, ref.Version, err)
 		}
-		if gateDefinitionsIncludeExecutableCommand(defs) && !actorIsHumanGoverned(createdBy) {
-			return nil, fmt.Errorf("gate template %s@%d contains executable criteria.command and is not human-governed", ref.TemplateID, ref.Version)
+		if gateDefinitionsIncludeExecutableCommand(defs) && !actorIsHumanGoverned(approvedBy) {
+			return nil, fmt.Errorf("gate template %s@%d contains executable criteria.command but is pending human approval", ref.TemplateID, ref.Version)
 		}
 		for _, gate := range defs {
 			if existing, exists := gatesByID[gate.GateID]; exists {
@@ -4086,6 +4307,14 @@ func gateDefinitionsIncludeExecutableCommand(defs []GateSetDefinition) bool {
 		}
 	}
 	return false
+}
+
+func gateDefinitionContainsExecutableCommand(definitionJSON string) bool {
+	defs, err := extractGateDefinitions(definitionJSON)
+	if err != nil {
+		return false
+	}
+	return gateDefinitionsIncludeExecutableCommand(defs)
 }
 
 func gateCriteriaCommand(criteria any) string {
@@ -4266,15 +4495,21 @@ func gateTemplateByIDVersionTx(ctx context.Context, tx *sql.Tx, templateID strin
 		appliesToJSON string
 	)
 	err := tx.QueryRowContext(ctx, `
-		SELECT template_id, version, applies_to_json, definition_json, definition_hash, created_at, created_by
-		FROM gate_templates
-		WHERE template_id = ? AND version = ?
+		SELECT t.template_id, t.version, t.applies_to_json, t.definition_json, t.definition_hash,
+			COALESCE(a.approved_at, ''), COALESCE(a.approved_by, ''), t.created_at, t.created_by
+		FROM gate_templates AS t
+		LEFT JOIN gate_template_approvals AS a
+			ON a.template_id = t.template_id
+			AND a.version = t.version
+		WHERE t.template_id = ? AND t.version = ?
 	`, templateID, version).Scan(
 		&template.TemplateID,
 		&template.Version,
 		&appliesToJSON,
 		&template.DefinitionJSON,
 		&template.DefinitionHash,
+		&template.ApprovedAt,
+		&template.ApprovedBy,
 		&template.CreatedAt,
 		&template.CreatedBy,
 	)
@@ -4289,6 +4524,7 @@ func gateTemplateByIDVersionTx(ctx context.Context, tx *sql.Tx, templateID strin
 		return GateTemplate{}, false, err
 	}
 	template.AppliesTo = appliesTo
+	template.Executable = gateDefinitionContainsExecutableCommand(template.DefinitionJSON)
 	return template, true, nil
 }
 
@@ -4307,7 +4543,7 @@ func validateExecutableGateVerificationGovernanceTx(ctx context.Context, tx *sql
 
 	sourceTemplate := ""
 	sourceCommand := ""
-	sourceCreator := ""
+	sourceApprovedBy := ""
 	for _, rawRef := range gateSet.TemplateRefs {
 		ref, err := parseGateTemplateRef(rawRef)
 		if err != nil {
@@ -4316,13 +4552,16 @@ func validateExecutableGateVerificationGovernanceTx(ctx context.Context, tx *sql
 
 		var (
 			definitionJSON string
-			createdBy      string
+			approvedBy     string
 		)
 		err = tx.QueryRowContext(ctx, `
-			SELECT definition_json, created_by
-			FROM gate_templates
-			WHERE template_id = ? AND version = ?
-		`, ref.TemplateID, ref.Version).Scan(&definitionJSON, &createdBy)
+			SELECT t.definition_json, COALESCE(a.approved_by, '')
+			FROM gate_templates AS t
+			LEFT JOIN gate_template_approvals AS a
+				ON a.template_id = t.template_id
+				AND a.version = t.version
+			WHERE t.template_id = ? AND t.version = ?
+		`, ref.TemplateID, ref.Version).Scan(&definitionJSON, &approvedBy)
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("gate %q in gate_set %q references missing template %s", gateID, gateSet.GateSetID, ref.Ref)
 		}
@@ -4341,24 +4580,24 @@ func validateExecutableGateVerificationGovernanceTx(ctx context.Context, tx *sql
 			if templateCommand := gateCriteriaCommand(def.Criteria); templateCommand != "" {
 				sourceTemplate = ref.Ref
 				sourceCommand = templateCommand
-				sourceCreator = createdBy
+				sourceApprovedBy = approvedBy
 			}
 		}
 	}
 
-	if sourceCommand == command && actorIsHumanGoverned(sourceCreator) {
-		return nil
-	}
-	if actorIsHumanGoverned(gateSet.CreatedBy) {
+	if sourceCommand == command && actorIsHumanGoverned(sourceApprovedBy) {
 		return nil
 	}
 	if sourceCommand == "" {
+		if actorIsHumanGoverned(gateSet.CreatedBy) {
+			return nil
+		}
 		return fmt.Errorf("gate %q in gate_set %q has executable criteria.command without approved template provenance", gateID, gateSet.GateSetID)
 	}
 	if sourceCommand != command {
 		return fmt.Errorf("gate %q in gate_set %q command does not match approved template provenance", gateID, gateSet.GateSetID)
 	}
-	return fmt.Errorf("gate %q in gate_set %q uses executable criteria.command from non-human template %s", gateID, gateSet.GateSetID, sourceTemplate)
+	return fmt.Errorf("gate %q in gate_set %q uses executable criteria.command from unapproved template %s", gateID, gateSet.GateSetID, sourceTemplate)
 }
 
 func latestEventIDTx(ctx context.Context, tx *sql.Tx) (string, error) {

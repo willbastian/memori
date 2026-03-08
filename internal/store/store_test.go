@@ -2074,8 +2074,91 @@ func TestInstantiateGateSetRejectsExecutableTemplateWithoutHumanGovernance(t *te
 		Actor:        "human:alice",
 		CommandID:    "cmd-gate-unsafe-instantiate-1",
 	})
-	if err == nil || !strings.Contains(err.Error(), "not human-governed") {
-		t.Fatalf("expected human-governance rejection, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "pending human approval") {
+		t.Fatalf("expected approval rejection, got: %v", err)
+	}
+}
+
+func TestApproveGateTemplateAllowsAgentAuthoredExecutableTemplateAfterHumanApproval(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-5868686"
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Executable template approval workflow",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-approve-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-approve-progress-1",
+	}); err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+
+	template, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "agent-authored",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"build","criteria":{"command":"go test ./..."}}]}`,
+		Actor:          "llm:openai:gpt-5",
+		CommandID:      "cmd-gate-approve-template-1",
+	})
+	if err != nil {
+		t.Fatalf("create executable template: %v", err)
+	}
+	if !template.Executable {
+		t.Fatalf("expected executable template")
+	}
+	if template.ApprovedBy != "" {
+		t.Fatalf("expected executable template to start unapproved, got approved_by=%q", template.ApprovedBy)
+	}
+
+	_, _, err = s.InstantiateGateSet(ctx, InstantiateGateSetParams{
+		IssueID:      issueID,
+		TemplateRefs: []string{"agent-authored@1"},
+		Actor:        "human:alice",
+		CommandID:    "cmd-gate-approve-instantiate-pre-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "pending human approval") {
+		t.Fatalf("expected pre-approval instantiate rejection, got: %v", err)
+	}
+
+	approved, idempotent, err := s.ApproveGateTemplate(ctx, ApproveGateTemplateParams{
+		TemplateID: "agent-authored",
+		Version:    1,
+		Actor:      "human:alice",
+		CommandID:  "cmd-gate-approve-template-approve-1",
+	})
+	if err != nil {
+		t.Fatalf("approve executable template: %v", err)
+	}
+	if idempotent {
+		t.Fatalf("expected first approval to be non-idempotent")
+	}
+	if approved.ApprovedBy != "human:alice" {
+		t.Fatalf("expected approval actor recorded, got %q", approved.ApprovedBy)
+	}
+
+	gateSet, _, err := s.InstantiateGateSet(ctx, InstantiateGateSetParams{
+		IssueID:      issueID,
+		TemplateRefs: []string{"agent-authored@1"},
+		Actor:        "human:alice",
+		CommandID:    "cmd-gate-approve-instantiate-post-1",
+	})
+	if err != nil {
+		t.Fatalf("instantiate approved template: %v", err)
+	}
+	if gateSet.GateSetID == "" {
+		t.Fatalf("expected instantiated gate set id")
 	}
 }
 
@@ -2122,7 +2205,7 @@ func TestLookupGateVerificationSpecRejectsExecutableCommandFromNonHumanTemplate(
 	}
 
 	_, err := s.LookupGateVerificationSpec(ctx, issueID, "build")
-	if err == nil || !strings.Contains(err.Error(), "non-human template") {
+	if err == nil || !strings.Contains(err.Error(), "unapproved template") {
 		t.Fatalf("expected executable governance rejection, got: %v", err)
 	}
 }
@@ -3034,6 +3117,14 @@ func seedGateTemplateRowForTest(t *testing.T, s *Store, templateID string, versi
 		) VALUES(?, ?, ?, ?, ?, ?, ?)
 	`, templateID, version, string(appliesToJSON), canonicalDefinition, definitionHash, nowUTC(), createdBy); err != nil {
 		t.Fatalf("insert gate template %s@%d: %v", templateID, version, err)
+	}
+	if gateDefinitionContainsExecutableCommand(canonicalDefinition) && actorIsHumanGoverned(createdBy) {
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO gate_template_approvals(template_id, version, approved_at, approved_by)
+			VALUES(?, ?, ?, ?)
+		`, templateID, version, nowUTC(), createdBy); err != nil {
+			t.Fatalf("insert gate template approval %s@%d: %v", templateID, version, err)
+		}
 	}
 }
 

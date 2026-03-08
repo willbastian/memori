@@ -291,7 +291,7 @@ func TestGateVerifyRejectsExecutableCommandFromNonHumanTemplate(t *testing.T) {
 		"--command-id", "cmd-cli-gate-verify-unsafe-1",
 		"--json",
 	)
-	if err == nil || !strings.Contains(err.Error(), "non-human template") {
+	if err == nil || !strings.Contains(err.Error(), "unapproved template") {
 		t.Fatalf("expected governance rejection for unsafe executable template, got: %v", err)
 	}
 }

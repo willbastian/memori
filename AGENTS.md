@@ -97,7 +97,7 @@ Before closing a task, run this checklist in order:
 ## Governance Notes
 - Treat the event ledger as the authoritative write path; prefer commands that append events over manual database changes.
 - Use `issue next --agent <agent_id>` and context packet commands when resuming interrupted work rather than relying on memory alone.
-- New executable gate templates with `criteria.command` must come from a human-governed path. Agents may instantiate and verify approved templates, but should not create new arbitrary executable templates unless the workflow explicitly requires a human principal.
+- Agents may draft executable gate templates, but a human must approve the exact template version with `memori gate template approve` before it can be instantiated or used by `gate verify`.
 
 ## Priority Rule
 If these instructions conflict with informal habits, follow this file: `memori` issue tracking is the default operating mode.

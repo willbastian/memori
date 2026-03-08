@@ -11,6 +11,7 @@ Today the repository provides a CLI-first event-sourced system: it stores work i
 - `backlog` and continuity-aware `issue next` commands for human and agent triage
 - Append-only event log with replayable projections across issue, session, packet, focus, gate-template, and gate-set entities
 - Versioned gate templates plus gate-set instantiate, lock, evaluate, verify, and status flows
+- Executable gate templates can be agent-authored, then human-approved before they become runnable
 - Close validation that blocks `done` until required gates pass and child issues are already closed
 - Close-proof capture that binds gate-set hash and verifier proof into `Done` transitions
 - Context checkpoint, packet build/show/use, rehydrate, and loop inspection commands
@@ -160,7 +161,7 @@ go run ./cmd/memori issue update \
   --json
 ```
 
-If you want to exercise `gate verify`, create the executable gate template through a human-governed path after `auth set-password`, then verify that approved gate set. LLM principals can instantiate and verify approved executable templates, but they should not author new arbitrary `criteria.command` templates.
+If you want to exercise `gate verify`, create the executable gate template, then approve that exact template version through a human-governed path after `auth set-password`. LLM principals can draft executable templates and later instantiate or verify approved ones, but they should not rely on executable templates before approval.
 
 ## Replay Vs Resume
 
@@ -211,6 +212,7 @@ Create and update workflows:
 - `memori issue link`
 - `memori issue update`
 - `memori gate template create`
+- `memori gate template approve`
 - `memori gate template list`
 - `memori gate set instantiate`
 - `memori gate set lock`
@@ -226,7 +228,7 @@ Create and update workflows:
 - Human mutations fail closed until a password is configured and verified interactively.
 - LLM mutations require `MEMORI_PRINCIPAL=llm` plus provider and model metadata.
 - Manual `--command-id` is reserved for automation and replay workflows and requires `MEMORI_ALLOW_MANUAL_COMMAND_ID=1`.
-- New executable gate templates must come from a human-governed path; LLM principals can use approved templates but should not author new arbitrary `criteria.command` definitions.
+- Executable templates are draftable by agents, but they are not runnable until a human approves that exact template version with `gate template approve`.
 - Marking an issue `done` requires a locked gate set for the current cycle.
 - Required locked gates must pass before `done` succeeds.
 - `done` captures close proof from the current locked gate set, including verifier evidence and gate-set hash.

@@ -1,44 +1,41 @@
 package cli
 
 import (
-	"strings"
 	"testing"
-
-	"memori/internal/provenance"
 )
 
-func TestValidateExecutableGateTemplatePolicyRejectsLLMPrincipal(t *testing.T) {
+func TestGateDefinitionHasExecutableCommandDetectsCommand(t *testing.T) {
 	t.Parallel()
 
-	err := validateExecutableGateTemplatePolicy(
+	ok, err := gateDefinitionHasExecutableCommand(
 		`{"gates":[{"id":"build","criteria":{"command":"go test ./..."}}]}`,
-		provenance.Principal{Kind: provenance.PrincipalLLM, Actor: "llm:test:model"},
 	)
-	if err == nil || !strings.Contains(err.Error(), "require a human principal") {
-		t.Fatalf("expected executable-template governance error, got: %v", err)
+	if err != nil {
+		t.Fatalf("detect executable command: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected executable command to be detected")
 	}
 }
 
-func TestValidateExecutableGateTemplatePolicyAllowsHumanPrincipal(t *testing.T) {
+func TestGateDefinitionHasExecutableCommandIgnoresNonExecutableDefinition(t *testing.T) {
 	t.Parallel()
 
-	err := validateExecutableGateTemplatePolicy(
-		`{"gates":[{"id":"build","criteria":{"command":"go test ./..."}}]}`,
-		provenance.Principal{Kind: provenance.PrincipalHuman, Actor: "human:alice"},
+	ok, err := gateDefinitionHasExecutableCommand(
+		`{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"ref":"manual-review"}}]}`,
 	)
 	if err != nil {
-		t.Fatalf("expected human principal to be allowed, got: %v", err)
+		t.Fatalf("inspect non-executable definition: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected non-executable definition to be ignored")
 	}
 }
 
-func TestValidateExecutableGateTemplatePolicyAllowsNonExecutableDefinitionForLLM(t *testing.T) {
+func TestGateDefinitionHasExecutableCommandRejectsEmptyJSON(t *testing.T) {
 	t.Parallel()
 
-	err := validateExecutableGateTemplatePolicy(
-		`{"gates":[{"id":"build","kind":"check","required":true}]}`,
-		provenance.Principal{Kind: provenance.PrincipalLLM, Actor: "llm:test:model"},
-	)
-	if err != nil {
-		t.Fatalf("expected non-executable definition to be allowed, got: %v", err)
+	if _, err := gateDefinitionHasExecutableCommand(""); err == nil {
+		t.Fatalf("expected empty json to fail")
 	}
 }

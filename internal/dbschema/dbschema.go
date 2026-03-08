@@ -79,6 +79,12 @@ var requiredTablesByVersion = []struct {
 			"human_auth_credentials",
 		},
 	},
+	{
+		version: 12,
+		tables: []string{
+			"gate_template_approvals",
+		},
+	},
 }
 
 //go:embed migrations/*.sql

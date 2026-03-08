@@ -26,6 +26,14 @@ type gateTemplateListEnvelope struct {
 	} `json:"data"`
 }
 
+type gateTemplateApproveEnvelope struct {
+	Command string `json:"command"`
+	Data    struct {
+		Template   store.GateTemplate `json:"template"`
+		Idempotent bool               `json:"idempotent"`
+	} `json:"data"`
+}
+
 type gateSetInstantiateEnvelope struct {
 	Command string `json:"command"`
 	Data    struct {
@@ -208,6 +216,126 @@ func TestGateTemplateCreateListInstantiateAndLockFlow(t *testing.T) {
 	}
 	if gateSetEvents.Data.Events[0].EventType != "gate_set.instantiated" || gateSetEvents.Data.Events[1].EventType != "gate_set.locked" {
 		t.Fatalf("unexpected gate set event types: %+v", gateSetEvents.Data.Events)
+	}
+}
+
+func TestGateTemplateApproveEnablesExecutableTemplateInstantiation(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-gate-template-approve.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-a212121",
+		"--type", "task",
+		"--title", "Approval workflow issue",
+		"--command-id", "cmd-cli-gtemplate-approve-issue-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("create issue: %v\nstderr: %s", err, stderr)
+	}
+
+	defPath := filepath.Join(t.TempDir(), "approval-gates.json")
+	definition := `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}}]}`
+	if err := os.WriteFile(defPath, []byte(definition), 0o644); err != nil {
+		t.Fatalf("write template definition file: %v", err)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"gate", "template", "create",
+		"--db", dbPath,
+		"--id", "approval",
+		"--version", "1",
+		"--applies-to", "task",
+		"--file", defPath,
+		"--command-id", "cmd-cli-gtemplate-approve-create-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("gate template create: %v\nstderr: %s", err, stderr)
+	}
+	var created gateTemplateCreateEnvelope
+	if err := json.Unmarshal([]byte(stdout), &created); err != nil {
+		t.Fatalf("decode gate template create json: %v\nstdout: %s", err, stdout)
+	}
+	if !created.Data.Template.Executable {
+		t.Fatalf("expected executable template in create response")
+	}
+	if created.Data.Template.ApprovedBy != "" {
+		t.Fatalf("expected LLM-authored executable template to start unapproved, got approved_by=%q", created.Data.Template.ApprovedBy)
+	}
+
+	_, _, err = runMemoriForTest(
+		"gate", "set", "instantiate",
+		"--db", dbPath,
+		"--issue", "mem-a212121",
+		"--template", "approval@1",
+		"--command-id", "cmd-cli-gtemplate-approve-instantiate-pre-1",
+		"--json",
+	)
+	if err == nil || !strings.Contains(err.Error(), "pending human approval") {
+		t.Fatalf("expected approval gate-set rejection, got: %v", err)
+	}
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	seedCLIHumanCredential(t, s, "correct horse battery")
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	t.Setenv("MEMORI_PRINCIPAL", "human")
+	originalPrompter := passwordPrompter
+	passwordPrompter = func(string) (string, error) {
+		return "correct horse battery", nil
+	}
+	defer func() {
+		passwordPrompter = originalPrompter
+	}()
+
+	stdout, stderr, err = runMemoriForTest(
+		"gate", "template", "approve",
+		"--db", dbPath,
+		"--id", "approval",
+		"--version", "1",
+		"--command-id", "cmd-cli-gtemplate-approve-human-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("gate template approve: %v\nstderr: %s", err, stderr)
+	}
+	var approved gateTemplateApproveEnvelope
+	if err := json.Unmarshal([]byte(stdout), &approved); err != nil {
+		t.Fatalf("decode gate template approve json: %v\nstdout: %s", err, stdout)
+	}
+	if approved.Command != "gate template approve" {
+		t.Fatalf("expected gate template approve command, got %q", approved.Command)
+	}
+	if !strings.HasPrefix(approved.Data.Template.ApprovedBy, "human:") {
+		t.Fatalf("expected human approval actor, got %q", approved.Data.Template.ApprovedBy)
+	}
+
+	t.Setenv("MEMORI_PRINCIPAL", "llm")
+	stdout, stderr, err = runMemoriForTest(
+		"gate", "set", "instantiate",
+		"--db", dbPath,
+		"--issue", "mem-a212121",
+		"--template", "approval@1",
+		"--command-id", "cmd-cli-gtemplate-approve-instantiate-post-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("instantiate approved gate set: %v\nstderr: %s", err, stderr)
+	}
+	var instantiated gateSetInstantiateEnvelope
+	if err := json.Unmarshal([]byte(stdout), &instantiated); err != nil {
+		t.Fatalf("decode gate set instantiate json: %v\nstdout: %s", err, stdout)
+	}
+	if instantiated.Data.GateSet.GateSetID == "" {
+		t.Fatalf("expected instantiated gate set id after approval")
 	}
 }
 
