@@ -25,6 +25,7 @@ type boardAction int
 
 const (
 	boardActionNone boardAction = iota
+	boardActionSearchOpen
 	boardActionUp
 	boardActionDown
 	boardActionPrevLane
@@ -40,6 +41,12 @@ const (
 	boardActionQuit
 )
 
+type boardKeyInput struct {
+	action    boardAction
+	text      string
+	backspace bool
+}
+
 type boardTUIModel struct {
 	snapshot      boardSnapshot
 	width         int
@@ -50,6 +57,12 @@ type boardTUIModel struct {
 	helpOpen      bool
 	selectedIssue string
 	expanded      map[string]bool
+	searchOpen    bool
+	searchQuery   string
+	searchIndex   int
+	searchOrigin  string
+	searchLane    boardLane
+	searchPos     int
 }
 
 type boardTheme struct {
@@ -108,9 +121,9 @@ func runBoardTUI(ctx context.Context, s *store.Store, agent string, interval tim
 		return err
 	}
 
-	keyCh := make(chan boardAction, 8)
+	keyCh := make(chan boardKeyInput, 8)
 	errCh := make(chan error, 1)
-	go readBoardActions(bufio.NewReader(boardInput()), keyCh, errCh)
+	go readBoardInputs(bufio.NewReader(boardInput()), keyCh, errCh)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -124,9 +137,10 @@ func runBoardTUI(ctx context.Context, s *store.Store, agent string, interval tim
 				return nil
 			}
 			return err
-		case action := <-keyCh:
-			model = boardReduce(model, action)
-			if action == boardActionQuit {
+		case input := <-keyCh:
+			quit := false
+			model, quit = boardHandleInput(model, input)
+			if quit {
 				return nil
 			}
 			if err := renderFrame(); err != nil {
@@ -232,8 +246,71 @@ func boardReduce(model boardTUIModel, action boardAction) boardTUIModel {
 	return boardNormalizeModel(model)
 }
 
+func boardHandleInput(model boardTUIModel, input boardKeyInput) (boardTUIModel, bool) {
+	if model.searchOpen {
+		switch {
+		case input.action == boardActionQuit:
+			model.searchOpen = false
+			model.searchQuery = ""
+			model.searchIndex = 0
+			if model.searchOrigin != "" {
+				model = boardFocusIssuePreferred(model, model.searchOrigin, boardLanePreference(model.searchLane))
+			}
+			return model, false
+		case input.action == boardActionToggleDetail:
+			results := boardSearchResults(model)
+			if len(results) == 0 {
+				return model, false
+			}
+			model.searchOpen = false
+			model.searchQuery = ""
+			selected := results[minInt(model.searchIndex, len(results)-1)]
+			model = boardFocusIssuePreferred(model, selected.row.Issue.ID, boardLanePreference(selected.lane))
+			return model, false
+		case input.backspace:
+			if len(model.searchQuery) > 0 {
+				model.searchQuery = model.searchQuery[:len(model.searchQuery)-1]
+			}
+			model.searchIndex = 0
+			return boardNormalizeModel(model), false
+		case input.text != "":
+			model.searchQuery += input.text
+			model.searchIndex = 0
+			return boardNormalizeModel(model), false
+		case input.action == boardActionDown:
+			model.searchIndex++
+			return boardNormalizeModel(model), false
+		case input.action == boardActionUp:
+			model.searchIndex--
+			return boardNormalizeModel(model), false
+		case input.action == boardActionTop:
+			model.searchIndex = 0
+			return boardNormalizeModel(model), false
+		case input.action == boardActionBottom:
+			model.searchIndex = maxInt(len(boardSearchResults(model))-1, 0)
+			return boardNormalizeModel(model), false
+		default:
+			return model, false
+		}
+	}
+
+	if input.action == boardActionSearchOpen {
+		model.searchOpen = true
+		model.searchQuery = ""
+		model.searchIndex = 0
+		model.searchOrigin = model.selectedIssue
+		model.searchLane = model.lane
+		model.searchPos = model.index
+		return boardNormalizeModel(model), false
+	}
+
+	model = boardReduce(model, input.action)
+	return model, input.action == boardActionQuit
+}
+
 func boardNormalizeModel(model boardTUIModel) boardTUIModel {
 	model = boardSyncExpandedState(model)
+	model = boardClampSearchSelection(model)
 	lanes := model.availableLanes()
 	if len(lanes) == 0 {
 		model.lane = boardLaneNext
@@ -248,6 +325,25 @@ func boardNormalizeModel(model boardTUIModel) boardTUIModel {
 	}
 
 	return boardClampSelection(model)
+}
+
+func boardClampSearchSelection(model boardTUIModel) boardTUIModel {
+	if !model.searchOpen {
+		model.searchIndex = 0
+		return model
+	}
+	results := boardSearchResults(model)
+	if len(results) == 0 {
+		model.searchIndex = 0
+		return model
+	}
+	if model.searchIndex < 0 {
+		model.searchIndex = 0
+	}
+	if model.searchIndex >= len(results) {
+		model.searchIndex = len(results) - 1
+	}
+	return model
 }
 
 func boardSyncExpandedState(model boardTUIModel) boardTUIModel {
@@ -428,6 +524,20 @@ func renderBoardTUI(model boardTUIModel, colors bool) string {
 	bodyHeight := maxInt(height-4, 5)
 	if model.helpOpen {
 		lines = append(lines, boardHelpPanel(theme, width, bodyHeight)...)
+	} else if model.searchOpen {
+		if width >= 100 {
+			leftWidth := minInt(maxInt(width/2-2, 34), 44)
+			rightWidth := width - leftWidth - 3
+			left := boardListPanel(model, theme, leftWidth, bodyHeight)
+			right := boardSearchPanel(model, theme, rightWidth, bodyHeight)
+			lines = append(lines, boardJoinColumns(left, right, leftWidth, rightWidth)...)
+		} else {
+			listHeight := maxInt(bodyHeight/2, 6)
+			searchHeight := maxInt(bodyHeight-listHeight-1, 6)
+			lines = append(lines, boardListPanel(model, theme, width, listHeight)...)
+			lines = append(lines, theme.paintLine(theme.borderFG, "", false, strings.Repeat("-", width)))
+			lines = append(lines, boardSearchPanel(model, theme, width, searchHeight)...)
+		}
 	} else if width >= 100 {
 		leftWidth := minInt(maxInt(width/2-2, 34), 44)
 		rightWidth := width - leftWidth - 3
@@ -780,7 +890,135 @@ func boardHelpPanel(theme boardTheme, width, height int) []string {
 	return lines[:height]
 }
 
+type boardSearchMatch struct {
+	lane boardLane
+	row  boardIssueRow
+}
+
+func boardSearchPanel(model boardTUIModel, theme boardTheme, width, height int) []string {
+	lines := make([]string, 0, height)
+	lines = append(lines, theme.paintLine(theme.accentFG, theme.panelBG, true, padRight(" SEARCH ", width)))
+	prompt := "/"
+	if model.searchQuery != "" {
+		prompt += model.searchQuery
+	}
+	lines = append(lines, theme.paintLine(theme.detailFG, theme.panelAltBG, true, padRight(" "+prompt+" ", width)))
+
+	results := boardSearchResults(model)
+	if len(results) == 0 {
+		lines = append(lines, theme.paintLine(theme.mutedFG, "", false, padRight("  no issue id matches this query", width)))
+		for len(lines) < height {
+			lines = append(lines, padRight("", width))
+		}
+		return lines[:height]
+	}
+
+	visible := maxInt(height-2, 1)
+	start := 0
+	if model.searchIndex >= visible {
+		start = model.searchIndex - visible + 1
+	}
+	if start > len(results)-visible {
+		start = maxInt(len(results)-visible, 0)
+	}
+	end := minInt(start+visible, len(results))
+	for idx := start; idx < end; idx++ {
+		result := results[idx]
+		line := truncateBoardLine(
+			fmt.Sprintf(" %-7s %-8s %s", strings.ToUpper(boardLaneTitle(result.lane)), boardDisplayIssueID(result.row.Issue.ID, width), result.row.Issue.Title),
+			width,
+		)
+		if idx == model.searchIndex {
+			line = theme.paintLine(theme.selectedFG, theme.selectedBG, true, line)
+		} else {
+			bg := ""
+			if idx%2 == 1 {
+				bg = theme.panelAltBG
+			}
+			line = theme.paintLine(theme.detailFG, bg, false, line)
+		}
+		lines = append(lines, line)
+	}
+	for len(lines) < height {
+		lines = append(lines, padRight("", width))
+	}
+	return lines[:height]
+}
+
+func boardSearchResults(model boardTUIModel) []boardSearchMatch {
+	query := strings.ToLower(strings.TrimSpace(model.searchQuery))
+	seen := make(map[string]struct{})
+	results := make([]boardSearchMatch, 0)
+	for _, lane := range boardLanePreference(model.lane) {
+		for _, row := range model.rawRowsForLane(lane) {
+			if _, ok := seen[row.Issue.ID]; ok {
+				continue
+			}
+			if !boardSearchMatches(row.Issue.ID, query) {
+				continue
+			}
+			seen[row.Issue.ID] = struct{}{}
+			results = append(results, boardSearchMatch{lane: lane, row: row})
+		}
+	}
+	sort.SliceStable(results, func(i, j int) bool {
+		leftScore := boardSearchScore(results[i].row.Issue.ID, query)
+		rightScore := boardSearchScore(results[j].row.Issue.ID, query)
+		if leftScore != rightScore {
+			return leftScore < rightScore
+		}
+		if results[i].lane != results[j].lane {
+			return results[i].lane < results[j].lane
+		}
+		return results[i].row.Issue.ID < results[j].row.Issue.ID
+	})
+	return results
+}
+
+func boardSearchMatches(issueID, query string) bool {
+	if query == "" {
+		return true
+	}
+	id := strings.ToLower(strings.TrimSpace(issueID))
+	shortID := strings.TrimPrefix(id, "mem-")
+	return strings.HasPrefix(id, query) || strings.HasPrefix(shortID, query) || strings.Contains(id, query) || strings.Contains(shortID, query)
+}
+
+func boardSearchScore(issueID, query string) int {
+	if query == "" {
+		return 3
+	}
+	id := strings.ToLower(strings.TrimSpace(issueID))
+	shortID := strings.TrimPrefix(id, "mem-")
+	switch {
+	case id == query || shortID == query:
+		return 0
+	case strings.HasPrefix(id, query) || strings.HasPrefix(shortID, query):
+		return 1
+	default:
+		return 2
+	}
+}
+
+func boardLanePreference(preferred boardLane) []boardLane {
+	order := []boardLane{preferred, boardLaneActive, boardLaneBlocked, boardLaneReady, boardLaneNext}
+	seen := make(map[boardLane]struct{}, len(order))
+	out := make([]boardLane, 0, len(order))
+	for _, lane := range order {
+		if _, ok := seen[lane]; ok {
+			continue
+		}
+		seen[lane] = struct{}{}
+		out = append(out, lane)
+	}
+	return out
+}
+
 func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
+	if model.searchOpen {
+		footer := fmt.Sprintf(" Search /%s  |  enter jump  j/k results  backspace edit  esc cancel ", model.searchQuery)
+		return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
+	}
 	row, ok := model.selectedRow()
 	if !ok {
 		return theme.paintLine(theme.mutedFG, "", false, padRight("No selectable issues", width))
@@ -897,78 +1135,88 @@ func formatBoardTabsCompact(model boardTUIModel) string {
 	return boardLaneTitle(model.lane) + " | " + line
 }
 
-func readBoardActions(reader *bufio.Reader, actions chan<- boardAction, errCh chan<- error) {
+func readBoardInputs(reader *bufio.Reader, actions chan<- boardKeyInput, errCh chan<- error) {
 	for {
-		action, err := readBoardAction(reader)
+		input, err := readBoardInput(reader)
 		if err != nil {
 			errCh <- err
 			return
 		}
-		if action == boardActionNone {
+		if input.action == boardActionNone && input.text == "" && !input.backspace {
 			continue
 		}
-		actions <- action
+		actions <- input
 	}
 }
 
-func readBoardAction(reader *bufio.Reader) (boardAction, error) {
+func readBoardInput(reader *bufio.Reader) (boardKeyInput, error) {
 	b, err := reader.ReadByte()
 	if err != nil {
-		return boardActionNone, err
+		return boardKeyInput{}, err
 	}
 	switch b {
+	case '/':
+		return boardKeyInput{action: boardActionSearchOpen}, nil
 	case 'q':
-		return boardActionQuit, nil
+		return boardKeyInput{action: boardActionQuit}, nil
 	case 'j':
-		return boardActionDown, nil
+		return boardKeyInput{action: boardActionDown}, nil
 	case 'k':
-		return boardActionUp, nil
+		return boardKeyInput{action: boardActionUp}, nil
 	case 'h':
-		return boardActionPrevLane, nil
+		return boardKeyInput{action: boardActionPrevLane}, nil
 	case 'l':
-		return boardActionNextLane, nil
+		return boardKeyInput{action: boardActionNextLane}, nil
 	case 'g':
-		return boardActionTop, nil
+		return boardKeyInput{action: boardActionTop}, nil
 	case 'G':
-		return boardActionBottom, nil
+		return boardKeyInput{action: boardActionBottom}, nil
 	case '?':
-		return boardActionToggleHelp, nil
+		return boardKeyInput{action: boardActionToggleHelp}, nil
 	case '[':
-		return boardActionParent, nil
+		return boardKeyInput{action: boardActionParent}, nil
 	case ']':
-		return boardActionChild, nil
+		return boardKeyInput{action: boardActionChild}, nil
 	case '{':
-		return boardActionCollapse, nil
+		return boardKeyInput{action: boardActionCollapse}, nil
 	case '}':
-		return boardActionExpand, nil
+		return boardKeyInput{action: boardActionExpand}, nil
+	case 8, 127:
+		return boardKeyInput{backspace: true}, nil
 	case '\r', '\n', ' ':
-		return boardActionToggleDetail, nil
+		return boardKeyInput{action: boardActionToggleDetail}, nil
 	case 27:
+		if reader.Buffered() == 0 {
+			return boardKeyInput{action: boardActionQuit}, nil
+		}
 		next, err := reader.ReadByte()
 		if err != nil {
-			return boardActionQuit, nil
+			return boardKeyInput{action: boardActionQuit}, nil
 		}
 		if next != '[' {
-			return boardActionNone, nil
+			return boardKeyInput{action: boardActionQuit}, nil
 		}
 		arrow, err := reader.ReadByte()
 		if err != nil {
-			return boardActionNone, err
+			return boardKeyInput{}, err
 		}
 		switch arrow {
 		case 'A':
-			return boardActionUp, nil
+			return boardKeyInput{action: boardActionUp}, nil
 		case 'B':
-			return boardActionDown, nil
+			return boardKeyInput{action: boardActionDown}, nil
 		case 'C':
-			return boardActionNextLane, nil
+			return boardKeyInput{action: boardActionNextLane}, nil
 		case 'D':
-			return boardActionPrevLane, nil
+			return boardKeyInput{action: boardActionPrevLane}, nil
 		default:
-			return boardActionNone, nil
+			return boardKeyInput{}, nil
 		}
 	default:
-		return boardActionNone, nil
+		if b >= 32 && b <= 126 {
+			return boardKeyInput{text: string(b)}, nil
+		}
+		return boardKeyInput{}, nil
 	}
 }
 
@@ -1080,7 +1328,11 @@ func boardVisibleRows(rows []boardIssueRow, expanded map[string]bool) []boardIss
 }
 
 func boardFocusIssue(model boardTUIModel, issueID string) boardTUIModel {
-	for _, lane := range []boardLane{boardLaneNext, boardLaneActive, boardLaneBlocked, boardLaneReady} {
+	return boardFocusIssuePreferred(model, issueID, boardLanePreference(model.lane))
+}
+
+func boardFocusIssuePreferred(model boardTUIModel, issueID string, lanes []boardLane) boardTUIModel {
+	for _, lane := range lanes {
 		for _, row := range model.rawRowsForLane(lane) {
 			if row.Issue.ID != issueID {
 				continue

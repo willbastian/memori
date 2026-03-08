@@ -181,6 +181,77 @@ func TestBoardTUIHierarchyNavigationAndFolding(t *testing.T) {
 	}
 }
 
+func TestBoardTUISearchFiltersAndJumpsToResultLane(t *testing.T) {
+	t.Parallel()
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Ready one")},
+		},
+		Blocked: []boardIssueRow{
+			{Issue: boardTestIssue("mem-b222222", "Bug", "Blocked", "Blocked match")},
+		},
+	}, 120, 28)
+	model.lane = boardLaneReady
+	model.index = 0
+	model = boardNormalizeModel(model)
+
+	var quit bool
+	model, quit = boardHandleInput(model, boardKeyInput{action: boardActionSearchOpen})
+	if quit || !model.searchOpen {
+		t.Fatalf("expected / to open search, got %+v quit=%v", model, quit)
+	}
+
+	model, quit = boardHandleInput(model, boardKeyInput{text: "b22"})
+	if quit {
+		t.Fatalf("did not expect text entry to quit")
+	}
+	results := boardSearchResults(model)
+	if len(results) != 1 || results[0].row.Issue.ID != "mem-b222222" {
+		t.Fatalf("expected filtered blocked issue result, got %+v", results)
+	}
+
+	model, quit = boardHandleInput(model, boardKeyInput{action: boardActionToggleDetail})
+	if quit || model.searchOpen {
+		t.Fatalf("expected enter to close search and jump, got %+v quit=%v", model, quit)
+	}
+	if model.lane != boardLaneBlocked || model.selectedIssue != "mem-b222222" {
+		t.Fatalf("expected search selection to focus blocked lane result, got %+v", model)
+	}
+}
+
+func TestBoardTUISearchCancelRestoresPreviousSelection(t *testing.T) {
+	t.Parallel()
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Ready one")},
+			{Issue: boardTestIssue("mem-b222222", "Task", "Todo", "Ready two")},
+		},
+	}, 120, 28)
+	model.lane = boardLaneReady
+	model.index = 1
+	model = boardNormalizeModel(model)
+
+	var quit bool
+	model, quit = boardHandleInput(model, boardKeyInput{action: boardActionSearchOpen})
+	if quit || !model.searchOpen {
+		t.Fatalf("expected search to open, got %+v quit=%v", model, quit)
+	}
+	model, quit = boardHandleInput(model, boardKeyInput{text: "a11"})
+	if quit {
+		t.Fatalf("did not expect text entry to quit")
+	}
+
+	model, quit = boardHandleInput(model, boardKeyInput{action: boardActionQuit})
+	if quit {
+		t.Fatalf("expected escape during search to cancel, not quit")
+	}
+	if model.searchOpen || model.lane != boardLaneReady || model.selectedIssue != "mem-b222222" {
+		t.Fatalf("expected cancel to restore prior selection, got %+v", model)
+	}
+}
+
 func TestRenderBoardTUIWideShowsDetailPane(t *testing.T) {
 	t.Parallel()
 
@@ -283,6 +354,44 @@ func TestRenderBoardTUIShowsHierarchyCuesInListAndDetail(t *testing.T) {
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected hierarchy render to contain %q, got:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestRenderBoardTUIShowsSearchPanel(t *testing.T) {
+	t.Parallel()
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Ready one")},
+		},
+		Blocked: []boardIssueRow{
+			{Issue: boardTestIssue("mem-b222222", "Bug", "Blocked", "Blocked match")},
+		},
+	}, 108, 24)
+	model.lane = boardLaneReady
+	model = boardNormalizeModel(model)
+
+	var quit bool
+	model, quit = boardHandleInput(model, boardKeyInput{action: boardActionSearchOpen})
+	if quit {
+		t.Fatalf("did not expect search open to quit")
+	}
+	model, quit = boardHandleInput(model, boardKeyInput{text: "b22"})
+	if quit {
+		t.Fatalf("did not expect text entry to quit")
+	}
+
+	rendered := renderBoardTUI(model, false)
+	for _, want := range []string{
+		"SEARCH",
+		"/b22",
+		"BLOCKED",
+		"b222222",
+		"Search /b22",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected search render to contain %q, got:\n%s", want, rendered)
 		}
 	}
 }
