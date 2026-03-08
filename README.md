@@ -91,7 +91,7 @@ memori is already useful for local workflow design and disciplined execution, bu
 
 License:
 
-- memori is available under the MIT license. See [LICENSE](/Users/will/code/memori/LICENSE).
+- memori is available under the MIT license. See [LICENSE](LICENSE).
 
 Intended audience:
 
@@ -149,7 +149,7 @@ To pin a specific release:
 curl -fsSL https://raw.githubusercontent.com/willbastian/memori/main/scripts/install_release.sh | bash -s -- --version v0.1.0
 ```
 
-The supported installer channel in this repository is [install_release.sh](/Users/will/code/memori/scripts/install_release.sh). It downloads the matching archive from the project's GitHub releases and installs `memori` into `~/.local/bin` by default. Maintenance for that installer flow lives in this repository alongside the release workflow and docs.
+The supported installer channel in this repository is [install_release.sh](scripts/install_release.sh). It downloads the matching archive from the project's GitHub releases and installs `memori` into `~/.local/bin` by default. Maintenance for that installer flow lives in this repository alongside the release workflow and docs.
 
 Or run from a local checkout:
 
@@ -177,7 +177,7 @@ Tagged releases build cross-platform archives for:
 - Linux `amd64`
 - Linux `arm64`
 
-The automation lives in [.github/workflows/release.yml](/Users/will/code/memori/.github/workflows/release.yml) and uses [scripts/build_release_artifacts.sh](/Users/will/code/memori/scripts/build_release_artifacts.sh) so the same build flow can run locally or in GitHub Actions.
+The automation lives in [.github/workflows/release.yml](.github/workflows/release.yml) and uses [scripts/build_release_artifacts.sh](scripts/build_release_artifacts.sh) so the same build flow can run locally or in GitHub Actions.
 
 To cut a release from a tag:
 
