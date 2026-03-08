@@ -182,6 +182,88 @@ func TestBoardTUIHierarchyNavigationAndFolding(t *testing.T) {
 	}
 }
 
+func TestBoardTUINextLaneDoesNotApplyTreePrefixesOrCollapseState(t *testing.T) {
+	t.Parallel()
+
+	parent := boardIssueRow{
+		Issue: boardTestIssue("mem-a111111", "Story", "Todo", "Parent story"),
+		Hierarchy: boardIssueHierarchy{
+			ChildIDs:        []string{"mem-b222222"},
+			ChildCount:      1,
+			DescendantCount: 1,
+			HasChildren:     true,
+		},
+	}
+	child := boardIssueRow{
+		Issue: boardTestIssue("mem-b222222", "Task", "Todo", "Child task"),
+		Hierarchy: boardIssueHierarchy{
+			Depth:       1,
+			Path:        []string{"mem-a111111", "mem-b222222"},
+			AncestorIDs: []string{"mem-a111111"},
+			ParentID:    "mem-a111111",
+		},
+	}
+
+	model := newBoardTUIModel(boardSnapshot{
+		LikelyNext: []boardIssueRow{parent, child},
+		Ready:      []boardIssueRow{parent, child},
+	}, 108, 24)
+
+	rendered := renderBoardTUI(model, false)
+	if strings.Contains(rendered, "[-] mem-a111111") || strings.Contains(rendered, "|- mem-b222222") {
+		t.Fatalf("expected next lane to stay flat, got:\n%s", rendered)
+	}
+
+	model = boardReduce(model, boardActionCollapse)
+	if !model.expanded["mem-a111111"] {
+		t.Fatalf("expected collapse in next lane to leave tree state unchanged, got %+v", model.expanded)
+	}
+}
+
+func TestBoardTUISearchFromNextPrefersStructuralLane(t *testing.T) {
+	t.Parallel()
+
+	row := boardIssueRow{
+		Issue: boardTestIssue("mem-e5328a8", "Epic", "Todo", "Gate Ergonomics"),
+		Hierarchy: boardIssueHierarchy{
+			ChildIDs:        []string{"mem-1b723aa"},
+			ChildCount:      1,
+			DescendantCount: 1,
+			HasChildren:     true,
+		},
+	}
+
+	model := newBoardTUIModel(boardSnapshot{
+		LikelyNext: []boardIssueRow{row},
+		Ready:      []boardIssueRow{row},
+	}, 120, 28)
+
+	var quit bool
+	model, quit = boardHandleInput(model, boardKeyInput{action: boardActionSearchOpen})
+	if quit || !model.searchOpen {
+		t.Fatalf("expected search to open, got %+v quit=%v", model, quit)
+	}
+	for _, ch := range "e5328a8" {
+		model, quit = boardHandleInput(model, boardKeyInput{text: string(ch)})
+		if quit {
+			t.Fatalf("did not expect text entry to quit")
+		}
+	}
+
+	results := boardSearchResults(model)
+	if len(results) != 1 || results[0].lane != boardLaneReady {
+		t.Fatalf("expected search to prefer ready lane over next, got %+v", results)
+	}
+
+	model, quit = boardHandleInput(model, boardKeyInput{action: boardActionToggleDetail})
+	if quit || model.searchOpen {
+		t.Fatalf("expected enter to close search and jump, got %+v quit=%v", model, quit)
+	}
+	if model.lane != boardLaneReady || model.selectedIssue != "mem-e5328a8" {
+		t.Fatalf("expected search selection to focus ready lane issue, got %+v", model)
+	}
+}
+
 func TestBoardTUISearchFiltersAndJumpsToResultLane(t *testing.T) {
 	t.Parallel()
 
@@ -391,13 +473,145 @@ func TestRenderBoardTUIShowsHierarchyCuesInListAndDetail(t *testing.T) {
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
 		"[-] a111111  Parent story",
-		"|- b222222  Child task",
+		"   `- b222222  Child task",
 		"[ HIERARCHY ]",
 		"path: mem-a111111 > mem-b222222",
 		"parent: mem-a111111 (Parent story)",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected hierarchy render to contain %q, got:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestRenderBoardTUIShowsConsistentNestedHierarchyPrefixes(t *testing.T) {
+	t.Parallel()
+
+	root := boardIssueRow{
+		Issue: boardTestIssue("mem-a111111", "Epic", "Todo", "Root epic"),
+		Hierarchy: boardIssueHierarchy{
+			ChildIDs:        []string{"mem-b222222", "mem-c333333"},
+			ChildCount:      2,
+			DescendantCount: 3,
+			HasChildren:     true,
+		},
+	}
+	child := boardIssueRow{
+		Issue: boardTestIssue("mem-b222222", "Story", "Todo", "Nested story"),
+		Hierarchy: boardIssueHierarchy{
+			Depth:           1,
+			Path:            []string{"mem-a111111", "mem-b222222"},
+			AncestorIDs:     []string{"mem-a111111"},
+			ParentID:        "mem-a111111",
+			SiblingIndex:    0,
+			SiblingCount:    2,
+			ChildIDs:        []string{"mem-d444444"},
+			ChildCount:      1,
+			DescendantCount: 1,
+			HasChildren:     true,
+		},
+	}
+	childSibling := boardIssueRow{
+		Issue: boardTestIssue("mem-c333333", "Story", "Todo", "Sibling story"),
+		Hierarchy: boardIssueHierarchy{
+			Depth:        1,
+			Path:         []string{"mem-a111111", "mem-c333333"},
+			AncestorIDs:  []string{"mem-a111111"},
+			ParentID:     "mem-a111111",
+			SiblingIndex: 1,
+			SiblingCount: 2,
+		},
+	}
+	grandchild := boardIssueRow{
+		Issue: boardTestIssue("mem-d444444", "Task", "Todo", "Grandchild task"),
+		Hierarchy: boardIssueHierarchy{
+			Depth:        2,
+			Path:         []string{"mem-a111111", "mem-b222222", "mem-d444444"},
+			AncestorIDs:  []string{"mem-a111111", "mem-b222222"},
+			ParentID:     "mem-b222222",
+			SiblingCount: 1,
+		},
+	}
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{root, child, grandchild, childSibling},
+	}, 120, 28)
+	model.lane = boardLaneReady
+	model = boardNormalizeModel(model)
+
+	rendered := renderBoardTUI(model, false)
+	for _, want := range []string{
+		"[-] a111111  Root epic",
+		"   [-] b222222  Nested story",
+		"      `- d444444  Grandchild task",
+		"   `- c333333  Sibling story",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected nested hierarchy render to contain %q, got:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestRenderBoardTUIUsesLaneSiblingOrderForLeafBranches(t *testing.T) {
+	t.Parallel()
+
+	root := boardIssueRow{
+		Issue: boardTestIssue("mem-a111111", "Epic", "Todo", "Root epic"),
+		Hierarchy: boardIssueHierarchy{
+			ChildIDs:        []string{"mem-b222222", "mem-c333333", "mem-d444444"},
+			ChildCount:      3,
+			DescendantCount: 3,
+			HasChildren:     true,
+		},
+	}
+	first := boardIssueRow{
+		Issue: boardTestIssue("mem-b222222", "Story", "Todo", "First child"),
+		Hierarchy: boardIssueHierarchy{
+			Depth:        1,
+			Path:         []string{"mem-a111111", "mem-b222222"},
+			AncestorIDs:  []string{"mem-a111111"},
+			ParentID:     "mem-a111111",
+			SiblingIndex: 2,
+			SiblingCount: 3,
+		},
+	}
+	second := boardIssueRow{
+		Issue: boardTestIssue("mem-c333333", "Story", "Todo", "Second child"),
+		Hierarchy: boardIssueHierarchy{
+			Depth:        1,
+			Path:         []string{"mem-a111111", "mem-c333333"},
+			AncestorIDs:  []string{"mem-a111111"},
+			ParentID:     "mem-a111111",
+			SiblingIndex: 0,
+			SiblingCount: 3,
+		},
+	}
+	last := boardIssueRow{
+		Issue: boardTestIssue("mem-d444444", "Story", "Todo", "Third child"),
+		Hierarchy: boardIssueHierarchy{
+			Depth:        1,
+			Path:         []string{"mem-a111111", "mem-d444444"},
+			AncestorIDs:  []string{"mem-a111111"},
+			ParentID:     "mem-a111111",
+			SiblingIndex: 1,
+			SiblingCount: 3,
+		},
+	}
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{root, first, second, last},
+	}, 120, 28)
+	model.lane = boardLaneReady
+	model = boardNormalizeModel(model)
+
+	rendered := renderBoardTUI(model, false)
+	for _, want := range []string{
+		"   |- b222222  First child",
+		"   |- c333333  Second child",
+		"   `- d444444  Third child",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected lane-order branches to contain %q, got:\n%s", want, rendered)
 		}
 	}
 }

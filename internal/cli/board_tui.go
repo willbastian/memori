@@ -219,11 +219,11 @@ func boardReduce(model boardTUIModel, action boardAction) boardTUIModel {
 	case boardActionToggleHelp:
 		model.helpOpen = !model.helpOpen
 	case boardActionParent:
-		if row, ok := model.selectedRow(); ok && row.Hierarchy.ParentID != "" {
+		if row, ok := model.selectedRow(); ok && boardLaneSupportsHierarchy(model.lane) && row.Hierarchy.ParentID != "" {
 			model = boardFocusIssue(model, row.Hierarchy.ParentID)
 		}
 	case boardActionChild:
-		if row, ok := model.selectedRow(); ok {
+		if row, ok := model.selectedRow(); ok && boardLaneSupportsHierarchy(model.lane) {
 			for _, childID := range row.Hierarchy.ChildIDs {
 				if next := boardFocusIssue(model, childID); next.selectedIssue == childID {
 					model = next
@@ -232,11 +232,11 @@ func boardReduce(model boardTUIModel, action boardAction) boardTUIModel {
 			}
 		}
 	case boardActionCollapse:
-		if row, ok := model.selectedRow(); ok && row.Hierarchy.HasChildren {
+		if row, ok := model.selectedRow(); ok && boardLaneSupportsHierarchy(model.lane) && row.Hierarchy.HasChildren {
 			model.expanded[row.Issue.ID] = false
 		}
 	case boardActionExpand:
-		if row, ok := model.selectedRow(); ok && row.Hierarchy.HasChildren {
+		if row, ok := model.selectedRow(); ok && boardLaneSupportsHierarchy(model.lane) && row.Hierarchy.HasChildren {
 			model.expanded[row.Issue.ID] = true
 		}
 	case boardActionQuit:
@@ -676,16 +676,27 @@ func boardListRow(row boardIssueRow, showScore bool, width int) string {
 func boardRenderListRow(model boardTUIModel, row boardIssueRow, showScore bool, width int) string {
 	chip := boardStatusCode(row.Issue.Status)
 	issueID := boardDisplayIssueID(row.Issue.ID, width)
-	prefix := boardListHierarchyPrefix(model, row)
+	prefix := ""
+	if boardLaneSupportsHierarchy(model.lane) {
+		prefix = boardListHierarchyPrefix(model, row)
+	}
+	toggle := ""
+	if boardLaneSupportsHierarchy(model.lane) && row.Hierarchy.HasChildren {
+		toggle = " " + strings.TrimSpace(boardHierarchyToggleToken(model.expanded[row.Issue.ID]))
+	}
+	lead := prefix
+	if trimmed := strings.TrimSpace(toggle); trimmed != "" {
+		lead += trimmed + " "
+	}
 	switch {
 	case width < 28:
-		return truncateBoardLine(fmt.Sprintf(" %s %s%s", chip, prefix, row.Issue.Title), width)
+		return truncateBoardLine(fmt.Sprintf(" %s %s%s%s", chip, prefix, row.Issue.Title, toggle), width)
 	case width < 40:
-		return truncateBoardLine(fmt.Sprintf(" %s %s%s %s", chip, prefix, issueID, row.Issue.Title), width)
+		return truncateBoardLine(fmt.Sprintf(" %s %s%s", chip, lead, row.Issue.Title), width)
 	case showScore && row.Score > 0 && width >= 52:
-		return truncateBoardLine(fmt.Sprintf(" %-3s %s%-8s %s · s%d", chip, prefix, issueID, row.Issue.Title, row.Score), width)
+		return truncateBoardLine(fmt.Sprintf(" %-3s %s%-8s %s · s%d", chip, lead, issueID, row.Issue.Title, row.Score), width)
 	default:
-		return truncateBoardLine(fmt.Sprintf(" %-3s %s%-8s %s", chip, prefix, issueID, row.Issue.Title), width)
+		return truncateBoardLine(fmt.Sprintf(" %-3s %s%-8s %s", chip, lead, issueID, row.Issue.Title), width)
 	}
 }
 
@@ -1004,6 +1015,9 @@ func boardSearchScore(issueID, query string) int {
 }
 
 func boardLanePreference(preferred boardLane) []boardLane {
+	if preferred == boardLaneNext {
+		return []boardLane{boardLaneReady, boardLaneActive, boardLaneBlocked, boardLaneNext}
+	}
 	order := []boardLane{preferred, boardLaneActive, boardLaneBlocked, boardLaneReady, boardLaneNext}
 	seen := make(map[boardLane]struct{}, len(order))
 	out := make([]boardLane, 0, len(order))
@@ -1015,6 +1029,10 @@ func boardLanePreference(preferred boardLane) []boardLane {
 		out = append(out, lane)
 	}
 	return out
+}
+
+func boardLaneSupportsHierarchy(lane boardLane) bool {
+	return lane != boardLaneNext
 }
 
 func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
@@ -1364,56 +1382,86 @@ func boardFocusIssuePreferred(model boardTUIModel, issueID string, lanes []board
 
 func boardListHierarchyPrefix(model boardTUIModel, row boardIssueRow) string {
 	if row.Hierarchy.Depth == 0 {
-		if row.Hierarchy.HasChildren {
-			if model.expanded[row.Issue.ID] {
-				return "[-] "
-			}
-			return "[+] "
-		}
 		return ""
 	}
 
-	inLaneDepth, parentInLane := boardLaneDepth(model.rawRowsForLane(model.lane), row)
+	rows := model.rawRowsForLane(model.lane)
+	rowByID := make(map[string]boardIssueRow, len(rows))
+	for _, candidate := range rows {
+		rowByID[candidate.Issue.ID] = candidate
+	}
+	ancestorChain, parentInLane := boardLaneAncestorChain(rowByID, row)
 	if !parentInLane {
-		if row.Hierarchy.HasChildren {
-			if model.expanded[row.Issue.ID] {
-				return "^[-] "
-			}
-			return "^[+] "
-		}
 		return "^ "
 	}
 
-	indent := strings.Repeat("  ", maxInt(inLaneDepth-1, 0))
+	prefix := strings.Builder{}
+	prefix.WriteString(strings.Repeat("   ", len(ancestorChain)))
 	if row.Hierarchy.HasChildren {
-		if model.expanded[row.Issue.ID] {
-			return indent + "[-] "
-		}
-		return indent + "[+] "
+		return prefix.String()
 	}
-	return indent + "|- "
+	prefix.WriteString(boardHierarchyBranchForLane(rows, row))
+	return prefix.String()
 }
 
-func boardLaneDepth(rows []boardIssueRow, row boardIssueRow) (int, bool) {
+func boardLaneAncestorChain(rowByID map[string]boardIssueRow, row boardIssueRow) ([]string, bool) {
 	if len(row.Hierarchy.AncestorIDs) == 0 {
-		return 0, false
+		return nil, false
 	}
-	inLane := make(map[string]struct{}, len(rows))
-	for _, candidate := range rows {
-		inLane[candidate.Issue.ID] = struct{}{}
-	}
-	depth := 0
+	chain := make([]string, 0, len(row.Hierarchy.AncestorIDs))
 	parentInLane := false
 	for _, ancestorID := range row.Hierarchy.AncestorIDs {
-		if _, ok := inLane[ancestorID]; !ok {
+		if _, ok := rowByID[ancestorID]; !ok {
 			continue
 		}
-		depth++
+		chain = append(chain, ancestorID)
 		if ancestorID == row.Hierarchy.ParentID {
 			parentInLane = true
 		}
 	}
-	return depth, parentInLane
+	return chain, parentInLane
+}
+
+func boardHierarchyBranchForLane(rows []boardIssueRow, row boardIssueRow) string {
+	for _, candidate := range rows {
+		if candidate.Issue.ID == row.Issue.ID {
+			continue
+		}
+		if candidate.Hierarchy.ParentID != row.Hierarchy.ParentID {
+			continue
+		}
+		if candidate.Hierarchy.ParentID == "" && candidate.Hierarchy.Depth != row.Hierarchy.Depth {
+			continue
+		}
+		if boardRowAppearsLaterInLane(rows, row.Issue.ID, candidate.Issue.ID) {
+			return "|- "
+		}
+	}
+	if row.Hierarchy.SiblingCount > 0 && row.Hierarchy.SiblingIndex == row.Hierarchy.SiblingCount-1 {
+		return "`- "
+	}
+	return "`- "
+}
+
+func boardRowAppearsLaterInLane(rows []boardIssueRow, currentID, candidateID string) bool {
+	currentIndex := -1
+	candidateIndex := -1
+	for idx, row := range rows {
+		switch row.Issue.ID {
+		case currentID:
+			currentIndex = idx
+		case candidateID:
+			candidateIndex = idx
+		}
+	}
+	return currentIndex >= 0 && candidateIndex > currentIndex
+}
+
+func boardHierarchyToggleToken(expanded bool) string {
+	if expanded {
+		return "[-] "
+	}
+	return "[+] "
 }
 
 func (theme boardTheme) paintLine(fg, bg string, bold bool, value string) string {
