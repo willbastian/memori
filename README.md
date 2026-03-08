@@ -101,6 +101,21 @@ If you want the current branch directly instead of the latest resolved module ve
 go install github.com/willbastian/memori/cmd/memori@main
 ```
 
+Install from published release artifacts without building from source:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/willbastian/memori/main/scripts/install_release.sh | bash
+memori version
+```
+
+To pin a specific release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/willbastian/memori/main/scripts/install_release.sh | bash -s -- --version v0.1.0
+```
+
+The supported installer channel in this repository is [install_release.sh](/Users/will/code/memori/scripts/install_release.sh). It downloads the matching archive from the project's GitHub releases and installs `memori` into `~/.local/bin` by default. Maintenance for that installer flow lives in this repository alongside the release workflow and docs.
+
 Or run from a local checkout:
 
 Run directly from source:
