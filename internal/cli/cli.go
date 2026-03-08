@@ -93,7 +93,7 @@ func runHelp(args []string, out io.Writer) error {
 			"memori gate template approve --id <template-id> --version <n> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate template list [--type epic|story|task|bug] [--json]",
 			"memori gate template pending [--db <path>] [--json]",
-			"memori gate set instantiate --issue <prefix-shortSHA> --template <template-id@version> [--template ...] [--actor <actor>] [--command-id <id>] [--json]",
+			"memori gate set instantiate --issue <prefix-shortSHA> [--template <template-id@version> ...] [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate set lock --issue <prefix-shortSHA> [--cycle <n>] [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate verify --issue <prefix-shortSHA> --gate <gate-id> [--actor <actor>] [--command-id <id>] [--json]",
@@ -1677,9 +1677,14 @@ func runGateSetInstantiate(args []string, out io.Writer) error {
 		return err
 	}
 
+	templateRefs, autoSelected, err := resolveGateSetInstantiateTemplates(ctx, s, *issue, templates)
+	if err != nil {
+		return err
+	}
+
 	gateSet, idempotent, err := s.InstantiateGateSet(ctx, store.InstantiateGateSetParams{
 		IssueID:      *issue,
-		TemplateRefs: templates,
+		TemplateRefs: templateRefs,
 		Actor:        identity.Actor,
 		CommandID:    identity.CommandID,
 	})
@@ -1693,12 +1698,16 @@ func runGateSetInstantiate(args []string, out io.Writer) error {
 			DBSchemaVersion:       dbVersion,
 			Command:               "gate set instantiate",
 			Data: gateSetInstantiateData{
-				GateSet:    gateSet,
-				Idempotent: idempotent,
+				GateSet:      gateSet,
+				Idempotent:   idempotent,
+				AutoSelected: autoSelected,
 			},
 		})
 	}
 
+	if autoSelected {
+		_, _ = fmt.Fprintf(out, "Auto-selected templates: %s\n", strings.Join(gateSet.TemplateRefs, ", "))
+	}
 	if idempotent {
 		_, _ = fmt.Fprintf(out, "Gate set already exists for issue %s cycle %d: %s\n", gateSet.IssueID, gateSet.CycleNo, gateSet.GateSetID)
 	} else {
@@ -1707,6 +1716,67 @@ func runGateSetInstantiate(args []string, out io.Writer) error {
 	_, _ = fmt.Fprintf(out, "Templates: %s\n", strings.Join(gateSet.TemplateRefs, ", "))
 	_, _ = fmt.Fprintf(out, "Gate Set Hash: %s\n", gateSet.GateSetHash)
 	return nil
+}
+
+func resolveGateSetInstantiateTemplates(ctx context.Context, s *store.Store, issueID string, explicit []string) ([]string, bool, error) {
+	if len(explicit) > 0 {
+		return explicit, false, nil
+	}
+
+	issue, err := s.GetIssue(ctx, issueID)
+	if err != nil {
+		return nil, false, err
+	}
+	templates, err := s.ListGateTemplates(ctx, store.ListGateTemplatesParams{IssueType: issue.Type})
+	if err != nil {
+		return nil, false, err
+	}
+
+	latestEligible := make(map[string]store.GateTemplate)
+	pendingApproval := make([]string, 0)
+	for _, template := range templates {
+		ref := fmt.Sprintf("%s@%d", template.TemplateID, template.Version)
+		if template.Executable && !isHumanGovernedActor(template.ApprovedBy) {
+			pendingApproval = append(pendingApproval, ref)
+			continue
+		}
+		current, found := latestEligible[template.TemplateID]
+		if !found || template.Version > current.Version {
+			latestEligible[template.TemplateID] = template
+		}
+	}
+
+	if len(latestEligible) == 0 {
+		sort.Strings(pendingApproval)
+		if len(pendingApproval) > 0 {
+			return nil, false, fmt.Errorf(
+				"no eligible gate templates apply to issue type %s; pending approval: %s",
+				issue.Type,
+				strings.Join(pendingApproval, ", "),
+			)
+		}
+		return nil, false, fmt.Errorf("no eligible gate templates apply to issue type %s", issue.Type)
+	}
+
+	resolved := make([]string, 0, len(latestEligible))
+	for _, template := range latestEligible {
+		resolved = append(resolved, fmt.Sprintf("%s@%d", template.TemplateID, template.Version))
+	}
+	sort.Strings(resolved)
+	if len(resolved) > 1 {
+		return nil, false, fmt.Errorf(
+			"multiple eligible gate templates apply to issue type %s; specify --template explicitly: %s",
+			issue.Type,
+			strings.Join(resolved, ", "),
+		)
+	}
+
+	return resolved, true, nil
+}
+
+func isHumanGovernedActor(actor string) bool {
+	actor = strings.TrimSpace(strings.ToLower(actor))
+	return actor != "" && !strings.HasPrefix(actor, "llm:")
 }
 
 func runGateSetLock(args []string, out io.Writer) error {
@@ -2764,8 +2834,9 @@ type gateTemplateListData struct {
 }
 
 type gateSetInstantiateData struct {
-	GateSet    store.GateSet `json:"gate_set"`
-	Idempotent bool          `json:"idempotent"`
+	GateSet      store.GateSet `json:"gate_set"`
+	Idempotent   bool          `json:"idempotent"`
+	AutoSelected bool          `json:"auto_selected"`
 }
 
 type gateSetLockData struct {
@@ -2825,10 +2896,10 @@ type dbStatusData struct {
 }
 
 type dbMigrateData struct {
-	FromVersion       int `json:"from_version"`
-	CurrentVersion    int `json:"current_version"`
-	HeadVersion       int `json:"head_version"`
-	PendingMigrations int `json:"pending_migrations"`
+	FromVersion       int    `json:"from_version"`
+	CurrentVersion    int    `json:"current_version"`
+	HeadVersion       int    `json:"head_version"`
+	PendingMigrations int    `json:"pending_migrations"`
 	BackupPath        string `json:"backup_path,omitempty"`
 }
 
@@ -3107,7 +3178,7 @@ func printHelp(out io.Writer) {
 	ui.bullet("memori gate template approve --id <template-id> --version <n> [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori gate template list [--type epic|story|task|bug] [--json]")
 	ui.bullet("memori gate template pending [--db <path>] [--json]")
-	ui.bullet("memori gate set instantiate --issue <prefix-shortSHA> --template <template-id@version> [--template ...] [--actor <actor>] [--command-id <id>] [--json]")
+	ui.bullet("memori gate set instantiate --issue <prefix-shortSHA> [--template <template-id@version> ...] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori gate set lock --issue <prefix-shortSHA> [--cycle <n>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori gate verify --issue <prefix-shortSHA> --gate <gate-id> [--actor <actor>] [--command-id <id>] [--json]")

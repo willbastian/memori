@@ -283,8 +283,7 @@ go run ./cmd/memori gate template create \
   --file /tmp/memori-gates.json
 
 go run ./cmd/memori gate set instantiate \
-  --issue mem-a111111 \
-  --template release-checks@1
+  --issue mem-a111111
 
 go run ./cmd/memori gate set lock --issue mem-a111111
 go run ./cmd/memori gate verify --issue mem-a111111 --gate build
@@ -294,6 +293,7 @@ go run ./cmd/memori issue update --key mem-a111111 --status done
 What happens in this flow:
 
 - the issue is stored in the local ledger
+- `gate set instantiate` auto-selects the single eligible template for the issue type when you omit `--template`; if more than one template family fits, the CLI tells you to choose explicitly
 - the gate set freezes the completion contract for the issue’s current cycle
 - `gate verify` executes the approved verifier command and stores evidence plus proof metadata
 - `issue update --status done` succeeds only if required gates pass and child issues are already closed
@@ -509,6 +509,8 @@ For day-to-day work, the shortest path is usually:
 - `memori gate template list`
 - `memori gate template pending`
 - `memori gate set instantiate`
+  - omit `--template` to auto-select the single eligible template for the issue type
+  - pass `--template <template@version>` to override or resolve ambiguity explicitly
 - `memori gate set lock`
 - `memori gate evaluate`
 - `memori gate verify`

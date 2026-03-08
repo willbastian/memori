@@ -38,8 +38,9 @@ type gateTemplateApproveEnvelope struct {
 type gateSetInstantiateEnvelope struct {
 	Command string `json:"command"`
 	Data    struct {
-		GateSet    store.GateSet `json:"gate_set"`
-		Idempotent bool          `json:"idempotent"`
+		GateSet      store.GateSet `json:"gate_set"`
+		Idempotent   bool          `json:"idempotent"`
+		AutoSelected bool          `json:"auto_selected"`
 	} `json:"data"`
 }
 
@@ -499,5 +500,216 @@ func TestGateSetInstantiateRejectsTemplateTypeMismatch(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), "does not apply to issue type Task") {
 		t.Fatalf("expected template type mismatch error, got: %v", err)
+	}
+}
+
+func TestGateSetInstantiateAutoSelectsLatestEligibleTemplateVersion(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-gate-template-autoselect.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-a211111",
+		"--type", "story",
+		"--title", "Auto-select story close template",
+		"--command-id", "cmd-cli-gset-autoselect-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("create issue: %v\nstderr: %s", err, stderr)
+	}
+
+	defV1Path := filepath.Join(t.TempDir(), "close-story-v1.json")
+	if err := os.WriteFile(defV1Path, []byte(`{"gates":[{"id":"verify-v1","kind":"check","required":true,"criteria":{"command":"echo v1"}}]}`), 0o644); err != nil {
+		t.Fatalf("write template definition file v1: %v", err)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"gate", "template", "create",
+		"--db", dbPath,
+		"--id", "close-story",
+		"--version", "1",
+		"--applies-to", "story",
+		"--file", defV1Path,
+		"--command-id", "cmd-cli-gtemplate-autoselect-create-v1",
+		"--json",
+	); err != nil {
+		t.Fatalf("gate template create v1: %v\nstderr: %s", err, stderr)
+	}
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	if _, _, err := s.ApproveGateTemplate(ctx, store.ApproveGateTemplateParams{
+		TemplateID: "close-story",
+		Version:    1,
+		Actor:      "human:will",
+		CommandID:  "cmd-cli-gtemplate-autoselect-approve-v1",
+	}); err != nil {
+		t.Fatalf("approve gate template v1 via store: %v", err)
+	}
+
+	defV2Path := filepath.Join(t.TempDir(), "close-story-v2.json")
+	if err := os.WriteFile(defV2Path, []byte(`{"gates":[{"id":"verify-v2","kind":"check","required":true,"criteria":{"command":"echo v2"}}]}`), 0o644); err != nil {
+		t.Fatalf("write template definition file v2: %v", err)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"gate", "template", "create",
+		"--db", dbPath,
+		"--id", "close-story",
+		"--version", "2",
+		"--applies-to", "story",
+		"--file", defV2Path,
+		"--command-id", "cmd-cli-gtemplate-autoselect-create-v2",
+		"--json",
+	); err != nil {
+		t.Fatalf("gate template create v2: %v\nstderr: %s", err, stderr)
+	}
+	if _, _, err := s.ApproveGateTemplate(ctx, store.ApproveGateTemplateParams{
+		TemplateID: "close-story",
+		Version:    2,
+		Actor:      "human:will",
+		CommandID:  "cmd-cli-gtemplate-autoselect-approve-v2",
+	}); err != nil {
+		t.Fatalf("approve gate template v2 via store: %v", err)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"gate", "set", "instantiate",
+		"--db", dbPath,
+		"--issue", "mem-a211111",
+		"--command-id", "cmd-cli-gset-autoselect-instantiate-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("gate set instantiate: %v\nstderr: %s", err, stderr)
+	}
+
+	var instantiated gateSetInstantiateEnvelope
+	if err := json.Unmarshal([]byte(stdout), &instantiated); err != nil {
+		t.Fatalf("decode gate set instantiate json: %v\nstdout: %s", err, stdout)
+	}
+	if !instantiated.Data.AutoSelected {
+		t.Fatalf("expected gate set instantiate to report auto_selected")
+	}
+	if len(instantiated.Data.GateSet.TemplateRefs) != 1 || instantiated.Data.GateSet.TemplateRefs[0] != "close-story@2" {
+		t.Fatalf("expected auto-selected latest eligible template, got %+v", instantiated.Data.GateSet.TemplateRefs)
+	}
+}
+
+func TestGateSetInstantiateWithoutTemplateRejectsAmbiguousEligibleTemplates(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-gate-template-ambiguous.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-a311111",
+		"--type", "task",
+		"--title", "Ambiguous close template issue",
+		"--command-id", "cmd-cli-gset-ambiguous-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("create issue: %v\nstderr: %s", err, stderr)
+	}
+
+	qualityPath := filepath.Join(t.TempDir(), "quality.json")
+	if err := os.WriteFile(qualityPath, []byte(`{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"ref":"manual-build"}}]}`), 0o644); err != nil {
+		t.Fatalf("write quality template definition: %v", err)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"gate", "template", "create",
+		"--db", dbPath,
+		"--id", "quality",
+		"--version", "1",
+		"--applies-to", "task",
+		"--file", qualityPath,
+		"--command-id", "cmd-cli-gtemplate-ambiguous-quality-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("create quality template: %v\nstderr: %s", err, stderr)
+	}
+
+	provenancePath := filepath.Join(t.TempDir(), "provenance.json")
+	if err := os.WriteFile(provenancePath, []byte(`{"gates":[{"id":"audit","kind":"check","required":true,"criteria":{"ref":"manual-audit"}}]}`), 0o644); err != nil {
+		t.Fatalf("write provenance template definition: %v", err)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"gate", "template", "create",
+		"--db", dbPath,
+		"--id", "provenance",
+		"--version", "1",
+		"--applies-to", "task",
+		"--file", provenancePath,
+		"--command-id", "cmd-cli-gtemplate-ambiguous-provenance-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("create provenance template: %v\nstderr: %s", err, stderr)
+	}
+
+	_, _, err := runMemoriForTest(
+		"gate", "set", "instantiate",
+		"--db", dbPath,
+		"--issue", "mem-a311111",
+		"--command-id", "cmd-cli-gset-ambiguous-instantiate-1",
+		"--json",
+	)
+	if err == nil || !strings.Contains(err.Error(), "multiple eligible gate templates apply to issue type Task; specify --template explicitly: provenance@1, quality@1") {
+		t.Fatalf("expected ambiguous template error, got: %v", err)
+	}
+}
+
+func TestGateSetInstantiateWithoutTemplateExplainsPendingApproval(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-gate-template-pending.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-a411111",
+		"--type", "story",
+		"--title", "Pending approval close template issue",
+		"--command-id", "cmd-cli-gset-pending-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("create issue: %v\nstderr: %s", err, stderr)
+	}
+
+	defPath := filepath.Join(t.TempDir(), "pending-close-story.json")
+	if err := os.WriteFile(defPath, []byte(`{"gates":[{"id":"verify","kind":"check","required":true,"criteria":{"command":"echo pending"}}]}`), 0o644); err != nil {
+		t.Fatalf("write pending template definition: %v", err)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"gate", "template", "create",
+		"--db", dbPath,
+		"--id", "close-story",
+		"--version", "1",
+		"--applies-to", "story",
+		"--file", defPath,
+		"--command-id", "cmd-cli-gtemplate-pending-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("create pending close template: %v\nstderr: %s", err, stderr)
+	}
+
+	_, _, err := runMemoriForTest(
+		"gate", "set", "instantiate",
+		"--db", dbPath,
+		"--issue", "mem-a411111",
+		"--command-id", "cmd-cli-gset-pending-instantiate-1",
+		"--json",
+	)
+	if err == nil || !strings.Contains(err.Error(), "no eligible gate templates apply to issue type Story; pending approval: close-story@1") {
+		t.Fatalf("expected pending approval error, got: %v", err)
 	}
 }

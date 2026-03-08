@@ -99,7 +99,9 @@ Before closing a task, run this checklist in order:
 9. Satisfy close gates for the current cycle before marking `done`:
    - Inspect available template versions when needed.
    - `memori gate template list --json`
-   - Instantiate an approved close template for the issue type.
+   - Instantiate the close gate set for the issue type.
+   - `memori gate set instantiate --issue <issue_key> --command-id "<unique-id>" --json`
+   - If more than one eligible template applies, rerun with an explicit override:
    - `memori gate set instantiate --issue <issue_key> --template <template@version> --command-id "<unique-id>" --json`
    - Lock the gate set.
    - `memori gate set lock --issue <issue_key> --command-id "<unique-id>" --json`
