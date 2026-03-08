@@ -48,6 +48,9 @@ for target in "${TARGETS[@]}"; do
   )
 
   cp "${ROOT_DIR}/README.md" "${STAGE_DIR}/README.md"
+  if [[ -d "${ROOT_DIR}/assets" ]]; then
+    cp -R "${ROOT_DIR}/assets" "${STAGE_DIR}/assets"
+  fi
 
   tar -C "${OUTDIR}" -czf "${ARCHIVE_PATH}" "$(basename "${STAGE_DIR}")"
   (

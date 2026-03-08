@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/title-card.png" alt="memori title image" width="1200">
+</p>
+
 # memori
 
 **memori** is a local-first issue tracker and context bridge for human-and-agent workflows.
