@@ -26,6 +26,7 @@ import (
 const responseSchemaVersion = 1
 
 var passwordPrompter = readPasswordNoEcho
+var authCommandTimeout = 5 * time.Second
 
 func Run(args []string, stdout, stderr io.Writer) error {
 	_ = stderr
@@ -193,7 +194,7 @@ func runAuthStatus(args []string, out io.Writer) error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), authCommandTimeout)
 	defer cancel()
 
 	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
@@ -253,16 +254,17 @@ func runAuthSetPassword(args []string, out io.Writer) error {
 		return errors.New("memori auth set-password requires a human principal")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
+	ctx, cancel := context.WithTimeout(context.Background(), authCommandTimeout)
 	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	cancel()
 	if err != nil {
 		return err
 	}
 	defer s.Close()
 
+	ctx, cancel = context.WithTimeout(context.Background(), authCommandTimeout)
 	currentCredential, configured, err := s.GetHumanAuthCredential(ctx)
+	cancel()
 	if err != nil {
 		return err
 	}
@@ -301,6 +303,7 @@ func runAuthSetPassword(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	ctx, cancel = context.WithTimeout(context.Background(), authCommandTimeout)
 	storedCredential, rotated, err := s.UpsertHumanAuthCredential(ctx, store.UpsertHumanAuthCredentialParams{
 		Algorithm:  credential.Algorithm,
 		Iterations: credential.Iterations,
@@ -308,6 +311,7 @@ func runAuthSetPassword(args []string, out io.Writer) error {
 		HashHex:    credential.HashHex,
 		Actor:      principal.Actor,
 	})
+	cancel()
 	if err != nil {
 		return err
 	}

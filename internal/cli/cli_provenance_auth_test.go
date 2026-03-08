@@ -3,9 +3,11 @@ package cli
 import (
 	"context"
 	"errors"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"memori/internal/provenance"
 	"memori/internal/store"
@@ -95,6 +97,46 @@ func TestResolveMutationIdentityPropagatesNonInteractivePromptError(t *testing.T
 	})
 	if !errors.Is(err, expected) {
 		t.Fatalf("expected non-interactive prompt error, got: %v", err)
+	}
+}
+
+func TestRunAuthSetPasswordAllowsInteractiveThinkTime(t *testing.T) {
+	s, dbPath := newCLIAuthTestStore(t)
+	s.Close()
+	t.Setenv(provenance.EnvPrincipal, provenance.PrincipalHuman)
+
+	originalPrompter := passwordPrompter
+	originalTimeout := authCommandTimeout
+	t.Cleanup(func() {
+		passwordPrompter = originalPrompter
+		authCommandTimeout = originalTimeout
+	})
+
+	authCommandTimeout = 20 * time.Millisecond
+	passwordPrompter = func(prompt string) (string, error) {
+		time.Sleep(40 * time.Millisecond)
+		return "correct horse battery", nil
+	}
+
+	if err := runAuthSetPassword([]string{"--db", dbPath}, io.Discard); err != nil {
+		t.Fatalf("run auth set-password: %v", err)
+	}
+
+	verifyStore, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store for verification: %v", err)
+	}
+	defer verifyStore.Close()
+
+	credential, configured, err := verifyStore.GetHumanAuthCredential(context.Background())
+	if err != nil {
+		t.Fatalf("get human auth credential: %v", err)
+	}
+	if !configured {
+		t.Fatal("expected human auth credential to be configured")
+	}
+	if credential.HashHex == "" {
+		t.Fatal("expected stored password hash")
 	}
 }
 
