@@ -28,24 +28,29 @@ Use the same environment for `go run ./cmd/memori ...` if the binary is not inst
 ## Required Agent Workflow
 1. Confirm DB is initialized.
    - `memori init --issue-prefix <project-prefix> --json`
-2. Create a ticket before doing implementation work.
+2. Check for existing tracked work before creating something new.
+   - `memori issue next --agent <agent_id> --json`
+   - `memori board --agent <agent_id> --json`
+3. Create a ticket before doing implementation work only when no existing issue already covers the work.
    - `memori issue create --type task --title "<clear outcome>" --command-id "<unique-id>" --json`
-3. Inspect ticket context before making changes.
+4. Inspect ticket context before making changes.
    - `memori issue show --key <issue_key> --json`
    - `memori event log --entity <issue_key> --json`
-4. Move ticket status as work progresses.
+5. Move ticket status as work progresses.
    - `memori issue update --key <issue_key> --status inprogress --command-id "<unique-id>" --json`
    - `memori issue update --key <issue_key> --status blocked --command-id "<unique-id>" --json`
    - `memori issue update --key <issue_key> --status done --command-id "<unique-id>" --json`
-5. Keep work decomposed.
+6. Keep work decomposed.
    - If scope grows, create child tasks/bugs and link with `--parent` on creation or `issue link`.
    - `memori issue link --child <child_key> --parent <parent_key> --command-id "<unique-id>" --json`
-6. Rebuild projections from event ledger when validating consistency.
+7. Rebuild projections from event ledger when validating consistency.
    - `memori db replay --json`
    - Use replay when you need to recompute derived state such as gate projections, packets, focus, summaries, or open loops from the append-only ledger.
 
 ## Command ID Convention
 For mutating commands, always pass a stable `--command-id`.
+
+memori can generate command IDs automatically, but in this repository agents should keep passing explicit stable IDs so retries and event-log review stay easy to correlate.
 
 Recommended pattern:
 - `<agent>-<yyyymmdd>-<short-purpose>-<nn>`
@@ -83,6 +88,8 @@ Before closing a task, run this checklist in order:
    - `git status --short`
    - `git log -1 --oneline`
 8. Satisfy close gates for the current cycle before marking `done`:
+   - Inspect available template versions when needed.
+   - `memori gate template list --json`
    - Instantiate an approved close template for the issue type.
    - `memori gate set instantiate --issue <issue_key> --template <template@version> --command-id "<unique-id>" --json`
    - Lock the gate set.

@@ -39,6 +39,7 @@ Traditional issue trackers are good at coordination, but they are not designed f
 - gate template creation, approval, instantiation, locking, evaluation, verification, and status inspection
 - close validation that requires a locked gate set, passing required gates, and closed child issues
 - session checkpoints, packet build/show/use flows, open-loop tracking, and rehydration
+- hierarchy-aware board snapshots plus an interactive TUI with parent/child navigation and `/` issue search
 - replay, migration, verification, and backup database operations
 - human password-based mutation auth and explicit LLM provenance for automation
 
@@ -81,6 +82,8 @@ Initialize the database:
 go run ./cmd/memori init --issue-prefix mem
 ```
 
+New issues default to generated keys in `{prefix}-{shortSHA}` format when you omit `--key`. Mutation commands also generate command IDs automatically unless you explicitly opt into supplying your own with `MEMORI_ALLOW_MANUAL_COMMAND_ID=1`.
+
 Inspect current state:
 
 ```bash
@@ -111,6 +114,11 @@ For non-interactive mutation flows, declare an LLM principal explicitly:
 export MEMORI_PRINCIPAL=llm
 export MEMORI_LLM_PROVIDER=openai
 export MEMORI_LLM_MODEL=gpt-5
+```
+
+If your automation needs stable externally supplied command IDs for retries or cross-tool correlation, also export:
+
+```bash
 export MEMORI_ALLOW_MANUAL_COMMAND_ID=1
 ```
 
@@ -159,6 +167,8 @@ What happens in this flow:
 
 Agents use the same issue model, but mutations carry explicit LLM provenance. In practice, agents should rely on approved gate templates for executable checks.
 
+The example below passes explicit command IDs for deterministic demonstration. In normal agent usage, memori can generate command IDs automatically.
+
 ```bash
 export MEMORI_PRINCIPAL=llm
 export MEMORI_LLM_PROVIDER=openai
@@ -198,13 +208,23 @@ For executable gates, the expected flow is:
 
 ### 3. Live board view for terminal splits
 
-Use `board` when you want a continuously refreshing terminal snapshot instead of rerunning multiple inspection commands by hand.
+Use `board` when you want a continuously refreshing terminal snapshot instead of rerunning multiple inspection commands by hand. When stdout is attached to a terminal and `--watch` is not set, `memori board` opens the interactive TUI automatically.
 
 ```bash
+go run ./cmd/memori board
 go run ./cmd/memori board --watch --interval 5s
 go run ./cmd/memori board --agent writer-1 --watch --interval 3s
 go run ./cmd/memori board --agent writer-1 --json
 ```
+
+In the interactive TUI:
+
+- `j` / `k` move through issues
+- `h` / `l` switch lanes
+- `[` jumps to the parent issue and `]` jumps to the first child
+- `{` collapses children and `}` expands them
+- `/` opens issue-id search and `enter` jumps to the selected result
+- `space` toggles the detail pane, `?` opens help, and `q` exits
 
 The board surfaces:
 
@@ -212,6 +232,7 @@ The board surfaces:
 - blocked work (`Blocked`)
 - ready work (`Todo`) ranked from existing `issue next` guidance
 - likely next work, including continuity signals such as focus, packets, open loops, and gate state
+- hierarchy context such as parent, child, depth, and sibling metadata for each issue
 
 For split panes, keep one shell running `board --watch` and do mutations in another. Use `--agent` when you want the likely-next panel to reflect a specific worker's current focus and recovery packet state.
 
@@ -269,6 +290,15 @@ go run ./cmd/memori db backup --out /tmp/memori-backup.db --json
 ```
 
 Use replay when projections need to be recomputed. Use rehydrate when a worker needs to resume efficiently from the latest packet or fallback context.
+
+## Current operator loop
+
+For day-to-day work, the shortest path is usually:
+
+1. `memori board` or `memori board --agent <id>` to see active, blocked, ready, and likely-next work.
+2. `memori issue next --agent <id> --json` when an agent needs a ranked continuity-aware recommendation.
+3. `memori issue show --key <issue>` and `memori event log --entity <issue> --json` before editing.
+4. `memori gate template list --json` when you need to find a close template before locking gates for a cycle.
 
 ## Command map
 
