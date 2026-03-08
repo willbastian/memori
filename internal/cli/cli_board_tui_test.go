@@ -115,7 +115,7 @@ func TestRenderBoardTUIWideShowsDetailPane(t *testing.T) {
 		"NEXT 1",
 		"ISSUE DETAIL",
 		"mem-a111111 · Next one",
-		"REASONS:",
+		"[ REASONS ]",
 		"focus for resume",
 	} {
 		if !strings.Contains(rendered, want) {
@@ -184,15 +184,15 @@ func TestRenderBoardTUINarrowDetailPrefersFullIssueContent(t *testing.T) {
 	model.detailOpen = true
 
 	rendered := renderBoardTUI(model, false)
-	descriptionIndex := strings.Index(rendered, "DESCRIPTION:")
-	acceptanceIndex := strings.Index(rendered, "ACCEPTANCE:")
-	reasonsIndex := strings.Index(rendered, "REASONS:")
+	descriptionIndex := strings.Index(rendered, "[ DESCRIPTION ]")
+	acceptanceIndex := strings.Index(rendered, "[ ACCEPTANCE ]")
+	reasonsIndex := strings.Index(rendered, "[ REASONS ]")
 	for _, want := range []string{
-		"DESCRIPTION:",
+		"[ DESCRIPTION ]",
 		"Ship the full issue detail",
-		"ACCEPTANCE:",
+		"[ ACCEPTANCE ]",
 		"compact panes.",
-		"REFERENCES:",
+		"[ REFERENCES ]",
 		"docs/board.md",
 	} {
 		if !strings.Contains(rendered, want) {

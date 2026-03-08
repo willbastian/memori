@@ -523,6 +523,7 @@ func boardDetailPanel(model boardTUIModel, theme boardTheme, width, height int) 
 
 	sections := boardDetailSections(row, width, width < 100)
 	for _, section := range sections {
+		lines = append(lines, boardDetailHeaderLine(theme, section.label, width, section.muted))
 		for _, line := range section.lines {
 			fg := theme.detailFG
 			if section.muted {
@@ -538,60 +539,88 @@ func boardDetailPanel(model boardTUIModel, theme boardTheme, width, height int) 
 }
 
 type boardDetailSection struct {
+	label string
 	lines []string
 	muted bool
 }
 
 func boardDetailSections(row boardIssueRow, width int, compact bool) []boardDetailSection {
 	sections := make([]boardDetailSection, 0, 4)
-	appendSection := func(lines []string, muted bool) {
-		if len(lines) == 0 {
+	appendSection := func(label string, lines []string, muted bool) {
+		if len(lines) == 0 && label == "" {
 			return
 		}
-		sections = append(sections, boardDetailSection{lines: lines, muted: muted})
+		sections = append(sections, boardDetailSection{label: label, lines: lines, muted: muted})
 	}
 
-	description := boardWrappedSection("Description", row.Issue.Description, width)
-	acceptance := boardWrappedSection("Acceptance", row.Issue.Acceptance, width)
-	reasons := boardWrappedSection("Reasons", strings.Join(orderBoardReasons(row.Reasons), "; "), width)
-	references := boardReferenceSection(row.Issue.References, width)
+	descriptionLabel, description := boardWrappedSection("Description", row.Issue.Description, width)
+	acceptanceLabel, acceptance := boardWrappedSection("Acceptance", row.Issue.Acceptance, width)
+	reasonsLabel, reasons := boardWrappedSection("Reasons", strings.Join(orderBoardReasons(row.Reasons), "; "), width)
+	referencesLabel, references := boardReferenceSection(row.Issue.References, width)
 
 	if compact {
-		appendSection(description, false)
-		appendSection(acceptance, false)
-		appendSection(references, true)
-		appendSection(reasons, false)
+		appendSection(descriptionLabel, description, false)
+		appendSection(acceptanceLabel, acceptance, false)
+		appendSection(referencesLabel, references, true)
+		appendSection(reasonsLabel, reasons, false)
 		return sections
 	}
 
-	appendSection(reasons, false)
-	appendSection(description, false)
-	appendSection(acceptance, false)
-	appendSection(references, true)
+	appendSection(reasonsLabel, reasons, false)
+	appendSection(descriptionLabel, description, false)
+	appendSection(acceptanceLabel, acceptance, false)
+	appendSection(referencesLabel, references, true)
 	return sections
 }
 
-func boardReferenceSection(refs []string, width int) []string {
+func boardReferenceSection(refs []string, width int) (string, []string) {
 	if len(refs) == 0 {
-		return nil
+		return "", nil
 	}
-	lines := []string{truncateBoardLine("REFERENCES:", width)}
+	lines := make([]string, 0, len(refs))
 	for _, ref := range refs {
 		lines = append(lines, truncateBoardLine("  "+ref, width))
 	}
-	return lines
+	return "References", lines
 }
 
-func boardWrappedSection(label, value string, width int) []string {
+func boardWrappedSection(label, value string, width int) (string, []string) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return nil
+		return "", nil
 	}
-	lines := []string{truncateBoardLine(strings.ToUpper(label)+":", width)}
+	lines := make([]string, 0, 4)
 	for _, line := range wrapText(value, maxInt(width-2, 20)) {
 		lines = append(lines, truncateBoardLine("  "+line, width))
 	}
-	return lines
+	return label, lines
+}
+
+func boardDetailHeaderLine(theme boardTheme, label string, width int, muted bool) string {
+	label = strings.ToUpper(strings.TrimSpace(label))
+	if label == "" {
+		return padRight("", width)
+	}
+	fg, bg := boardDetailSectionPalette(theme, label, muted)
+	chip := theme.paintLine(fg, bg, true, " [ "+label+" ] ")
+	rule := theme.paintLine(theme.borderFG, "", false, strings.Repeat(".", maxInt(width-len(stripANSI(chip)), 0)))
+	return padVisual(chip+rule, width)
+}
+
+func boardDetailSectionPalette(theme boardTheme, label string, muted bool) (string, string) {
+	if muted {
+		return theme.mutedFG, theme.panelAltBG
+	}
+	switch label {
+	case "DESCRIPTION":
+		return theme.accentFG, theme.titleMetaBG
+	case "ACCEPTANCE":
+		return theme.readyFG, theme.readyBG
+	case "REASONS":
+		return theme.keyFG, theme.panelAltBG
+	default:
+		return theme.metaFG, theme.titleMetaBG
+	}
 }
 
 func boardHelpPanel(theme boardTheme, width, height int) []string {
