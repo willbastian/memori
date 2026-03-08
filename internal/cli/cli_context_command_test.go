@@ -579,3 +579,130 @@ func TestContextSessionLifecycleCommands(t *testing.T) {
 		t.Fatalf("expected closed session checkpoint failure, err=%v stderr=%s", err, stderr)
 	}
 }
+
+func TestContextPacketAndRehydrateHumanOutputGuideResumeFlow(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-context-human-flow.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-c1ffee1",
+		"--type", "task",
+		"--title", "Packet guidance issue",
+		"--command-id", "cmd-cli-context-human-issue-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"context", "packet", "build",
+		"--db", dbPath,
+		"--scope", "issue",
+		"--id", "mem-c1ffee1",
+		"--command-id", "cmd-cli-context-human-packet-1",
+	)
+	if err != nil {
+		t.Fatalf("context packet build issue: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "OK Built packet ")
+	mustContain(t, stdout, "Issue: mem-c1ffee1")
+	packetID := packetIDFromHumanOutput(t, stdout)
+	mustContain(t, stdout, "memori context packet show --packet "+packetID)
+	mustContain(t, stdout, "memori context packet use --agent <agent-id> --packet "+packetID)
+	mustContain(t, stdout, "memori issue show --key mem-c1ffee1")
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "packet", "use",
+		"--db", dbPath,
+		"--agent", "agent-human-1",
+		"--packet", packetID,
+		"--command-id", "cmd-cli-context-human-use-1",
+	)
+	if err != nil {
+		t.Fatalf("context packet use issue: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "OK Updated agent focus for agent-human-1 using packet "+packetID)
+	mustContain(t, stdout, "Packet Scope: issue")
+	mustContain(t, stdout, "Active Issue: mem-c1ffee1")
+	mustContain(t, stdout, "memori issue next --agent agent-human-1")
+	mustContain(t, stdout, "memori board --agent agent-human-1")
+	mustContain(t, stdout, "memori issue show --key mem-c1ffee1")
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "checkpoint",
+		"--db", dbPath,
+		"--session", "sess-human-1",
+		"--command-id", "cmd-cli-context-human-checkpoint-1",
+	)
+	if err != nil {
+		t.Fatalf("context checkpoint: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Created session checkpoint sess-human-1")
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "rehydrate",
+		"--db", dbPath,
+		"--session", "sess-human-1",
+	)
+	if err != nil {
+		t.Fatalf("context rehydrate fallback: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "OK Rehydrated session sess-human-1 via relevant-chunks-fallback")
+	mustContain(t, stdout, "Note No saved session packet was available; synthesized resume context from recent session chunks.")
+	mustContain(t, stdout, "memori context packet build --scope session --id sess-human-1")
+	mustContain(t, stdout, "memori context summarize --session sess-human-1")
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "packet", "build",
+		"--db", dbPath,
+		"--scope", "session",
+		"--id", "sess-human-1",
+		"--command-id", "cmd-cli-context-human-session-packet-1",
+	)
+	if err != nil {
+		t.Fatalf("context packet build session: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "OK Built packet ")
+	mustContain(t, stdout, "Session: sess-human-1")
+	sessionPacketID := packetIDFromHumanOutput(t, stdout)
+	mustContain(t, stdout, "memori context packet show --packet "+sessionPacketID)
+	mustContain(t, stdout, "memori context rehydrate --session sess-human-1")
+	mustContain(t, stdout, "memori context packet use --agent <agent-id> --packet "+sessionPacketID)
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "rehydrate",
+		"--db", dbPath,
+		"--session", "sess-human-1",
+	)
+	if err != nil {
+		t.Fatalf("context rehydrate packet-first: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "OK Rehydrated session sess-human-1 via packet")
+	mustContain(t, stdout, "Note Using the latest saved recovery packet.")
+	mustContain(t, stdout, "Packet ID: "+sessionPacketID)
+	mustContain(t, stdout, "memori context packet show --packet "+sessionPacketID)
+	mustContain(t, stdout, "memori context summarize --session sess-human-1")
+}
+
+func packetIDFromHumanOutput(t *testing.T, stdout string) string {
+	t.Helper()
+
+	for _, line := range strings.Split(stdout, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "OK Built packet ") {
+			continue
+		}
+		rest := strings.TrimPrefix(line, "OK Built packet ")
+		if idx := strings.Index(rest, " "); idx > 0 {
+			return rest[:idx]
+		}
+	}
+	t.Fatalf("expected packet id in output, got:\n%s", stdout)
+	return ""
+}

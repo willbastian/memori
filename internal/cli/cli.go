@@ -1130,11 +1130,19 @@ func runContextRehydrate(args []string, out io.Writer) error {
 		})
 	}
 
-	_, _ = fmt.Fprintf(out, "Rehydrated session %s via %s\n", result.SessionID, result.Source)
-	_, _ = fmt.Fprintf(out, "Packet Scope: %s\n", result.Packet.Scope)
-	if strings.TrimSpace(result.Packet.PacketID) != "" {
-		_, _ = fmt.Fprintf(out, "Packet ID: %s\n", result.Packet.PacketID)
+	ui := newTextUI(out)
+	ui.success(fmt.Sprintf("Rehydrated session %s via %s", result.SessionID, result.Source))
+	if sourceMsg := rehydrateSourceMessage(result.Source); sourceMsg != "" {
+		ui.note(sourceMsg)
 	}
+	ui.field("Packet Scope", result.Packet.Scope)
+	if strings.TrimSpace(result.Packet.PacketID) != "" {
+		ui.field("Packet ID", result.Packet.PacketID)
+	}
+	if issueID := packetIssueIDForCLI(result.Packet); issueID != "" {
+		ui.field("Issue", issueID)
+	}
+	ui.nextSteps(rehydrateNextSteps(result.SessionID, result.Source, result.Packet.PacketID, packetIssueIDForCLI(result.Packet))...)
 	return nil
 }
 
@@ -1202,7 +1210,15 @@ func runContextPacketBuild(args []string, out io.Writer) error {
 		})
 	}
 
-	_, _ = fmt.Fprintf(out, "Built packet %s (%s)\n", packet.PacketID, packet.Scope)
+	ui := newTextUI(out)
+	ui.success(fmt.Sprintf("Built packet %s (%s)", packet.PacketID, packet.Scope))
+	if issueID := packetIssueIDForCLI(packet); issueID != "" {
+		ui.field("Issue", issueID)
+	}
+	if packet.Scope == "session" {
+		ui.field("Session", packetSessionIDForCLI(packet))
+	}
+	ui.nextSteps(packetBuildNextSteps(packet.PacketID, packet.Scope, packetIssueIDForCLI(packet), packetSessionIDForCLI(packet))...)
 	return nil
 }
 
@@ -1295,7 +1311,23 @@ func runContextPacketUse(args []string, out io.Writer) error {
 		})
 	}
 
-	_, _ = fmt.Fprintf(out, "Updated agent focus for %s using packet %s\n", focus.AgentID, packet.PacketID)
+	ui := newTextUI(out)
+	if idempotent {
+		ui.note(fmt.Sprintf("Agent focus for %s already points at packet %s.", focus.AgentID, packet.PacketID))
+	} else {
+		ui.success(fmt.Sprintf("Updated agent focus for %s using packet %s", focus.AgentID, packet.PacketID))
+	}
+	ui.field("Packet Scope", packet.Scope)
+	if strings.TrimSpace(focus.ActiveIssueID) != "" {
+		ui.field("Active Issue", focus.ActiveIssueID)
+	}
+	if focus.ActiveCycleNo > 0 {
+		ui.field("Active Cycle", strconv.Itoa(focus.ActiveCycleNo))
+	}
+	if packet.Scope == "session" {
+		ui.field("Session", packetSessionIDForCLI(packet))
+	}
+	ui.nextSteps(packetUseNextSteps(focus.AgentID, packet.PacketID, focus.ActiveIssueID, packetSessionIDForCLI(packet))...)
 	return nil
 }
 

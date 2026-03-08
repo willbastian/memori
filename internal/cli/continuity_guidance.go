@@ -3,6 +3,8 @@ package cli
 import (
 	"fmt"
 	"strings"
+
+	"github.com/willbastian/memori/internal/store"
 )
 
 func continuitySignalsPresent(reasons []string) bool {
@@ -38,4 +40,125 @@ func continuityBootstrapSteps(issueID string) []string {
 		fmt.Sprintf("memori context packet build --scope issue --id %s", issueID),
 		fmt.Sprintf("memori context loops --issue %s", issueID),
 	}
+}
+
+func packetBuildNextSteps(packetID, scope, issueID, sessionID string) []string {
+	packetID = strings.TrimSpace(packetID)
+	scope = strings.TrimSpace(scope)
+	issueID = strings.TrimSpace(issueID)
+	sessionID = strings.TrimSpace(sessionID)
+
+	steps := make([]string, 0, 3)
+	if packetID != "" {
+		steps = append(steps, fmt.Sprintf("memori context packet show --packet %s", packetID))
+	}
+	switch scope {
+	case "issue":
+		if packetID != "" {
+			steps = append(steps, fmt.Sprintf("memori context packet use --agent <agent-id> --packet %s", packetID))
+		}
+		if issueID != "" {
+			steps = append(steps, fmt.Sprintf("memori issue show --key %s", issueID))
+		}
+	case "session":
+		if sessionID != "" {
+			steps = append(steps, fmt.Sprintf("memori context rehydrate --session %s", sessionID))
+		}
+		if packetID != "" {
+			steps = append(steps, fmt.Sprintf("memori context packet use --agent <agent-id> --packet %s", packetID))
+		}
+	}
+	return steps
+}
+
+func packetUseNextSteps(agentID, packetID, issueID, sessionID string) []string {
+	agentID = strings.TrimSpace(agentID)
+	packetID = strings.TrimSpace(packetID)
+	issueID = strings.TrimSpace(issueID)
+	sessionID = strings.TrimSpace(sessionID)
+
+	steps := make([]string, 0, 3)
+	if issueID != "" {
+		steps = append(steps,
+			fmt.Sprintf("memori issue next --agent %s", agentID),
+			fmt.Sprintf("memori board --agent %s", agentID),
+			fmt.Sprintf("memori issue show --key %s", issueID),
+		)
+		return steps
+	}
+	if sessionID != "" {
+		steps = append(steps, fmt.Sprintf("memori context rehydrate --session %s", sessionID))
+	}
+	if agentID != "" {
+		steps = append(steps, fmt.Sprintf("memori issue next --agent %s", agentID))
+	}
+	if packetID != "" {
+		steps = append(steps, fmt.Sprintf("memori context packet show --packet %s", packetID))
+	}
+	return steps
+}
+
+func rehydrateSourceMessage(source string) string {
+	switch strings.TrimSpace(source) {
+	case "packet":
+		return "Using the latest saved recovery packet."
+	case "relevant-chunks-fallback":
+		return "No saved session packet was available; synthesized resume context from recent session chunks."
+	case "closed-session-summary":
+		return "No saved closed-session packet was available; synthesized a closure-aware summary instead."
+	default:
+		return ""
+	}
+}
+
+func rehydrateNextSteps(sessionID, source, packetID, issueID string) []string {
+	sessionID = strings.TrimSpace(sessionID)
+	source = strings.TrimSpace(source)
+	packetID = strings.TrimSpace(packetID)
+	issueID = strings.TrimSpace(issueID)
+
+	steps := make([]string, 0, 3)
+	if issueID != "" {
+		steps = append(steps, fmt.Sprintf("memori issue show --key %s", issueID))
+	}
+	if packetID != "" {
+		steps = append(steps, fmt.Sprintf("memori context packet show --packet %s", packetID))
+	}
+	if sessionID != "" && source != "packet" {
+		steps = append(steps, fmt.Sprintf("memori context packet build --scope session --id %s", sessionID))
+	}
+	if sessionID != "" {
+		steps = append(steps, fmt.Sprintf("memori context summarize --session %s", sessionID))
+	}
+	return steps
+}
+
+func packetIssueIDForCLI(packet store.RehydratePacket) string {
+	if strings.TrimSpace(packet.IssueID) != "" {
+		return strings.TrimSpace(packet.IssueID)
+	}
+	if strings.TrimSpace(packet.Scope) == "issue" && strings.TrimSpace(packet.ScopeID) != "" {
+		return strings.TrimSpace(packet.ScopeID)
+	}
+	if stateRaw, ok := packet.Packet["state"].(map[string]any); ok {
+		if issueID := strings.TrimSpace(fmt.Sprint(stateRaw["issue_id"])); issueID != "" && issueID != "<nil>" {
+			return issueID
+		}
+	}
+	return ""
+}
+
+func packetSessionIDForCLI(packet store.RehydratePacket) string {
+	if strings.TrimSpace(packet.SessionID) != "" {
+		return strings.TrimSpace(packet.SessionID)
+	}
+	if strings.TrimSpace(packet.Scope) == "session" && strings.TrimSpace(packet.ScopeID) != "" {
+		return strings.TrimSpace(packet.ScopeID)
+	}
+	if stateRaw, ok := packet.Packet["state"].(map[string]any); ok {
+		if sessionID := strings.TrimSpace(fmt.Sprint(stateRaw["session_id"])); sessionID != "" && sessionID != "<nil>" {
+			return sessionID
+		}
+	}
+	return ""
 }
