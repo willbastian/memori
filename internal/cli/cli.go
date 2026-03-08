@@ -76,7 +76,7 @@ func runHelp(args []string, out io.Writer) error {
 			"memori init [--db <path>] [--issue-prefix <prefix>] [--json]",
 			"memori issue create --type epic|story|task|bug --title <title> [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] [--command-id <id>] [--json]",
 			"memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] [--command-id <id>] [--json]",
-			"memori issue update --key <prefix-shortSHA> [--status todo|inprogress|blocked|done] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--actor <actor>] [--command-id <id>] [--json]",
+			"memori issue update --key <prefix-shortSHA> [--status todo|inprogress|blocked|done|wontdo] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--actor <actor>] [--command-id <id>] [--json]",
 			"memori issue show --key <prefix-shortSHA> [--json]",
 			"memori issue next [--agent <id>] [--json]",
 			"memori board [--db <path>] [--agent <id>] [--watch] [--interval <duration>] [--json]",
@@ -94,7 +94,7 @@ func runHelp(args []string, out io.Writer) error {
 			"memori context packet show --packet <id> [--json]",
 			"memori context packet use --agent <id> --packet <id> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori context loops [--issue <prefix-shortSHA>] [--cycle <n>] [--json]",
-			"memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]",
+			"memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done|wontdo] [--parent <key>] [--json]",
 			"memori event log --entity <entityType:id|id> [--json]",
 			"memori db status [--json]",
 			"memori db migrate [--to <version>] [--json]",
@@ -451,7 +451,7 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
 	key := fs.String("key", "", "issue key")
 	id := fs.String("id", "", "deprecated alias for --key")
-	status := fs.String("status", "", "issue status: todo|inprogress|blocked|done")
+	status := fs.String("status", "", "issue status: todo|inprogress|blocked|done|wontdo")
 	priority := fs.String("priority", "", "issue priority (e.g., P0|P1|P2)")
 	var labels stringSliceFlag
 	fs.Var(&labels, "label", "issue label (repeatable)")
@@ -768,7 +768,7 @@ func runBacklog(args []string, out io.Writer) error {
 	fs.SetOutput(io.Discard)
 	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
 	issueType := fs.String("type", "", "filter by issue type: epic|story|task|bug")
-	status := fs.String("status", "", "filter by status: todo|inprogress|blocked|done")
+	status := fs.String("status", "", "filter by status: todo|inprogress|blocked|done|wontdo")
 	parent := fs.String("parent", "", "filter by parent issue key")
 	jsonOut := fs.Bool("json", false, "machine-readable output")
 	if err := fs.Parse(args); err != nil {
@@ -2713,6 +2713,8 @@ func colorForStatus(status string) string {
 		return "31" // red
 	case "Done":
 		return "32" // green
+	case "WontDo":
+		return "35" // magenta
 	default:
 		return "37" // white
 	}
@@ -2788,7 +2790,7 @@ func printHelp(out io.Writer) {
 
 	ui.section("Human Workflows")
 	ui.bullet("memori auth status [--db <path>] [--json]")
-	ui.bullet("memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]")
+	ui.bullet("memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done|wontdo] [--parent <key>] [--json]")
 	ui.bullet("memori board [--db <path>] [--agent <id>] [--watch] [--interval <duration>] [--json]")
 	ui.bullet("memori issue show --key <prefix-shortSHA> [--json]")
 	ui.bullet("memori gate status --issue <prefix-shortSHA> [--cycle <n>] [--json]")
@@ -2813,7 +2815,7 @@ func printHelp(out io.Writer) {
 	ui.bullet("memori init [--db <path>] [--issue-prefix <prefix>] [--json]")
 	ui.bullet("memori issue create --type epic|story|task|bug --title <title> [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] [--command-id <id>] [--json]")
-	ui.bullet("memori issue update --key <prefix-shortSHA> [--status todo|inprogress|blocked|done] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--actor <actor>] [--command-id <id>] [--json]")
+	ui.bullet("memori issue update --key <prefix-shortSHA> [--status todo|inprogress|blocked|done|wontdo] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori gate template create --id <template-id> --version <n> --applies-to epic|story|task|bug [--applies-to ...] --file <path> [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori gate template approve --id <template-id> --version <n> [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori gate template list [--type epic|story|task|bug] [--json]")

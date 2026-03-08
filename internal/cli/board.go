@@ -44,6 +44,7 @@ type boardSummary struct {
 	InProgress int `json:"in_progress"`
 	Blocked    int `json:"blocked"`
 	Done       int `json:"done"`
+	WontDo     int `json:"wont_do"`
 }
 
 type boardIssueRow struct {
@@ -195,6 +196,8 @@ func buildBoardSnapshot(ctx context.Context, s *store.Store, agent string, now t
 			snapshot.Summary.Blocked++
 		case "Done":
 			snapshot.Summary.Done++
+		case "WontDo":
+			snapshot.Summary.WontDo++
 		}
 
 		row := boardIssueRow{
@@ -571,6 +574,7 @@ func formatBoardSummary(summary boardSummary, colors bool) string {
 		fmt.Sprintf("%s=%d", colorize(colors, colorForStatus("Blocked"), "blocked"), summary.Blocked),
 		fmt.Sprintf("%s=%d", colorize(colors, colorForStatus("Todo"), "todo"), summary.Todo),
 		fmt.Sprintf("%s=%d", colorize(colors, colorForStatus("Done"), "done"), summary.Done),
+		fmt.Sprintf("%s=%d", colorize(colors, colorForStatus("WontDo"), "wontdo"), summary.WontDo),
 	}
 	return strings.Join(parts, ", ")
 }

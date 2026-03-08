@@ -1074,6 +1074,8 @@ func boardStatusCode(status string) string {
 		return "!!"
 	case "Done":
 		return "OK"
+	case "WontDo":
+		return "NO"
 	default:
 		return ".."
 	}
@@ -1112,6 +1114,8 @@ func boardStatusPalette(theme boardTheme, status string) string {
 		return theme.blockedBG
 	case "Done":
 		return theme.readyBG
+	case "WontDo":
+		return theme.panelAltBG
 	default:
 		return theme.nextBG
 	}
@@ -1123,6 +1127,7 @@ func formatBoardSummaryCompact(summary boardSummary) string {
 		fmt.Sprintf("I%d", summary.InProgress),
 		fmt.Sprintf("B%d", summary.Blocked),
 		fmt.Sprintf("R%d", summary.Todo),
+		fmt.Sprintf("W%d", summary.WontDo),
 	}
 	return strings.Join(parts, " ")
 }

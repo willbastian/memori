@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS work_items (
     type TEXT NOT NULL CHECK(type IN ('Epic','Story','Task','Bug')),
     title TEXT NOT NULL,
     parent_id TEXT,
-    status TEXT NOT NULL CHECK(status IN ('Todo','InProgress','Blocked','Done')),
+    status TEXT NOT NULL CHECK(status IN ('Todo','InProgress','Blocked','Done','WontDo')),
     priority TEXT,
     labels_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(labels_json)),
     current_cycle_no INTEGER NOT NULL DEFAULT 1,

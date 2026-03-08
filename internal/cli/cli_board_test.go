@@ -197,6 +197,52 @@ func TestBuildBoardSnapshotIncludesHierarchyMetadata(t *testing.T) {
 	}
 }
 
+func TestBuildBoardSnapshotCountsWontDoWithoutSurfacingActionableWork(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-board-wontdo.db")
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	if err := s.Initialize(ctx, store.InitializeParams{IssueKeyPrefix: "mem"}); err != nil {
+		t.Fatalf("initialize store: %v", err)
+	}
+
+	if _, _, _, err := s.CreateIssue(ctx, store.CreateIssueParams{
+		IssueID:   "mem-a111111",
+		Type:      "task",
+		Title:     "Declined task",
+		Actor:     "agent-1",
+		CommandID: "cmd-board-wontdo-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, store.UpdateIssueStatusParams{
+		IssueID:   "mem-a111111",
+		Status:    "wontdo",
+		Actor:     "human:alice",
+		CommandID: "cmd-board-wontdo-status-1",
+	}); err != nil {
+		t.Fatalf("mark WontDo: %v", err)
+	}
+
+	snapshot, err := buildBoardSnapshot(ctx, s, "", time.Date(2026, time.March, 8, 1, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("build board snapshot: %v", err)
+	}
+
+	if snapshot.Summary.Total != 1 || snapshot.Summary.WontDo != 1 {
+		t.Fatalf("expected WontDo count in summary, got %+v", snapshot.Summary)
+	}
+	if len(snapshot.Active) != 0 || len(snapshot.Blocked) != 0 || len(snapshot.Ready) != 0 {
+		t.Fatalf("expected WontDo issue to stay out of actionable lanes, got active=%+v blocked=%+v ready=%+v", snapshot.Active, snapshot.Blocked, snapshot.Ready)
+	}
+}
+
 func mustFindBoardRow(t *testing.T, rows []boardIssueRow, issueID string) boardIssueRow {
 	t.Helper()
 	for _, row := range rows {

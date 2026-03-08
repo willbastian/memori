@@ -1133,6 +1133,61 @@ func TestUpdateIssueStatusRejectsInvalidTransitions(t *testing.T) {
 	}
 }
 
+func TestUpdateIssueStatusWontDoRequiresHumanActor(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-2727272"
+	_, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Human-only WontDo",
+		Actor:     "agent-1",
+		CommandID: "cmd-wontdo-create-1",
+	})
+	if err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+
+	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "wont-do",
+		Actor:     "agent-1",
+		CommandID: "cmd-wontdo-llm-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "WontDo status requires a human actor") {
+		t.Fatalf("expected human-only WontDo restriction, got: %v", err)
+	}
+
+	updated, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "won't do",
+		Actor:     "human:alice",
+		CommandID: "cmd-wontdo-human-1",
+	})
+	if err != nil {
+		t.Fatalf("human Todo->WontDo should be allowed: %v", err)
+	}
+	if updated.Status != "WontDo" {
+		t.Fatalf("expected status WontDo, got %s", updated.Status)
+	}
+
+	reopened, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "todo",
+		Actor:     "agent-1",
+		CommandID: "cmd-wontdo-reopen-1",
+	})
+	if err != nil {
+		t.Fatalf("WontDo->Todo should be allowed: %v", err)
+	}
+	if reopened.Status != "Todo" {
+		t.Fatalf("expected reopened status Todo, got %s", reopened.Status)
+	}
+}
+
 func TestUpdateIssueStatusDoneRequiresLockedGateSet(t *testing.T) {
 	t.Parallel()
 
@@ -1446,6 +1501,74 @@ func TestUpdateIssueStatusDoneRequiresChildIssuesClosed(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("close parent issue after child closure: %v", err)
+	}
+	if closedParent.Status != "Done" {
+		t.Fatalf("expected parent status Done, got %s", closedParent.Status)
+	}
+}
+
+func TestUpdateIssueStatusDoneAllowsWontDoChildIssues(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	parentID := "mem-5757575"
+	childID := "mem-5858585"
+
+	_, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   parentID,
+		Type:      "story",
+		Title:     "Parent with wontdo child",
+		Actor:     "agent-1",
+		CommandID: "cmd-parent-wontdo-create-1",
+	})
+	if err != nil {
+		t.Fatalf("create parent issue: %v", err)
+	}
+	_, _, _, err = s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   childID,
+		Type:      "task",
+		Title:     "Skipped child",
+		ParentID:  parentID,
+		Actor:     "agent-1",
+		CommandID: "cmd-child-wontdo-create-1",
+	})
+	if err != nil {
+		t.Fatalf("create child issue: %v", err)
+	}
+	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   childID,
+		Status:    "wontdo",
+		Actor:     "human:alice",
+		CommandID: "cmd-child-wontdo-status-1",
+	})
+	if err != nil {
+		t.Fatalf("mark child WontDo: %v", err)
+	}
+	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   parentID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-parent-wontdo-progress-1",
+	})
+	if err != nil {
+		t.Fatalf("move parent to inprogress: %v", err)
+	}
+
+	parentGateSetID := "gs_close_parent_wontdo_1"
+	seedLockedGateSetForTest(t, s, parentID, parentGateSetID)
+	seedGateSetItemForTest(t, s, parentGateSetID, "review", "check", 1)
+	appendGateEvaluationEventForTest(t, s, parentID, parentGateSetID, "review", "PASS", "agent-1", "cmd-parent-wontdo-gate-pass-1")
+
+	closedParent, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   parentID,
+		Status:    "done",
+		Actor:     "agent-1",
+		CommandID: "cmd-parent-wontdo-done-1",
+	})
+	if err != nil {
+		t.Fatalf("close parent issue with WontDo child: %v", err)
 	}
 	if closedParent.Status != "Done" {
 		t.Fatalf("expected parent status Done, got %s", closedParent.Status)

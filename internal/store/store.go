@@ -948,6 +948,9 @@ func (s *Store) UpdateIssue(ctx context.Context, p UpdateIssueParams) (Issue, Ev
 		if err != nil {
 			return Issue{}, Event{}, false, err
 		}
+		if statusTo == "WontDo" && !actorIsHuman(p.Actor) {
+			return Issue{}, Event{}, false, errors.New("WontDo status requires a human actor")
+		}
 		if err := validateIssueStatusTransition(currentIssue.Status, statusTo); err != nil {
 			return Issue{}, Event{}, false, err
 		}
@@ -3898,7 +3901,7 @@ func normalizeIssueType(raw string) (string, error) {
 }
 
 func normalizeIssueStatus(raw string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
+	switch canonicalIssueStatusToken(raw) {
 	case "todo":
 		return "Todo", nil
 	case "inprogress":
@@ -3907,9 +3910,17 @@ func normalizeIssueStatus(raw string) (string, error) {
 		return "Blocked", nil
 	case "done":
 		return "Done", nil
+	case "wontdo":
+		return "WontDo", nil
 	default:
-		return "", fmt.Errorf("invalid --status %q (expected todo|inprogress|blocked|done)", raw)
+		return "", fmt.Errorf("invalid --status %q (expected todo|inprogress|blocked|done|wontdo)", raw)
 	}
+}
+
+func canonicalIssueStatusToken(raw string) string {
+	token := strings.ToLower(strings.TrimSpace(raw))
+	replacer := strings.NewReplacer("'", "", "’", "", "-", "", "_", "", " ", "")
+	return replacer.Replace(token)
 }
 
 func normalizeGateResult(raw string) (string, error) {
@@ -4400,6 +4411,11 @@ func gateCriteriaRefMatches(criteria any, want string) bool {
 func actorIsHumanGoverned(actor string) bool {
 	actor = strings.TrimSpace(strings.ToLower(actor))
 	return actor != "" && !strings.HasPrefix(actor, "llm:")
+}
+
+func actorIsHuman(actor string) bool {
+	actor = strings.TrimSpace(strings.ToLower(actor))
+	return strings.HasPrefix(actor, "human:")
 }
 
 func buildFrozenGateDefinition(templateRefs []string, gates []GateSetDefinition) (string, map[string]any, error) {
@@ -5583,10 +5599,11 @@ func validateIssueStatusTransition(from, to string) error {
 	}
 
 	allowed := map[string]map[string]bool{
-		"Todo":       {"InProgress": true, "Blocked": true},
+		"Todo":       {"InProgress": true, "Blocked": true, "WontDo": true},
 		"InProgress": {"Blocked": true, "Done": true},
 		"Blocked":    {"InProgress": true},
 		"Done":       {"InProgress": true},
+		"WontDo":     {"Todo": true},
 	}
 	if !allowed[fromStatus][toStatus] {
 		return fmt.Errorf("invalid status transition %q -> %q", fromStatus, toStatus)
@@ -5775,7 +5792,7 @@ func listIncompleteChildIssuesTx(ctx context.Context, tx *sql.Tx, parentID strin
 		SELECT id, status
 		FROM work_items
 		WHERE parent_id = ?
-			AND status != 'Done'
+			AND status NOT IN ('Done', 'WontDo')
 		ORDER BY id ASC
 	`, parentID)
 	if err != nil {
