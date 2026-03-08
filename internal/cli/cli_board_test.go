@@ -27,17 +27,52 @@ func TestBoardCommandHumanOutputShowsWorkBucketsAndLikelyNext(t *testing.T) {
 
 	for _, want := range []string{
 		"memori board",
-		"Active Work:",
-		"Blocked Work:",
-		"Ready Work:",
-		"Likely Next Work:",
-		"mem-a111111 [Task/InProgress] Active implementation",
-		"mem-b222222 [Bug/Blocked] Waiting on external fix",
-		"mem-c333333 [Task/Todo] Continuity-rich task (score=",
-		"why: matches the agent's active focus for resume",
+		"Summary:",
+		"Next:",
+		"Active (1):",
+		"Blocked (1):",
+		"Ready (2):",
+		"mem-a111111 Active implementation",
+		"mem-b222222 Waiting on external fix",
+		"mem-c333333 Continuity-rich task [s300,focus,packet,loop,+5 more]",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("expected board output to contain %q, got:\n%s", want, stdout)
+		}
+	}
+}
+
+func TestBoardCommandHumanOutputCapsLongSectionsInNarrowWidth(t *testing.T) {
+	t.Parallel()
+
+	snapshot := boardSnapshot{
+		GeneratedAt: "2026-03-08T01:00:00Z",
+		Summary: boardSummary{
+			Total: 7,
+			Todo:  5,
+		},
+		Ready: []boardIssueRow{
+			{Issue: store.Issue{ID: "mem-a111111", Title: "First very long ready item title"}},
+			{Issue: store.Issue{ID: "mem-b222222", Title: "Second very long ready item title"}},
+			{Issue: store.Issue{ID: "mem-c333333", Title: "Third very long ready item title"}},
+			{Issue: store.Issue{ID: "mem-d444444", Title: "Fourth very long ready item title"}},
+		},
+	}
+
+	stdout, err := renderBoardSnapshot(snapshot, boardRenderOptions{Width: 48})
+	if err != nil {
+		t.Fatalf("render board snapshot: %v", err)
+	}
+
+	if !strings.Contains(stdout, "Ready (4):") {
+		t.Fatalf("expected ready section count in output, got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "+2 more") {
+		t.Fatalf("expected capped ready section in narrow mode, got:\n%s", stdout)
+	}
+	for _, line := range strings.Split(stdout, "\n") {
+		if len(line) > 48 && !strings.Contains(line, "\x1b[") {
+			t.Fatalf("expected narrow lines to be truncated, got %q", line)
 		}
 	}
 }

@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,14 +11,13 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"memori/internal/store"
 )
-
-const ansiClearScreen = "\x1b[H\x1b[2J"
 
 type boardData struct {
 	Snapshot   boardSnapshot   `json:"snapshot"`
@@ -55,6 +56,7 @@ type boardRenderOptions struct {
 	Colors   bool
 	Watch    bool
 	Interval time.Duration
+	Width    int
 }
 
 func runBoard(args []string, out io.Writer) error {
@@ -86,16 +88,21 @@ func runBoard(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
-	renderFrame := func() error {
+	renderFrame := func() (string, string, error) {
 		snapshot, err := buildBoardSnapshot(baseCtx, s, *agent, time.Now().UTC())
 		if err != nil {
-			return err
+			return "", "", err
 		}
-		return renderBoardSnapshot(out, snapshot, boardRenderOptions{
+		rendered, err := renderBoardSnapshot(snapshot, boardRenderOptions{
 			Colors:   shouldUseColor(out),
 			Watch:    *watch,
 			Interval: *interval,
+			Width:    boardRenderWidth(),
 		})
+		if err != nil {
+			return "", "", err
+		}
+		return rendered, boardSnapshotSignature(snapshot), nil
 	}
 
 	if *jsonOut {
@@ -112,10 +119,15 @@ func runBoard(args []string, out io.Writer) error {
 	}
 
 	if !*watch {
-		return renderFrame()
+		rendered, _, err := renderFrame()
+		if err != nil {
+			return err
+		}
+		_, _ = io.WriteString(out, rendered)
+		return nil
 	}
 
-	return runBoardLoop(baseCtx, out, *interval, supportsScreenControl(out), renderFrame)
+	return runBoardLoop(baseCtx, out, *interval, renderFrame)
 }
 
 func buildBoardSnapshot(ctx context.Context, s *store.Store, agent string, now time.Time) (boardSnapshot, error) {
@@ -207,24 +219,32 @@ func sortBoardRows(rows []boardIssueRow, rankByID map[string]int) {
 	})
 }
 
-func renderBoardSnapshot(out io.Writer, snapshot boardSnapshot, opts boardRenderOptions) error {
-	ui := newTextUI(out)
-	ui.heading("memori board")
-	ui.field("Updated", snapshot.GeneratedAt)
-	if snapshot.Agent != "" {
-		ui.field("Agent", snapshot.Agent)
+func renderBoardSnapshot(snapshot boardSnapshot, opts boardRenderOptions) (string, error) {
+	var out bytes.Buffer
+	ui := newTextUI(&out)
+	width := opts.Width
+	if width <= 0 {
+		width = 80
 	}
-	ui.field("Summary", formatBoardSummary(snapshot.Summary, ui.colors))
+
+	header := "memori board"
 	if opts.Watch {
-		ui.field("Refresh", opts.Interval.String())
-		ui.note("Watching for updates. Press Ctrl+C to exit.")
+		header = fmt.Sprintf("%s [%s]", header, snapshot.GeneratedAt)
+	}
+	ui.heading(header)
+	boardField(ui, "Summary", formatBoardSummary(snapshot.Summary, ui.colors), width)
+	if snapshot.Agent != "" {
+		boardField(ui, "Agent", snapshot.Agent, width)
+	}
+	if opts.Watch {
+		boardField(ui, "Refresh", opts.Interval.String()+" (change-only)", width)
 	}
 	ui.blank()
 
-	renderBoardSection(ui, "Active Work", snapshot.Active, "No active work.", false)
-	renderBoardSection(ui, "Blocked Work", snapshot.Blocked, "No blocked work.", false)
-	renderBoardSection(ui, "Ready Work", snapshot.Ready, "No ready work.", false)
-	renderBoardSection(ui, "Likely Next Work", snapshot.LikelyNext, "No continuity-ranked work is ready yet.", true)
+	renderBoardNext(ui, snapshot.LikelyNext, width)
+	renderBoardSection(ui, "Active", snapshot.Active, boardSectionLimit(width), width)
+	renderBoardSection(ui, "Blocked", snapshot.Blocked, boardSectionLimit(width), width)
+	renderBoardSection(ui, "Ready", snapshot.Ready, boardSectionLimit(width), width)
 
 	if !opts.Watch {
 		nextCommand := "memori issue next"
@@ -236,29 +256,51 @@ func renderBoardSnapshot(out io.Writer, snapshot boardSnapshot, opts boardRender
 			nextCommand,
 		)
 	}
-	return nil
+	return out.String(), nil
 }
 
-func renderBoardSection(ui textUI, label string, rows []boardIssueRow, emptyMessage string, showReasons bool) {
-	ui.section(label)
+func renderBoardNext(ui textUI, rows []boardIssueRow, width int) {
+	ui.section("Next")
 	if len(rows) == 0 {
-		ui.bullet(emptyMessage)
+		ui.bullet("No continuity-ranked work is ready yet.")
 		ui.blank()
 		return
 	}
-	for _, row := range rows {
-		ui.bullet(formatBoardIssueRow(row, ui.colors))
-		if showReasons && len(row.Reasons) > 0 {
-			_, _ = fmt.Fprintf(ui.out, "  why: %s\n", strings.Join(compactReasons(orderBoardReasons(row.Reasons), 5), "; "))
-		}
+	for _, row := range rows[:minInt(len(rows), boardLikelyNextLimit(width))] {
+		ui.bullet(truncateBoardLine(formatBoardNextRow(row), width-2))
 	}
 	ui.blank()
 }
 
-func formatBoardIssueRow(row boardIssueRow, colors bool) string {
-	line := formatIssueLine(row.Issue, colors)
+func renderBoardSection(ui textUI, label string, rows []boardIssueRow, limit, width int) {
+	ui.section(fmt.Sprintf("%s (%d)", label, len(rows)))
+	if len(rows) == 0 {
+		ui.bullet("none")
+		ui.blank()
+		return
+	}
+	show := minInt(len(rows), limit)
+	for _, row := range rows[:show] {
+		ui.bullet(truncateBoardLine(formatBoardIssueRow(row), width-2))
+	}
+	if len(rows) > show {
+		ui.bullet(fmt.Sprintf("+%d more", len(rows)-show))
+	}
+	ui.blank()
+}
+
+func formatBoardIssueRow(row boardIssueRow) string {
+	return fmt.Sprintf("%s %s", row.Issue.ID, row.Issue.Title)
+}
+
+func formatBoardNextRow(row boardIssueRow) string {
+	line := formatBoardIssueRow(row)
+	tags := boardReasonTags(row.Reasons)
 	if row.Score > 0 {
-		line += fmt.Sprintf(" (score=%d)", row.Score)
+		tags = append([]string{fmt.Sprintf("s%d", row.Score)}, tags...)
+	}
+	if len(tags) > 0 {
+		line += " [" + strings.Join(tags, ",") + "]"
 	}
 	return line
 }
@@ -316,6 +358,63 @@ func boardReasonWeight(reason string) int {
 	}
 }
 
+func boardReasonTags(reasons []string) []string {
+	ordered := orderBoardReasons(reasons)
+	tags := make([]string, 0, len(ordered))
+	seen := make(map[string]struct{}, len(ordered))
+	for _, reason := range ordered {
+		tag := boardReasonTag(reason)
+		if tag == "" {
+			continue
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		tags = append(tags, tag)
+	}
+	return compactReasons(tags, 3)
+}
+
+func boardReasonTag(reason string) string {
+	switch {
+	case strings.Contains(reason, "matches the agent's active focus"):
+		return "focus"
+	case strings.Contains(reason, "agent already holds the latest recovery packet"):
+		return "packet"
+	case strings.Contains(reason, "open loop"):
+		return "loop"
+	case strings.Contains(reason, "required gate(s) are failing"):
+		return "fail"
+	case strings.Contains(reason, "required gate(s) are blocked"):
+		return "blocked"
+	case strings.Contains(reason, "required gate(s) still need evaluation"):
+		return "gates"
+	case strings.Contains(reason, "issue packet is ready") || strings.Contains(reason, "fresh issue packet"):
+		return "fresh"
+	case strings.Contains(reason, "packet is stale"):
+		return "stale"
+	case strings.Contains(reason, "priority P0"):
+		return "p0"
+	case strings.Contains(reason, "priority P1"):
+		return "p1"
+	case strings.Contains(reason, "priority P2"):
+		return "p2"
+	case strings.Contains(reason, "in-progress work"):
+		return "active"
+	case strings.Contains(reason, "todo work"):
+		return "todo"
+	case strings.Contains(reason, "implementation-ready"):
+		return "task"
+	case strings.Contains(reason, "operational value"):
+		return "bug"
+	case strings.Contains(reason, "can start immediately"):
+		return "standalone"
+	default:
+		return ""
+	}
+}
+
 func newBoardData(snapshot boardSnapshot) boardData {
 	data := boardData{
 		Snapshot: snapshot,
@@ -334,7 +433,7 @@ func newBoardData(snapshot boardSnapshot) boardData {
 func formatBoardSummary(summary boardSummary, colors bool) string {
 	parts := []string{
 		fmt.Sprintf("total=%d", summary.Total),
-		fmt.Sprintf("%s=%d", colorize(colors, colorForStatus("InProgress"), "in_progress"), summary.InProgress),
+		fmt.Sprintf("%s=%d", colorize(colors, colorForStatus("InProgress"), "ip"), summary.InProgress),
 		fmt.Sprintf("%s=%d", colorize(colors, colorForStatus("Blocked"), "blocked"), summary.Blocked),
 		fmt.Sprintf("%s=%d", colorize(colors, colorForStatus("Todo"), "todo"), summary.Todo),
 		fmt.Sprintf("%s=%d", colorize(colors, colorForStatus("Done"), "done"), summary.Done),
@@ -342,30 +441,85 @@ func formatBoardSummary(summary boardSummary, colors bool) string {
 	return strings.Join(parts, ", ")
 }
 
-func supportsScreenControl(out io.Writer) bool {
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("TERM")), "dumb") {
-		return false
+func boardField(ui textUI, label, value string, width int) {
+	available := width - len(label) - 2
+	if available < 8 {
+		available = 8
 	}
-	file, ok := out.(*os.File)
-	if !ok {
-		return false
-	}
-	info, err := file.Stat()
-	if err != nil {
-		return false
-	}
-	return (info.Mode() & os.ModeCharDevice) != 0
+	ui.field(label, truncateBoardLine(value, available))
 }
 
-func runBoardLoop(ctx context.Context, out io.Writer, interval time.Duration, clear bool, render func() error) error {
-	renderFrame := func() error {
-		if clear {
-			_, _ = io.WriteString(out, ansiClearScreen)
+func boardRenderWidth() int {
+	if raw := strings.TrimSpace(os.Getenv("COLUMNS")); raw != "" {
+		if value, err := strconv.Atoi(raw); err == nil && value > 20 {
+			return value
 		}
-		return render()
+	}
+	return 80
+}
+
+func boardSectionLimit(width int) int {
+	switch {
+	case width < 50:
+		return 2
+	case width < 80:
+		return 3
+	default:
+		return 5
+	}
+}
+
+func boardLikelyNextLimit(width int) int {
+	switch {
+	case width < 50:
+		return 1
+	case width < 80:
+		return 2
+	default:
+		return 3
+	}
+}
+
+func truncateBoardLine(value string, width int) string {
+	value = strings.TrimSpace(value)
+	if width <= 0 || len(value) <= width {
+		return value
+	}
+	if width <= 3 {
+		return value[:width]
+	}
+	return value[:width-3] + "..."
+}
+
+func boardSnapshotSignature(snapshot boardSnapshot) string {
+	normalized := snapshot
+	normalized.GeneratedAt = ""
+	payload, err := json.Marshal(normalized)
+	if err != nil {
+		return ""
+	}
+	return string(payload)
+}
+
+func runBoardLoop(ctx context.Context, out io.Writer, interval time.Duration, render func() (string, string, error)) error {
+	var lastSignature string
+	renderFrame := func(first bool) error {
+		rendered, signature, err := render()
+		if err != nil {
+			return err
+		}
+		if !first && signature == lastSignature {
+			return nil
+		}
+		if !first {
+			_, _ = io.WriteString(out, "\n")
+		}
+		lastSignature = signature
+		_, _ = io.WriteString(out, rendered)
+		return nil
 	}
 
-	if err := renderFrame(); err != nil {
+	if err := renderFrame(true); err != nil {
 		return err
 	}
 
@@ -377,9 +531,16 @@ func runBoardLoop(ctx context.Context, out io.Writer, interval time.Duration, cl
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			if err := renderFrame(); err != nil {
+			if err := renderFrame(false); err != nil {
 				return err
 			}
 		}
 	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

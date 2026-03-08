@@ -112,14 +112,14 @@ func TestBoardCommandHumanOutputShowsSections(t *testing.T) {
 
 	for _, want := range []string{
 		"memori board",
-		"Active Work:",
-		"Blocked Work:",
-		"Ready Work:",
-		"Likely Next Work:",
-		"mem-a121212 [Task/InProgress] Baseline active task",
-		"mem-d454545 [Bug/Blocked] Blocked bug",
-		"mem-b343434 [Task/Todo] Continuity-heavy task",
-		"why: todo work is actionable",
+		"Summary:",
+		"Next:",
+		"Active (1):",
+		"Blocked (1):",
+		"Ready (2):",
+		"mem-a121212 Baseline active task",
+		"mem-d454545 Blocked bug",
+		"mem-b343434 Continuity-heavy task [s300,focus,packet,loop,+5 more]",
 		"Next:",
 		"memori board --watch",
 	} {
@@ -136,13 +136,12 @@ func TestRunBoardLoopRendersUntilContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	renders := 0
 
-	err := runBoardLoop(ctx, &out, time.Millisecond, true, func() error {
+	err := runBoardLoop(ctx, &out, time.Millisecond, func() (string, string, error) {
 		renders++
-		_, _ = fmt.Fprintf(&out, "frame-%d\n", renders)
 		if renders == 2 {
 			cancel()
 		}
-		return nil
+		return fmt.Sprintf("frame-%d\n", minInt(renders, 1)), "same", nil
 	})
 	if err != nil {
 		t.Fatalf("run board loop: %v", err)
@@ -150,8 +149,8 @@ func TestRunBoardLoopRendersUntilContextCancelled(t *testing.T) {
 	if renders != 2 {
 		t.Fatalf("expected exactly 2 renders before cancel, got %d", renders)
 	}
-	if strings.Count(out.String(), ansiClearScreen) != 2 {
-		t.Fatalf("expected clear sequence per frame, got:\n%s", out.String())
+	if got := out.String(); got != "frame-1\n" {
+		t.Fatalf("expected change-only output, got:\n%s", got)
 	}
 }
 
