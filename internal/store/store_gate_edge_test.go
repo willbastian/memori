@@ -1333,6 +1333,47 @@ func TestReplayProjectionsClearsStaleGateProjectionRows(t *testing.T) {
 	}
 }
 
+func TestReplayProjectionsSurfacesProjectionCleanupAndEventQueryFailures(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing gate status projection table", func(t *testing.T) {
+		t.Parallel()
+
+		s := newTestStore(t)
+		ctx := context.Background()
+		if _, err := s.db.ExecContext(ctx, `DROP TABLE gate_status_projection`); err != nil {
+			t.Fatalf("drop gate_status_projection: %v", err)
+		}
+
+		if _, err := s.ReplayProjections(ctx); err == nil || !strings.Contains(err.Error(), "clear gate_status_projection") {
+			t.Fatalf("expected replay cleanup error for gate_status_projection, got %v", err)
+		}
+	})
+
+	t.Run("missing events table", func(t *testing.T) {
+		t.Parallel()
+
+		s := newTestStore(t)
+		ctx := context.Background()
+		if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+			IssueID:   "mem-c8d9e0f",
+			Type:      "task",
+			Title:     "Replay missing events table",
+			Actor:     "agent-1",
+			CommandID: "cmd-replay-missing-events-1",
+		}); err != nil {
+			t.Fatalf("create issue before dropping events table: %v", err)
+		}
+		if _, err := s.db.ExecContext(ctx, `DROP TABLE events`); err != nil {
+			t.Fatalf("drop events table: %v", err)
+		}
+
+		if _, err := s.ReplayProjections(ctx); err == nil || !strings.Contains(err.Error(), "query events for replay") {
+			t.Fatalf("expected replay query events error, got %v", err)
+		}
+	})
+}
+
 func TestGetHumanAuthCredentialTxReturnsStoredCredential(t *testing.T) {
 	t.Parallel()
 
