@@ -273,6 +273,38 @@ type appendEventResult struct {
 	AlreadyExists bool
 }
 
+func defaultCorrelationID(entityType, entityID string) string {
+	entityType = strings.TrimSpace(entityType)
+	entityID = strings.TrimSpace(entityID)
+	if entityType == "" || entityID == "" {
+		return ""
+	}
+	return entityType + ":" + entityID
+}
+
+func gateTemplateCorrelationID(templateID string, version int) string {
+	if strings.TrimSpace(templateID) == "" || version <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("gate-template:%s@%d", templateID, version)
+}
+
+func gateCycleCorrelationID(issueID string, cycleNo int) string {
+	if strings.TrimSpace(issueID) == "" || cycleNo <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("gate-cycle:%s:%d", issueID, cycleNo)
+}
+
+func packetScopeCorrelationID(scope, scopeID string) string {
+	scope = strings.TrimSpace(scope)
+	scopeID = strings.TrimSpace(scopeID)
+	if scope == "" || scopeID == "" {
+		return ""
+	}
+	return fmt.Sprintf("packet-scope:%s:%s", scope, scopeID)
+}
+
 type issueCreatedPayload struct {
 	IssueID            string   `json:"issue_id"`
 	Type               string   `json:"type"`
@@ -1251,6 +1283,10 @@ func (s *Store) EvaluateGate(ctx context.Context, p EvaluateGateParams) (GateEva
 	if !found {
 		return GateEvaluation{}, Event{}, false, fmt.Errorf("no locked gate set found for issue %q", issueID)
 	}
+	gateSetEvent, _, err := latestEventForEntityTx(ctx, tx, entityTypeGateSet, gateSet.GateSetID)
+	if err != nil {
+		return GateEvaluation{}, Event{}, false, err
+	}
 	proof := normalizeGateEvaluationProof(p.Proof)
 	if proof != nil && strings.TrimSpace(proof.GateSetHash) == "" {
 		proof.GateSetHash = gateSet.GateSetHash
@@ -1324,6 +1360,8 @@ func (s *Store) EvaluateGate(ctx context.Context, p EvaluateGateParams) (GateEva
 		PayloadJSON:         string(payloadBytes),
 		Actor:               p.Actor,
 		CommandID:           p.CommandID,
+		CausationID:         gateSetEvent.EventID,
+		CorrelationID:       gateCycleCorrelationID(issueID, gateSet.CycleNo),
 		EventPayloadVersion: 1,
 	})
 	if err != nil {
@@ -1930,6 +1968,8 @@ func (s *Store) BuildRehydratePacket(ctx context.Context, p BuildPacketParams) (
 		PayloadJSON:         string(payloadBytes),
 		Actor:               actor,
 		CommandID:           commandID,
+		CausationID:         latestEventID,
+		CorrelationID:       packetScopeCorrelationID(scope, scopeID),
 		EventPayloadVersion: 1,
 	})
 	if err != nil {
@@ -2005,6 +2045,10 @@ func (s *Store) UseRehydratePacket(ctx context.Context, p UsePacketParams) (Agen
 	if err != nil {
 		return AgentFocus{}, RehydratePacket{}, false, err
 	}
+	packetEvent, packetEventFound, err := latestEventForEntityTx(ctx, tx, entityTypePacket, packet.PacketID)
+	if err != nil {
+		return AgentFocus{}, RehydratePacket{}, false, err
+	}
 
 	activeIssueID := ""
 	activeCycleNo := 0
@@ -2032,6 +2076,15 @@ func (s *Store) UseRehydratePacket(ctx context.Context, p UsePacketParams) (Agen
 		return AgentFocus{}, RehydratePacket{}, false, fmt.Errorf("marshal agent focus payload: %w", err)
 	}
 
+	correlationID := packetScopeCorrelationID(packet.Scope, anyToString(packet.Packet["scope_id"]))
+	causationID := ""
+	if packetEventFound {
+		causationID = packetEvent.EventID
+		if strings.TrimSpace(packetEvent.CorrelationID) != "" {
+			correlationID = packetEvent.CorrelationID
+		}
+	}
+
 	appendRes, err := s.appendEventTx(ctx, tx, appendEventRequest{
 		EntityType:          entityTypeFocus,
 		EntityID:            agentID,
@@ -2039,6 +2092,8 @@ func (s *Store) UseRehydratePacket(ctx context.Context, p UsePacketParams) (Agen
 		PayloadJSON:         string(payloadBytes),
 		Actor:               actor,
 		CommandID:           commandID,
+		CausationID:         causationID,
+		CorrelationID:       correlationID,
 		EventPayloadVersion: 1,
 	})
 	if err != nil {
@@ -2273,6 +2328,7 @@ func (s *Store) CreateGateTemplate(ctx context.Context, p CreateGateTemplatePara
 		PayloadJSON:         string(payloadBytes),
 		Actor:               p.Actor,
 		CommandID:           p.CommandID,
+		CorrelationID:       gateTemplateCorrelationID(templateID, p.Version),
 		EventPayloadVersion: 1,
 	})
 	if err != nil {
@@ -2396,6 +2452,7 @@ func (s *Store) ApproveGateTemplate(ctx context.Context, p ApproveGateTemplatePa
 		PayloadJSON:         string(payloadBytes),
 		Actor:               p.Actor,
 		CommandID:           p.CommandID,
+		CorrelationID:       gateTemplateCorrelationID(templateID, p.Version),
 		EventPayloadVersion: 1,
 	})
 	if err != nil {
@@ -2630,6 +2687,7 @@ func (s *Store) InstantiateGateSet(ctx context.Context, p InstantiateGateSetPara
 		PayloadJSON:         string(payloadBytes),
 		Actor:               p.Actor,
 		CommandID:           p.CommandID,
+		CorrelationID:       gateCycleCorrelationID(issueID, cycleNo),
 		EventPayloadVersion: 1,
 	})
 	if err != nil {
@@ -2757,6 +2815,7 @@ func (s *Store) LockGateSet(ctx context.Context, p LockGateSetParams) (GateSet, 
 			PayloadJSON:         string(payloadBytes),
 			Actor:               p.Actor,
 			CommandID:           p.CommandID,
+			CorrelationID:       gateCycleCorrelationID(issueID, cycleNo),
 			EventPayloadVersion: 1,
 		})
 		if err != nil {
@@ -2805,6 +2864,27 @@ func findEventByActorCommandTx(ctx context.Context, tx *sql.Tx, actor, commandID
 		return Event{}, false, nil
 	}
 	return Event{}, false, fmt.Errorf("check command idempotency: %w", err)
+}
+
+func latestEventForEntityTx(ctx context.Context, tx *sql.Tx, entityType, entityID string) (Event, bool, error) {
+	row := tx.QueryRowContext(ctx, `
+		SELECT
+			event_id, event_order, entity_type, entity_id, entity_seq,
+			event_type, payload_json, actor, command_id, causation_id,
+			correlation_id, created_at, hash, prev_hash, event_payload_version
+		FROM events
+		WHERE entity_type = ? AND entity_id = ?
+		ORDER BY entity_seq DESC
+		LIMIT 1
+	`, entityType, entityID)
+	event, err := scanEvent(row)
+	if err == nil {
+		return event, true, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return Event{}, false, nil
+	}
+	return Event{}, false, fmt.Errorf("query latest event for %s:%s: %w", entityType, entityID, err)
 }
 
 func (s *Store) ListIssues(ctx context.Context, p ListIssuesParams) ([]Issue, error) {
@@ -3778,6 +3858,19 @@ func (s *Store) appendEventTx(ctx context.Context, tx *sql.Tx, req appendEventRe
 		return appendEventResult{}, fmt.Errorf("query entity sequence: %w", err)
 	}
 	nextSeq := maxSeq + 1
+
+	if strings.TrimSpace(req.CorrelationID) == "" {
+		req.CorrelationID = defaultCorrelationID(req.EntityType, req.EntityID)
+	}
+	if strings.TrimSpace(req.CausationID) == "" {
+		previousEvent, found, err := latestEventForEntityTx(ctx, tx, req.EntityType, req.EntityID)
+		if err != nil {
+			return appendEventResult{}, err
+		}
+		if found {
+			req.CausationID = previousEvent.EventID
+		}
+	}
 
 	eventID := newID("evt")
 	prevHashValue := ""

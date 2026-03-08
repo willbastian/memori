@@ -74,9 +74,13 @@ type eventLogEnvelope struct {
 		EntityType string `json:"entity_type"`
 		EntityID   string `json:"entity_id"`
 		Events     []struct {
-			EntityType string `json:"entity_type"`
-			EntityID   string `json:"entity_id"`
-			EventType  string `json:"event_type"`
+			EventID       string `json:"event_id"`
+			EntityType    string `json:"entity_type"`
+			EntityID      string `json:"entity_id"`
+			EventType     string `json:"event_type"`
+			CommandID     string `json:"command_id"`
+			CausationID   string `json:"causation_id"`
+			CorrelationID string `json:"correlation_id"`
 		} `json:"events"`
 	} `json:"data"`
 }
@@ -198,6 +202,9 @@ func TestContextCheckpointPacketAndRehydrateCommands(t *testing.T) {
 	if event.EntityType != "session" || event.EntityID != "sess-cli-1" || event.EventType != "session.checkpointed" {
 		t.Fatalf("unexpected session event: %+v", event)
 	}
+	if event.CorrelationID == "" {
+		t.Fatalf("expected session event correlation id, got %+v", event)
+	}
 
 	stdout, stderr, err = runMemoriForTest(
 		"context", "packet", "build",
@@ -235,6 +242,9 @@ func TestContextCheckpointPacketAndRehydrateCommands(t *testing.T) {
 	}
 	if len(packetEvents.Data.Events) != 1 || packetEvents.Data.Events[0].EventType != "packet.built" {
 		t.Fatalf("expected packet.built event, got %+v", packetEvents)
+	}
+	if packetEvents.Data.Events[0].CorrelationID == "" {
+		t.Fatalf("expected packet event correlation id, got %+v", packetEvents.Data.Events[0])
 	}
 
 	stdout, stderr, err = runMemoriForTest(
@@ -314,6 +324,12 @@ func TestContextCheckpointPacketAndRehydrateCommands(t *testing.T) {
 	}
 	if len(focusEvents.Data.Events) != 1 {
 		t.Fatalf("expected one focus event, got %+v", focusEvents)
+	}
+	if focusEvents.Data.Events[0].CausationID != packetEvents.Data.Events[0].EventID {
+		t.Fatalf("expected focus event causation id %q, got %+v", packetEvents.Data.Events[0].EventID, focusEvents.Data.Events[0])
+	}
+	if focusEvents.Data.Events[0].CorrelationID != packetEvents.Data.Events[0].CorrelationID {
+		t.Fatalf("expected focus event correlation id %q, got %+v", packetEvents.Data.Events[0].CorrelationID, focusEvents.Data.Events[0])
 	}
 
 	stdout, stderr, err = runMemoriForTest(

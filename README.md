@@ -373,6 +373,8 @@ Examples:
 - `memori event log --entity gate-template:release-checks@1`
 - `memori event log --entity gate-set:<gate-set-id>`
 
+JSON event logs include `causation_id` and `correlation_id` so related commands can be traced across retries and multi-step workflows.
+
 ## Development
 
 Run the full test suite:

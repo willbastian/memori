@@ -1934,7 +1934,14 @@ func runEvent(args []string, out io.Writer) error {
 	}
 	_, _ = fmt.Fprintf(out, "Events for %s:%s\n", entityType, entityID)
 	for _, event := range events {
-		_, _ = fmt.Fprintf(out, "- #%d %s %s actor=%s command_id=%s\n", event.EventOrder, event.EventType, event.CreatedAt, event.Actor, event.CommandID)
+		line := fmt.Sprintf("- #%d %s %s actor=%s command_id=%s", event.EventOrder, event.EventType, event.CreatedAt, event.Actor, event.CommandID)
+		if strings.TrimSpace(event.CausationID) != "" {
+			line += " causation_id=" + event.CausationID
+		}
+		if strings.TrimSpace(event.CorrelationID) != "" {
+			line += " correlation_id=" + event.CorrelationID
+		}
+		_, _ = fmt.Fprintln(out, line)
 	}
 	return nil
 }
