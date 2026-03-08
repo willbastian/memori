@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -924,6 +925,191 @@ func TestProjectionFunctionsRejectMissingOrConflictingState(t *testing.T) {
 	}
 }
 
+func TestGateProjectionFunctionsAreReplayIdempotentAndNormalizeState(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   "mem-a9c8e7d",
+		Type:      "task",
+		Title:     "Projection replay idempotency",
+		Actor:     "agent-1",
+		CommandID: "cmd-projection-replay-issue-1",
+	}); err != nil {
+		t.Fatalf("create projection issue: %v", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback()
+
+	templatePayload, err := json.Marshal(gateTemplateCreatedPayload{
+		TemplateID:     "projection-template",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}}]}`,
+		CreatedAt:      "2026-03-08T00:00:00Z",
+		CreatedBy:      "human:alice",
+	})
+	if err != nil {
+		t.Fatalf("marshal template payload: %v", err)
+	}
+	templateEvent := Event{
+		EventID:     "evt_projection_template_create",
+		EventType:   eventTypeGateTemplateCreate,
+		PayloadJSON: string(templatePayload),
+		CreatedAt:   "2026-03-08T00:00:00Z",
+	}
+
+	if err := applyGateTemplateCreatedProjectionTx(ctx, tx, templateEvent); err != nil {
+		t.Fatalf("apply gate template projection first time: %v", err)
+	}
+
+	template, found, err := gateTemplateByIDVersionTx(ctx, tx, "projection-template", 1)
+	if err != nil {
+		t.Fatalf("lookup projected template: %v", err)
+	}
+	if !found {
+		t.Fatal("expected projected gate template to exist")
+	}
+	if template.ApprovedBy != "human:alice" || !template.Executable {
+		t.Fatalf("expected human-authored executable template to auto-approve, got %#v", template)
+	}
+
+	var approvalRows int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(1) FROM gate_template_approvals
+		WHERE template_id = ? AND version = ?
+	`, "projection-template", 1).Scan(&approvalRows); err != nil {
+		t.Fatalf("count template approvals: %v", err)
+	}
+	if approvalRows != 1 {
+		t.Fatalf("expected exactly one auto-approval row, got %d", approvalRows)
+	}
+
+	defs, err := buildGateSetDefinitionsTx(ctx, tx, "Task", []gateTemplateRef{{TemplateID: "projection-template", Version: 1}})
+	if err != nil {
+		t.Fatalf("build gate set definitions: %v", err)
+	}
+	frozenJSON, frozenObj, err := buildFrozenGateDefinition([]string{"projection-template@1"}, defs)
+	if err != nil {
+		t.Fatalf("build frozen gate definition: %v", err)
+	}
+	frozenHash := sha256.Sum256([]byte(frozenJSON))
+	gateSetPayload, err := json.Marshal(gateSetInstantiatedPayload{
+		GateSetID:        "gset_projection_replay",
+		IssueID:          "mem-a9c8e7d",
+		CycleNo:          1,
+		TemplateRefs:     []string{"projection-template@1"},
+		FrozenDefinition: frozenObj,
+		GateSetHash:      hex.EncodeToString(frozenHash[:]),
+		CreatedAt:        "2026-03-08T00:00:01Z",
+		CreatedBy:        "agent-1",
+		Items:            defs,
+	})
+	if err != nil {
+		t.Fatalf("marshal gate set payload: %v", err)
+	}
+	gateSetEvent := Event{
+		EventID:     "evt_projection_gate_set_create",
+		EventType:   eventTypeGateSetCreate,
+		PayloadJSON: string(gateSetPayload),
+		CreatedAt:   "2026-03-08T00:00:01Z",
+	}
+
+	if err := applyGateSetInstantiatedProjectionTx(ctx, tx, gateSetEvent); err != nil {
+		t.Fatalf("apply gate set projection first time: %v", err)
+	}
+
+	gateSet, found, err := gateSetByIDTx(ctx, tx, "gset_projection_replay")
+	if err != nil {
+		t.Fatalf("lookup projected gate set: %v", err)
+	}
+	if !found {
+		t.Fatal("expected projected gate set to exist")
+	}
+	if gateSet.IssueID != "mem-a9c8e7d" || len(gateSet.Items) != 1 || gateSet.Items[0].GateID != "build" {
+		t.Fatalf("unexpected projected gate set contents: %#v", gateSet)
+	}
+
+	var gateItemRows int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(1) FROM gate_set_items WHERE gate_set_id = ?
+	`, "gset_projection_replay").Scan(&gateItemRows); err != nil {
+		t.Fatalf("count gate set items: %v", err)
+	}
+	if gateItemRows != 1 {
+		t.Fatalf("expected exactly one projected gate item, got %d", gateItemRows)
+	}
+
+	evalPayload, err := json.Marshal(gateEvaluatedPayload{
+		IssueID:      "mem-a9c8e7d",
+		GateSetID:    "gset_projection_replay",
+		GateID:       "build",
+		Result:       "PASS",
+		EvidenceRefs: []string{" ci://run/1 ", "ci://run/1", "docs://proof"},
+	})
+	if err != nil {
+		t.Fatalf("marshal gate evaluation payload: %v", err)
+	}
+	evalEvent := Event{
+		EventID:     "evt_projection_gate_eval",
+		EventType:   eventTypeGateEval,
+		PayloadJSON: string(evalPayload),
+		CreatedAt:   "2026-03-08T00:00:02Z",
+	}
+
+	if err := applyGateEvaluatedProjectionTx(ctx, tx, evalEvent); err != nil {
+		t.Fatalf("apply gate evaluation projection: %v", err)
+	}
+
+	var (
+		result       string
+		evidenceJSON string
+		evaluatedAt  string
+	)
+	if err := tx.QueryRowContext(ctx, `
+		SELECT result, evidence_refs_json, evaluated_at
+		FROM gate_status_projection
+		WHERE issue_id = ? AND gate_set_id = ? AND gate_id = ?
+	`, "mem-a9c8e7d", "gset_projection_replay", "build").Scan(&result, &evidenceJSON, &evaluatedAt); err != nil {
+		t.Fatalf("read projected gate status row: %v", err)
+	}
+	if result != "PASS" || evaluatedAt != "2026-03-08T00:00:02Z" {
+		t.Fatalf("expected event created_at fallback in gate status row, got result=%q evaluated_at=%q", result, evaluatedAt)
+	}
+	evidenceRefs, err := parseReferencesJSON(evidenceJSON)
+	if err != nil {
+		t.Fatalf("decode projected evidence refs: %v", err)
+	}
+	if !reflect.DeepEqual(evidenceRefs, []string{"ci://run/1", "docs://proof"}) {
+		t.Fatalf("expected normalized evidence refs, got %#v", evidenceRefs)
+	}
+
+	missingGateEvalPayload, err := json.Marshal(gateEvaluatedPayload{
+		IssueID:      "mem-a9c8e7d",
+		GateSetID:    "gset_projection_replay",
+		GateID:       "deploy",
+		Result:       "FAIL",
+		EvidenceRefs: []string{"ci://run/2"},
+	})
+	if err != nil {
+		t.Fatalf("marshal missing gate evaluation payload: %v", err)
+	}
+	if err := applyGateEvaluatedProjectionTx(ctx, tx, Event{
+		EventID:     "evt_projection_gate_eval_missing",
+		EventType:   eventTypeGateEval,
+		PayloadJSON: string(missingGateEvalPayload),
+		CreatedAt:   "2026-03-08T00:00:03Z",
+	}); err == nil || !strings.Contains(err.Error(), `gate "deploy" not found in gate_set "gset_projection_replay"`) {
+		t.Fatalf("expected missing gate projection error, got %v", err)
+	}
+}
+
 func TestReplayProjectionsRebuildsGateTemplatesAndGateSets(t *testing.T) {
 	t.Parallel()
 
@@ -1011,6 +1197,139 @@ func TestReplayProjectionsRebuildsGateTemplatesAndGateSets(t *testing.T) {
 	}
 	if activeGateSetID != gateSet.GateSetID {
 		t.Fatalf("expected active_gate_set_id %q after replay, got %q", gateSet.GateSetID, activeGateSetID)
+	}
+}
+
+func TestReplayProjectionsClearsStaleGateProjectionRows(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   "mem-b7c8d9e",
+		Type:      "task",
+		Title:     "Replay stale gate projections",
+		Actor:     "agent-1",
+		CommandID: "cmd-replay-gate-stale-issue-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+
+	if _, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "stale-replay-gates",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}}]}`,
+		Actor:          "human:alice",
+		CommandID:      "cmd-replay-gate-stale-template-1",
+	}); err != nil {
+		t.Fatalf("create gate template: %v", err)
+	}
+
+	gateSet, _, err := s.InstantiateGateSet(ctx, InstantiateGateSetParams{
+		IssueID:      "mem-b7c8d9e",
+		TemplateRefs: []string{"stale-replay-gates@1"},
+		Actor:        "agent-1",
+		CommandID:    "cmd-replay-gate-stale-set-1",
+	})
+	if err != nil {
+		t.Fatalf("instantiate gate set: %v", err)
+	}
+	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{
+		IssueID:   "mem-b7c8d9e",
+		Actor:     "agent-1",
+		CommandID: "cmd-replay-gate-stale-lock-1",
+	}); err != nil {
+		t.Fatalf("lock gate set: %v", err)
+	}
+	gateEval, _, _, err := s.EvaluateGate(ctx, EvaluateGateParams{
+		IssueID:      "mem-b7c8d9e",
+		GateID:       "build",
+		Result:       "FAIL",
+		EvidenceRefs: []string{"ci://run/stale-replay-1"},
+		Actor:        "agent-1",
+		CommandID:    "cmd-replay-gate-stale-eval-1",
+	})
+	if err != nil {
+		t.Fatalf("evaluate gate: %v", err)
+	}
+
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO gate_templates(
+			template_id, version, applies_to_json, definition_json, definition_hash, created_at, created_by
+		) VALUES(?, ?, ?, ?, ?, ?, ?)
+	`, "stale-template", 9, `["Task"]`, `{"gates":[{"id":"docs"}]}`, "stale-template-hash", nowUTC(), "agent-1"); err != nil {
+		t.Fatalf("insert stale gate template: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO gate_template_approvals(template_id, version, approved_at, approved_by)
+		VALUES(?, ?, ?, ?)
+	`, "stale-template", 9, nowUTC(), "human:alice"); err != nil {
+		t.Fatalf("insert stale gate template approval: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO gate_sets(
+			gate_set_id, issue_id, cycle_no, template_refs_json, frozen_definition_json,
+			gate_set_hash, locked_at, created_at, created_by
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "gset_stale_projection", "mem-b7c8d9e", 99, `["stale-template@9"]`, `{"gates":[{"id":"docs"}]}`, "gset_stale_projection_hash", nowUTC(), nowUTC(), "agent-1"); err != nil {
+		t.Fatalf("insert stale gate set: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO gate_set_items(gate_set_id, gate_id, kind, required, criteria_json)
+		VALUES(?, ?, ?, ?, ?)
+	`, "gset_stale_projection", "docs", "check", 1, `{"ref":"manual-validation"}`); err != nil {
+		t.Fatalf("insert stale gate set item: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO gate_status_projection(
+			issue_id, gate_set_id, gate_id, result, evidence_refs_json, evaluated_at, updated_at, last_event_id
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+	`, "mem-b7c8d9e", "gset_stale_projection", "docs", "PASS", `["docs://stale"]`, nowUTC(), nowUTC(), "evt_stale_gate_status"); err != nil {
+		t.Fatalf("insert stale gate status projection: %v", err)
+	}
+
+	replay, err := s.ReplayProjections(ctx)
+	if err != nil {
+		t.Fatalf("replay projections: %v", err)
+	}
+	if replay.EventsApplied < 5 {
+		t.Fatalf("expected replay to apply gate workflow events, got %d", replay.EventsApplied)
+	}
+
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM gate_templates WHERE template_id = ?`, "stale-template").Scan(&count); err != nil {
+		t.Fatalf("count stale template rows after replay: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected stale gate template rows to be cleared, got %d", count)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM gate_sets WHERE gate_set_id = ?`, "gset_stale_projection").Scan(&count); err != nil {
+		t.Fatalf("count stale gate set rows after replay: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected stale gate set rows to be cleared, got %d", count)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM gate_status_projection WHERE gate_set_id = ?`, "gset_stale_projection").Scan(&count); err != nil {
+		t.Fatalf("count stale gate status rows after replay: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected stale gate status rows to be cleared, got %d", count)
+	}
+
+	status, err := s.GetGateStatus(ctx, "mem-b7c8d9e")
+	if err != nil {
+		t.Fatalf("get gate status after replay: %v", err)
+	}
+	if status.GateSetID != gateSet.GateSetID || len(status.Gates) != 1 {
+		t.Fatalf("unexpected gate status after replay: %#v", status)
+	}
+	if status.Gates[0].GateID != "build" || status.Gates[0].Result != gateEval.Result {
+		t.Fatalf("expected replayed gate evaluation to survive stale cleanup, got %#v", status.Gates[0])
+	}
+	if !reflect.DeepEqual(status.Gates[0].EvidenceRefs, gateEval.EvidenceRefs) {
+		t.Fatalf("expected replayed evidence refs %#v, got %#v", gateEval.EvidenceRefs, status.Gates[0].EvidenceRefs)
 	}
 }
 
