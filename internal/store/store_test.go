@@ -940,6 +940,53 @@ func TestListPendingExecutableGateTemplates(t *testing.T) {
 	}
 }
 
+func TestApproveGateTemplateRemovesTemplateFromPendingList(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	if _, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "agent-authored",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"build","criteria":{"command":"go test ./..."}}]}`,
+		Actor:          "llm:openai:gpt-5",
+		CommandID:      "cmd-pending-approve-create-1",
+	}); err != nil {
+		t.Fatalf("create pending executable template: %v", err)
+	}
+
+	pending, err := s.ListPendingExecutableGateTemplates(ctx)
+	if err != nil {
+		t.Fatalf("list pending executable templates before approval: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("expected 1 pending executable template before approval, got %d", len(pending))
+	}
+
+	approved, _, err := s.ApproveGateTemplate(ctx, ApproveGateTemplateParams{
+		TemplateID: "agent-authored",
+		Version:    1,
+		Actor:      "human:alice",
+		CommandID:  "cmd-pending-approve-human-1",
+	})
+	if err != nil {
+		t.Fatalf("approve executable template: %v", err)
+	}
+	if approved.ApprovedBy != "human:alice" {
+		t.Fatalf("expected approval actor recorded, got %q", approved.ApprovedBy)
+	}
+
+	pending, err = s.ListPendingExecutableGateTemplates(ctx)
+	if err != nil {
+		t.Fatalf("list pending executable templates after approval: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected no pending executable templates after approval, got %d", len(pending))
+	}
+}
+
 func TestCreateIssueKeyPolicyValidation(t *testing.T) {
 	t.Parallel()
 

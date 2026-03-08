@@ -213,6 +213,23 @@ For executable gates, the expected flow is:
 3. the agent instantiates and locks that approved gate set for the issue
 4. the agent runs `gate verify` and then marks the issue `done`
 
+Template review states fit together like this:
+
+- draft: the proposed gate definition still only exists in a file or command payload and has not been written to the ledger yet
+- pending: an executable template was created by an LLM-governed actor, so it exists in the ledger but cannot be instantiated or verified until a human approves that exact version
+- approved: a human approved the executable template version, or the executable template was created directly by a human-governed actor
+- runnable: the approved template can be instantiated into a gate set for an issue cycle and then used by `gate verify`
+
+A human reviewer can work the queue with:
+
+```bash
+go run ./cmd/memori gate template pending --json
+go run ./cmd/memori gate template approve --id <template-id> --version <n> --json
+go run ./cmd/memori gate template pending --json
+```
+
+After approval, that template version disappears from the pending queue and becomes runnable for gate-set instantiation.
+
 ### 3. Live board view for terminal splits
 
 Use `board` when you want a continuously refreshing terminal snapshot instead of rerunning multiple inspection commands by hand. When stdout is attached to a terminal and `--watch` is not set, `memori board` opens the interactive TUI automatically.

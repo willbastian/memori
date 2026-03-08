@@ -267,6 +267,21 @@ func TestGateTemplateApproveEnablesExecutableTemplateInstantiation(t *testing.T)
 		t.Fatalf("expected LLM-authored executable template to start unapproved, got approved_by=%q", created.Data.Template.ApprovedBy)
 	}
 
+	stdout, stderr, err = runMemoriForTest("gate", "template", "pending", "--db", dbPath, "--json")
+	if err != nil {
+		t.Fatalf("gate template pending before approval: %v\nstderr: %s", err, stderr)
+	}
+	var pendingBefore gateTemplateListEnvelope
+	if err := json.Unmarshal([]byte(stdout), &pendingBefore); err != nil {
+		t.Fatalf("decode gate template pending before approval json: %v\nstdout: %s", err, stdout)
+	}
+	if pendingBefore.Data.Count != 1 || len(pendingBefore.Data.Templates) != 1 {
+		t.Fatalf("expected one pending template before approval, got count=%d templates=%d", pendingBefore.Data.Count, len(pendingBefore.Data.Templates))
+	}
+	if pendingBefore.Data.Templates[0].TemplateID != "approval" {
+		t.Fatalf("expected approval template in pending queue before approval, got %+v", pendingBefore.Data.Templates[0])
+	}
+
 	_, _, err = runMemoriForTest(
 		"gate", "set", "instantiate",
 		"--db", dbPath,
@@ -317,6 +332,26 @@ func TestGateTemplateApproveEnablesExecutableTemplateInstantiation(t *testing.T)
 	}
 	if !strings.HasPrefix(approved.Data.Template.ApprovedBy, "human:") {
 		t.Fatalf("expected human approval actor, got %q", approved.Data.Template.ApprovedBy)
+	}
+
+	stdout, stderr, err = runMemoriForTest("gate", "template", "pending", "--db", dbPath, "--json")
+	if err != nil {
+		t.Fatalf("gate template pending after approval json: %v\nstderr: %s", err, stderr)
+	}
+	var pendingAfter gateTemplateListEnvelope
+	if err := json.Unmarshal([]byte(stdout), &pendingAfter); err != nil {
+		t.Fatalf("decode gate template pending after approval json: %v\nstdout: %s", err, stdout)
+	}
+	if pendingAfter.Data.Count != 0 || len(pendingAfter.Data.Templates) != 0 {
+		t.Fatalf("expected no pending templates after approval, got count=%d templates=%d", pendingAfter.Data.Count, len(pendingAfter.Data.Templates))
+	}
+
+	stdout, stderr, err = runMemoriForTest("gate", "template", "pending", "--db", dbPath)
+	if err != nil {
+		t.Fatalf("gate template pending after approval text: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "No pending executable gate templates.") {
+		t.Fatalf("expected empty pending queue message after approval, got %q", stdout)
 	}
 
 	t.Setenv("MEMORI_PRINCIPAL", "llm")
