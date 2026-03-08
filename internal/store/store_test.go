@@ -1188,6 +1188,96 @@ func TestUpdateIssueStatusWontDoRequiresHumanActor(t *testing.T) {
 	}
 }
 
+func TestUpdateIssueStatusAllowsHumanTransitionToWontDoFromAnyStatus(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name         string
+		issueID      string
+		initial      string
+		commandID    string
+		expectStatus string
+	}{
+		{name: "todo", issueID: "mem-2711111", initial: "todo", commandID: "cmd-wontdo-any-todo-1", expectStatus: "WontDo"},
+		{name: "inprogress", issueID: "mem-2722222", initial: "inprogress", commandID: "cmd-wontdo-any-inprogress-1", expectStatus: "WontDo"},
+		{name: "blocked", issueID: "mem-2733333", initial: "blocked", commandID: "cmd-wontdo-any-blocked-1", expectStatus: "WontDo"},
+		{name: "done", issueID: "mem-2744444", initial: "done", commandID: "cmd-wontdo-any-done-1", expectStatus: "WontDo"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			s := newTestStore(t)
+
+			_, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+				IssueID:   tc.issueID,
+				Type:      "task",
+				Title:     "WontDo transition case " + tc.name,
+				Actor:     "agent-1",
+				CommandID: "cmd-wontdo-any-create-" + tc.name,
+			})
+			if err != nil {
+				t.Fatalf("create issue: %v", err)
+			}
+
+			switch tc.initial {
+			case "inprogress":
+				_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+					IssueID:   tc.issueID,
+					Status:    "inprogress",
+					Actor:     "agent-1",
+					CommandID: "cmd-wontdo-any-prep-inprogress-" + tc.name,
+				})
+			case "blocked":
+				_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+					IssueID:   tc.issueID,
+					Status:    "blocked",
+					Actor:     "agent-1",
+					CommandID: "cmd-wontdo-any-prep-blocked-" + tc.name,
+				})
+			case "done":
+				_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+					IssueID:   tc.issueID,
+					Status:    "inprogress",
+					Actor:     "agent-1",
+					CommandID: "cmd-wontdo-any-prep-done-progress-" + tc.name,
+				})
+				if err == nil {
+					gateSetID := "gs_wontdo_any_" + tc.name
+					seedLockedGateSetForTest(t, s, tc.issueID, gateSetID)
+					seedGateSetItemForTest(t, s, gateSetID, "build", "check", 1)
+					appendGateEvaluationEventForTest(t, s, tc.issueID, gateSetID, "build", "PASS", "agent-1", "cmd-wontdo-any-prep-done-gate-"+tc.name)
+					_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+						IssueID:   tc.issueID,
+						Status:    "done",
+						Actor:     "agent-1",
+						CommandID: "cmd-wontdo-any-prep-done-" + tc.name,
+					})
+				}
+			}
+			if err != nil {
+				t.Fatalf("prepare initial status %s: %v", tc.initial, err)
+			}
+
+			updated, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+				IssueID:   tc.issueID,
+				Status:    "wontdo",
+				Actor:     "human:alice",
+				CommandID: tc.commandID,
+			})
+			if err != nil {
+				t.Fatalf("transition %s -> WontDo: %v", tc.initial, err)
+			}
+			if updated.Status != tc.expectStatus {
+				t.Fatalf("expected status %s, got %s", tc.expectStatus, updated.Status)
+			}
+		})
+	}
+}
+
 func TestUpdateIssueStatusDoneRequiresLockedGateSet(t *testing.T) {
 	t.Parallel()
 

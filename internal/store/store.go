@@ -5600,9 +5600,9 @@ func validateIssueStatusTransition(from, to string) error {
 
 	allowed := map[string]map[string]bool{
 		"Todo":       {"InProgress": true, "Blocked": true, "WontDo": true},
-		"InProgress": {"Blocked": true, "Done": true},
-		"Blocked":    {"InProgress": true},
-		"Done":       {"InProgress": true},
+		"InProgress": {"Blocked": true, "Done": true, "WontDo": true},
+		"Blocked":    {"InProgress": true, "WontDo": true},
+		"Done":       {"InProgress": true, "WontDo": true},
 		"WontDo":     {"Todo": true},
 	}
 	if !allowed[fromStatus][toStatus] {
