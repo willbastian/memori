@@ -56,6 +56,25 @@ func TestInitializeAllowsPrefixChangeBeforeEventsAndRejectsAfterEvents(t *testin
 	}
 }
 
+func TestInitializeRejectsInvalidIssueKeyPrefixes(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-store-init-invalid.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	if err := s.Initialize(ctx, InitializeParams{IssueKeyPrefix: "1bad"}); err == nil || !strings.Contains(err.Error(), "invalid issue key prefix") {
+		t.Fatalf("expected invalid prefix format error, got %v", err)
+	}
+	if err := s.Initialize(ctx, InitializeParams{IssueKeyPrefix: "task"}); err == nil || !strings.Contains(err.Error(), "issue key prefix") {
+		t.Fatalf("expected embedded type prefix error, got %v", err)
+	}
+}
+
 func TestGateTemplateAndGateSetEdgeCases(t *testing.T) {
 	t.Parallel()
 

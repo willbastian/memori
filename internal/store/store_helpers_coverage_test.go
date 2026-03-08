@@ -468,6 +468,13 @@ func TestGatePayloadDecodersValidateRequiredFields(t *testing.T) {
 func TestPacketIssueIDAndIssuePacketCycleNoFallbacks(t *testing.T) {
 	t.Parallel()
 
+	if got := packetScopeID(RehydratePacket{ScopeID: " mem-a1b2c3d "}); got != "mem-a1b2c3d" {
+		t.Fatalf("expected direct packet scope id, got %q", got)
+	}
+	if got := packetScopeID(RehydratePacket{Packet: map[string]any{"scope_id": " mem-b2c3d4e "}}); got != "mem-b2c3d4e" {
+		t.Fatalf("expected packet payload scope id fallback, got %q", got)
+	}
+
 	issueCases := []struct {
 		name   string
 		packet RehydratePacket

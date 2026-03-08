@@ -2,6 +2,9 @@ package store
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/willbastian/memori/internal/dbschema"
@@ -23,6 +26,60 @@ func TestSchemaVersionMatchesHeadVersion(t *testing.T) {
 	}
 	if got != head {
 		t.Fatalf("expected schema version %d, got %d", head, got)
+	}
+}
+
+func TestOpenCreatesParentDirectoryAndSchemaVersionHandlesUnsetAndInvalidValues(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "nested", "state", "memori.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open nested store path: %v", err)
+	}
+	defer s.Close()
+
+	if _, err := s.SchemaVersion(context.Background()); err == nil || !strings.Contains(err.Error(), "query schema version") {
+		t.Fatalf("expected missing schema_meta query error before initialize, got %v", err)
+	}
+
+	if err := s.Initialize(context.Background(), InitializeParams{IssueKeyPrefix: "mem"}); err != nil {
+		t.Fatalf("initialize store: %v", err)
+	}
+	if _, err := s.db.ExecContext(context.Background(), `
+		UPDATE schema_meta SET value = 'not-a-number' WHERE key = 'db_schema_version'
+	`); err != nil {
+		t.Fatalf("tamper schema version: %v", err)
+	}
+
+	if _, err := s.SchemaVersion(context.Background()); err == nil || !strings.Contains(err.Error(), "parse schema version") {
+		t.Fatalf("expected invalid schema version parse error, got %v", err)
+	}
+}
+
+func TestOpenAndInitializeSurfaceFilesystemAndClosedDBErrors(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	parentFile := filepath.Join(root, "not-a-dir")
+	if err := os.WriteFile(parentFile, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write parent file: %v", err)
+	}
+
+	if _, err := Open(filepath.Join(parentFile, "memori.db")); err == nil || !strings.Contains(err.Error(), "create db directory") {
+		t.Fatalf("expected open mkdir error, got %v", err)
+	}
+
+	s, err := Open(filepath.Join(root, "closed.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	if err := s.Initialize(context.Background(), InitializeParams{IssueKeyPrefix: "mem"}); err == nil || !strings.Contains(err.Error(), "migrate schema") {
+		t.Fatalf("expected initialize on closed db to fail during migrate, got %v", err)
 	}
 }
 

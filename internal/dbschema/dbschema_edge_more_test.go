@@ -259,3 +259,40 @@ func TestSyncSchemaMetaInsertsDefaultIssuePrefixWhenMissing(t *testing.T) {
 		t.Fatalf("expected updated db_schema_version %q, got %q", "3", schemaVersion)
 	}
 }
+
+func TestSyncMigrationAuditFailsWhenAppliedVersionIsMissingFromEmbeddedCatalog(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestDB(t)
+	status, err := Migrate(ctx, db, nil)
+	if err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+
+	missingVersion := status.HeadVersion + 1
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO goose_db_version(version_id, is_applied, tstamp)
+		VALUES(?, 1, CURRENT_TIMESTAMP)
+	`, missingVersion); err != nil {
+		t.Fatalf("insert ahead-of-catalog goose version: %v", err)
+	}
+
+	if err := syncMigrationAudit(ctx, db); err == nil || !containsCheck([]string{err.Error()}, "missing from embedded catalog") {
+		t.Fatalf("expected missing embedded catalog error, got %v", err)
+	}
+}
+
+func TestSyncSchemaMetaFailsOnClosedDB(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestDB(t)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	if err := syncSchemaMeta(ctx, db, 2); err == nil || !containsCheck([]string{err.Error()}, "begin tx for schema_meta sync") {
+		t.Fatalf("expected syncSchemaMeta closed-db error, got %v", err)
+	}
+}
