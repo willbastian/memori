@@ -162,26 +162,23 @@ Schema compatibility expectations:
 - if a database has already been migrated beyond the binary's reported `schema_head_version`, use a newer memori binary before making changes
 - use `memori db status` to compare the current database version with the binary's expected schema head
 
-## Quick start
+## Adopt memori in a new repository
 
-Initialize the database:
+These steps assume you installed the `memori` binary. If you are working from a local checkout instead, replace `memori` with `go run ./cmd/memori`.
 
-```bash
-go run ./cmd/memori init --issue-prefix mem
-```
+### 1. Initialize project state
 
-New issues default to generated keys in `{prefix}-{shortSHA}` format when you omit `--key`. Mutation commands also generate command IDs automatically unless you explicitly opt into supplying your own with `MEMORI_ALLOW_MANUAL_COMMAND_ID=1`.
-
-Inspect current state:
+From the root of the repository you want to track:
 
 ```bash
-go run ./cmd/memori backlog
-go run ./cmd/memori board --watch --interval 5s
-go run ./cmd/memori db status
-go run ./cmd/memori auth status
+memori init --issue-prefix acme
+memori db status
+memori backlog
 ```
 
-### Human setup
+The default database path is `.memori/memori.db` inside that repository. Issue keys will use the prefix you choose, for example `acme-a1b2c3d`.
+
+### 2. Set up human writes
 
 Human writes are authenticated interactively.
 
@@ -189,12 +186,13 @@ Human writes are authenticated interactively.
 2. Configure a password once:
 
 ```bash
-go run ./cmd/memori auth set-password
+memori auth set-password
+memori auth status
 ```
 
 After that, human write commands prompt for the configured password.
 
-### Agent or automation setup
+### 3. Set up agent or automation writes
 
 For non-interactive mutation flows, declare an LLM principal explicitly:
 
@@ -209,6 +207,40 @@ If your automation needs stable externally supplied command IDs for retries or c
 ```bash
 export MEMORI_ALLOW_MANUAL_COMMAND_ID=1
 ```
+
+### 4. Use it day to day
+
+For humans:
+
+```bash
+memori board --watch --interval 5s
+memori issue show --key acme-a1b2c3d --json
+memori gate status --issue acme-a1b2c3d
+```
+
+For agents:
+
+```bash
+memori issue next --agent writer-1 --json
+memori context rehydrate --session sess-20260308-01 --json
+memori context summarize --session sess-20260308-01 --json
+```
+
+New issues default to generated keys in `{prefix}-{shortSHA}` format when you omit `--key`. Mutation commands also generate command IDs automatically unless you explicitly opt into supplying your own with `MEMORI_ALLOW_MANUAL_COMMAND_ID=1`.
+
+### 5. Upgrade safely
+
+When you upgrade the binary in an existing repository:
+
+```bash
+memori version
+memori db status
+memori db backup --out /tmp/memori-pre-upgrade.db --json
+memori db migrate --json
+memori db verify --json
+```
+
+That keeps the binary version, schema version, and migration audit aligned before you resume normal work.
 
 ## End-to-end flows
 
