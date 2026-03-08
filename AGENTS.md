@@ -31,6 +31,7 @@ Use the same environment for `go run ./cmd/memori ...` if the binary is not inst
 2. Check for existing tracked work before creating something new.
    - `memori issue next --agent <agent_id> --json`
    - `memori board --agent <agent_id> --json`
+   - When resuming interrupted work, prefer `issue next` plus `context rehydrate` over relying on prior chat memory alone.
 3. Create a ticket before doing implementation work only when no existing issue already covers the work.
    - `memori issue create --type task --title "<clear outcome>" --command-id "<unique-id>" --json`
 4. Inspect ticket context before making changes.
@@ -46,8 +47,10 @@ Use the same environment for `go run ./cmd/memori ...` if the binary is not inst
 7. Keep user-facing guidance in sync with product behavior.
    - When Memori behavior, workflows, or recommended practices change, update `README.md` in the same unit of work so it reflects the latest supported state.
 8. Rebuild projections from event ledger when validating consistency.
+   - Run `memori db verify --json` after `memori db migrate --json` for schema or migration work.
    - `memori db replay --json`
    - Use replay when you need to recompute derived state such as gate projections, packets, focus, summaries, or open loops from the append-only ledger.
+   - Use replay when validating continuity, packet, session, or other derived-projection changes against the append-only ledger.
 
 ## Command ID Convention
 For mutating commands, always pass a stable `--command-id`.
@@ -109,7 +112,9 @@ Before closing a task, run this checklist in order:
 
 ## Governance Notes
 - Treat the event ledger as the authoritative write path; prefer commands that append events over manual database changes.
-- Use `issue next --agent <agent_id>` and context packet commands when resuming interrupted work rather than relying on memory alone.
+- Use `issue next --agent <agent_id>`, `context rehydrate`, and context packet commands when resuming interrupted work rather than relying on memory alone.
+- Use `context summarize` to persist a structured handoff without ending a working window, and `context close` when the session should be treated as concluded before the next worker resumes it.
+- After schema changes, favor `db migrate` followed by `db verify`, and use `db replay` when you need to prove derived projections still rebuild deterministically from the ledger.
 - Agents may draft executable gate templates, but a human must approve the exact template version with `memori gate template approve` before it can be instantiated or used by `gate verify`.
 
 ## Priority Rule
