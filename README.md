@@ -280,6 +280,7 @@ Use an issue-scoped packet when you want to set agent focus around a specific wo
 Use `context summarize` to persist a structured session summary without ending the working window, and `context close` to mark that working window as finished with `ended_at` and the current `summary_event_id`.
 When no saved active-session packet exists yet, `context rehydrate` falls back to recent session context chunks before using a raw event-only payload.
 For closed sessions, `context rehydrate` prefers a closure-aware packet; otherwise it returns a synthesized closed-session summary so an older active packet cannot masquerade as the latest state.
+Packet lookups keep the same JSON payload contract, but routing now uses normalized packet columns so replay and mixed historical data stay query-safe.
 
 Issue packets currently include:
 

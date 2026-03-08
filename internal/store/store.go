@@ -537,6 +537,10 @@ type RehydratePacket struct {
 	PacketSchemaVersion int            `json:"packet_schema_version"`
 	BuiltFromEventID    string         `json:"built_from_event_id,omitempty"`
 	CreatedAt           string         `json:"created_at"`
+	ScopeID             string         `json:"-"`
+	IssueID             string         `json:"-"`
+	SessionID           string         `json:"-"`
+	IssueCycleNo        int            `json:"-"`
 }
 
 type AgentFocus struct {
@@ -2347,8 +2351,8 @@ func (s *Store) UseRehydratePacket(ctx context.Context, p UsePacketParams) (Agen
 	activeIssueID := ""
 	activeCycleNo := 0
 	if packet.Scope == "issue" {
-		if rawScopeID, ok := packet.Packet["scope_id"].(string); ok && strings.TrimSpace(rawScopeID) != "" {
-			normalizedIssueID, err := normalizeIssueKey(rawScopeID)
+		if normalizedPacketIssueID := packetIssueID(packet); normalizedPacketIssueID != "" {
+			normalizedIssueID, err := normalizeIssueKey(normalizedPacketIssueID)
 			if err == nil {
 				activeIssueID = normalizedIssueID
 				if err := tx.QueryRowContext(ctx, `SELECT current_cycle_no FROM work_items WHERE id = ?`, normalizedIssueID).Scan(&activeCycleNo); err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -2370,7 +2374,7 @@ func (s *Store) UseRehydratePacket(ctx context.Context, p UsePacketParams) (Agen
 		return AgentFocus{}, RehydratePacket{}, false, fmt.Errorf("marshal agent focus payload: %w", err)
 	}
 
-	correlationID := packetScopeCorrelationID(packet.Scope, anyToString(packet.Packet["scope_id"]))
+	correlationID := packetScopeCorrelationID(packet.Scope, packetScopeID(packet))
 	causationID := ""
 	if packetEventFound {
 		causationID = packetEvent.EventID
@@ -3956,18 +3960,43 @@ func applyPacketBuiltProjectionTx(ctx context.Context, tx *sql.Tx, event Event) 
 	if err != nil {
 		return fmt.Errorf("encode packet.built packet json for event %s: %w", event.EventID, err)
 	}
+	scopeID := strings.TrimSpace(anyToString(payload.Packet["scope_id"]))
+	issueID := strings.TrimSpace(payload.IssueID)
+	sessionID := ""
+	if payload.Scope == "issue" && issueID == "" {
+		issueID = scopeID
+	}
+	if payload.Scope == "session" {
+		sessionID = scopeID
+	}
+	issueCycleNo := payload.IssueCycleNo
+	if issueCycleNo == 0 {
+		if provenanceRaw, ok := payload.Packet["provenance"].(map[string]any); ok {
+			issueCycleNo = anyToInt(provenanceRaw["issue_cycle_no"])
+		}
+		if issueCycleNo == 0 {
+			if stateRaw, ok := payload.Packet["state"].(map[string]any); ok {
+				issueCycleNo = anyToInt(stateRaw["cycle_no"])
+			}
+		}
+	}
 
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO rehydrate_packets(
-			packet_id, scope, packet_json, packet_schema_version, built_from_event_id, created_at
-		) VALUES(?, ?, ?, ?, ?, ?)
+			packet_id, scope, scope_id, issue_id, session_id, issue_cycle_no,
+			packet_json, packet_schema_version, built_from_event_id, created_at
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(packet_id) DO UPDATE SET
 			scope=excluded.scope,
+			scope_id=excluded.scope_id,
+			issue_id=excluded.issue_id,
+			session_id=excluded.session_id,
+			issue_cycle_no=excluded.issue_cycle_no,
 			packet_json=excluded.packet_json,
 			packet_schema_version=excluded.packet_schema_version,
 			built_from_event_id=excluded.built_from_event_id,
 			created_at=excluded.created_at
-	`, payload.PacketID, payload.Scope, string(packetJSON), payload.PacketSchemaVersion, nullIfEmpty(payload.BuiltFromEventID), payload.CreatedAt)
+	`, payload.PacketID, payload.Scope, nullIfEmpty(scopeID), nullIfEmpty(issueID), nullIfEmpty(sessionID), nullIfZero(issueCycleNo), string(packetJSON), payload.PacketSchemaVersion, nullIfEmpty(payload.BuiltFromEventID), payload.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("upsert rehydrate packet from event %s: %w", event.EventID, err)
 	}
@@ -5347,17 +5376,35 @@ func sessionByIDTx(ctx context.Context, tx *sql.Tx, sessionID string) (Session, 
 
 func packetByIDTx(ctx context.Context, tx *sql.Tx, packetID string) (RehydratePacket, error) {
 	var (
-		packet     RehydratePacket
-		packetJSON string
-		builtFrom  sql.NullString
+		packet      RehydratePacket
+		packetJSON  string
+		builtFrom   sql.NullString
+		scopeID     sql.NullString
+		issueID     sql.NullString
+		sessionID   sql.NullString
+		issueCycle  sql.NullInt64
 	)
 	err := tx.QueryRowContext(ctx, `
-		SELECT packet_id, scope, packet_json, packet_schema_version, built_from_event_id, created_at
+		SELECT
+			packet_id,
+			scope,
+			COALESCE(scope_id, json_extract(packet_json, '$.scope_id')),
+			COALESCE(issue_id, CASE WHEN scope = 'issue' THEN json_extract(packet_json, '$.scope_id') END),
+			COALESCE(session_id, CASE WHEN scope = 'session' THEN json_extract(packet_json, '$.scope_id') END),
+			issue_cycle_no,
+			packet_json,
+			packet_schema_version,
+			built_from_event_id,
+			created_at
 		FROM rehydrate_packets
 		WHERE packet_id = ?
 	`, packetID).Scan(
 		&packet.PacketID,
 		&packet.Scope,
+		&scopeID,
+		&issueID,
+		&sessionID,
+		&issueCycle,
 		&packetJSON,
 		&packet.PacketSchemaVersion,
 		&builtFrom,
@@ -5372,6 +5419,18 @@ func packetByIDTx(ctx context.Context, tx *sql.Tx, packetID string) (RehydratePa
 	if builtFrom.Valid {
 		packet.BuiltFromEventID = builtFrom.String
 	}
+	if scopeID.Valid {
+		packet.ScopeID = scopeID.String
+	}
+	if issueID.Valid {
+		packet.IssueID = issueID.String
+	}
+	if sessionID.Valid {
+		packet.SessionID = sessionID.String
+	}
+	if issueCycle.Valid {
+		packet.IssueCycleNo = int(issueCycle.Int64)
+	}
 	if err := json.Unmarshal([]byte(packetJSON), &packet.Packet); err != nil {
 		return RehydratePacket{}, fmt.Errorf("decode packet_json for %q: %w", packetID, err)
 	}
@@ -5380,20 +5439,38 @@ func packetByIDTx(ctx context.Context, tx *sql.Tx, packetID string) (RehydratePa
 
 func latestPacketForScopeIDTx(ctx context.Context, tx *sql.Tx, scope, scopeID string) (RehydratePacket, bool, error) {
 	var (
-		packet     RehydratePacket
-		packetJSON string
-		builtFrom  sql.NullString
+		packet        RehydratePacket
+		packetJSON    string
+		builtFrom     sql.NullString
+		packetScopeID sql.NullString
+		issueID       sql.NullString
+		sessionID     sql.NullString
+		issueCycle    sql.NullInt64
 	)
 	err := tx.QueryRowContext(ctx, `
-		SELECT packet_id, scope, packet_json, packet_schema_version, built_from_event_id, created_at
+		SELECT
+			packet_id,
+			scope,
+			COALESCE(scope_id, json_extract(packet_json, '$.scope_id')),
+			COALESCE(issue_id, CASE WHEN scope = 'issue' THEN json_extract(packet_json, '$.scope_id') END),
+			COALESCE(session_id, CASE WHEN scope = 'session' THEN json_extract(packet_json, '$.scope_id') END),
+			issue_cycle_no,
+			packet_json,
+			packet_schema_version,
+			built_from_event_id,
+			created_at
 		FROM rehydrate_packets
 		WHERE scope = ?
-			AND json_extract(packet_json, '$.scope_id') = ?
+			AND COALESCE(scope_id, json_extract(packet_json, '$.scope_id')) = ?
 		ORDER BY created_at DESC, packet_id DESC
 		LIMIT 1
 	`, scope, scopeID).Scan(
 		&packet.PacketID,
 		&packet.Scope,
+		&packetScopeID,
+		&issueID,
+		&sessionID,
+		&issueCycle,
 		&packetJSON,
 		&packet.PacketSchemaVersion,
 		&builtFrom,
@@ -5407,6 +5484,18 @@ func latestPacketForScopeIDTx(ctx context.Context, tx *sql.Tx, scope, scopeID st
 	}
 	if builtFrom.Valid {
 		packet.BuiltFromEventID = builtFrom.String
+	}
+	if packetScopeID.Valid {
+		packet.ScopeID = packetScopeID.String
+	}
+	if issueID.Valid {
+		packet.IssueID = issueID.String
+	}
+	if sessionID.Valid {
+		packet.SessionID = sessionID.String
+	}
+	if issueCycle.Valid {
+		packet.IssueCycleNo = int(issueCycle.Int64)
 	}
 	if err := json.Unmarshal([]byte(packetJSON), &packet.Packet); err != nil {
 		return RehydratePacket{}, false, fmt.Errorf("decode packet_json for %q: %w", packet.PacketID, err)
@@ -5957,7 +6046,7 @@ func sessionPacketMatchesClosedLifecycle(packet RehydratePacket, session Session
 	if packet.Scope != "session" {
 		return false
 	}
-	if strings.TrimSpace(anyToString(packet.Packet["scope_id"])) != session.SessionID {
+	if strings.TrimSpace(packetScopeID(packet)) != session.SessionID {
 		return false
 	}
 	state, ok := packet.Packet["state"].(map[string]any)
@@ -5974,6 +6063,23 @@ func sessionPacketMatchesClosedLifecycle(packet RehydratePacket, session Session
 		return false
 	}
 	return true
+}
+
+func packetScopeID(packet RehydratePacket) string {
+	if strings.TrimSpace(packet.ScopeID) != "" {
+		return strings.TrimSpace(packet.ScopeID)
+	}
+	return strings.TrimSpace(anyToString(packet.Packet["scope_id"]))
+}
+
+func packetIssueID(packet RehydratePacket) string {
+	if strings.TrimSpace(packet.IssueID) != "" {
+		return strings.TrimSpace(packet.IssueID)
+	}
+	if packet.Scope == "issue" {
+		return packetScopeID(packet)
+	}
+	return strings.TrimSpace(anyToString(packet.Packet["issue_id"]))
 }
 
 func buildIssueDecisionSummary(issue Issue, cycleNo int, gates []any, openLoops []OpenLoop, linkedWorkItems []any) map[string]any {
@@ -6497,6 +6603,9 @@ func loadIssueNextContinuitySignalsTx(
 }
 
 func issuePacketCycleNo(packet RehydratePacket) int {
+	if packet.IssueCycleNo > 0 {
+		return packet.IssueCycleNo
+	}
 	if packet.Packet == nil {
 		return 0
 	}
