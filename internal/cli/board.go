@@ -249,7 +249,7 @@ func renderBoardSection(ui textUI, label string, rows []boardIssueRow, emptyMess
 	for _, row := range rows {
 		ui.bullet(formatBoardIssueRow(row, ui.colors))
 		if showReasons && len(row.Reasons) > 0 {
-			_, _ = fmt.Fprintf(ui.out, "  why: %s\n", strings.Join(compactReasons(row.Reasons, 3), "; "))
+			_, _ = fmt.Fprintf(ui.out, "  why: %s\n", strings.Join(compactReasons(orderBoardReasons(row.Reasons), 5), "; "))
 		}
 	}
 	ui.blank()
@@ -270,6 +270,50 @@ func compactReasons(reasons []string, limit int) []string {
 	trimmed := append([]string(nil), reasons[:limit]...)
 	trimmed = append(trimmed, fmt.Sprintf("+%d more", len(reasons)-limit))
 	return trimmed
+}
+
+func orderBoardReasons(reasons []string) []string {
+	ordered := append([]string(nil), reasons...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		leftWeight := boardReasonWeight(ordered[i])
+		rightWeight := boardReasonWeight(ordered[j])
+		if leftWeight != rightWeight {
+			return leftWeight > rightWeight
+		}
+		return i < j
+	})
+	return ordered
+}
+
+func boardReasonWeight(reason string) int {
+	switch {
+	case strings.Contains(reason, "matches the agent's active focus"):
+		return 100
+	case strings.Contains(reason, "agent already holds the latest recovery packet"):
+		return 95
+	case strings.Contains(reason, "open loop"):
+		return 90
+	case strings.Contains(reason, "required gate"):
+		return 85
+	case strings.Contains(reason, "issue packet"):
+		return 80
+	case strings.Contains(reason, "packet is stale"):
+		return 75
+	case strings.Contains(reason, "priority P"):
+		return 50
+	case strings.Contains(reason, "in-progress work"):
+		return 40
+	case strings.Contains(reason, "todo work"):
+		return 35
+	case strings.Contains(reason, "implementation-ready"):
+		return 30
+	case strings.Contains(reason, "operational value"):
+		return 25
+	case strings.Contains(reason, "can start immediately"):
+		return 20
+	default:
+		return 10
+	}
 }
 
 func newBoardData(snapshot boardSnapshot) boardData {

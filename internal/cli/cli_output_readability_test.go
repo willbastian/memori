@@ -17,6 +17,7 @@ func TestHelpHumanOutputSeparatesHumanAndAgentWorkflows(t *testing.T) {
 	mustContain(t, stdout, "Human Workflows:")
 	mustContain(t, stdout, "Agent Workflows:")
 	mustContain(t, stdout, "Create And Update Work:")
+	mustContain(t, stdout, "memori board [--db <path>] [--agent <id>] [--watch] [--interval <duration>] [--json]")
 	mustContain(t, stdout, "memori context packet show --packet <id> [--json]")
 	mustContain(t, stdout, "MEMORI_COLOR=auto|always|never")
 }
