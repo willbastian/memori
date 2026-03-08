@@ -250,6 +250,16 @@ memori’s context commands are built for “pick the work back up” scenarios.
 ```bash
 go run ./cmd/memori context checkpoint --session sess-20260307-01 --trigger manual
 
+go run ./cmd/memori context summarize \
+  --session sess-20260307-01 \
+  --note "paused after reproducing the gate failure" \
+  --json
+
+go run ./cmd/memori context close \
+  --session sess-20260307-01 \
+  --reason "handoff captured for the next worker" \
+  --json
+
 go run ./cmd/memori context packet build \
   --scope issue \
   --id mem-a111111 \
@@ -267,7 +277,9 @@ go run ./cmd/memori context loops --issue mem-a111111 --json
 ```
 
 Use an issue-scoped packet when you want to set agent focus around a specific work item. Use a session-scoped packet when you want `context rehydrate` to return the latest saved session payload directly.
-When no saved session packet exists yet, `context rehydrate` now falls back to recent session context chunks before using a raw event-only payload.
+Use `context summarize` to persist a structured session summary without ending the working window, and `context close` to mark that working window as finished with `ended_at` and the current `summary_event_id`.
+When no saved active-session packet exists yet, `context rehydrate` falls back to recent session context chunks before using a raw event-only payload.
+For closed sessions, `context rehydrate` prefers a closure-aware packet; otherwise it returns a synthesized closed-session summary so an older active packet cannot masquerade as the latest state.
 
 Issue packets currently include:
 
@@ -347,6 +359,8 @@ For day-to-day work, the shortest path is usually:
 - `memori issue next`
 - `memori board`
 - `memori context checkpoint`
+- `memori context summarize`
+- `memori context close`
 - `memori context packet build`
 - `memori context packet show`
 - `memori context packet use`

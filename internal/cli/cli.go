@@ -91,6 +91,8 @@ func runHelp(args []string, out io.Writer) error {
 			"memori gate verify --issue <prefix-shortSHA> --gate <gate-id> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate status --issue <prefix-shortSHA> [--cycle <n>] [--json]",
 			"memori context checkpoint --session <id> [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]",
+			"memori context summarize --session <id> [--note <text>] [--actor <actor>] [--command-id <id>] [--json]",
+			"memori context close --session <id> [--reason <text>] [--actor <actor>] [--command-id <id>] [--json]",
 			"memori context rehydrate --session <id> [--json]",
 			"memori context packet build --scope issue|session --id <id> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori context packet show --packet <id> [--json]",
@@ -849,11 +851,15 @@ func runGate(args []string, out io.Writer) error {
 
 func runContext(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("context subcommand required: checkpoint|rehydrate|packet|loops")
+		return errors.New("context subcommand required: checkpoint|summarize|close|rehydrate|packet|loops")
 	}
 	switch args[0] {
 	case "checkpoint":
 		return runContextCheckpoint(args[1:], out)
+	case "summarize":
+		return runContextSummarize(args[1:], out)
+	case "close":
+		return runContextClose(args[1:], out)
 	case "rehydrate":
 		return runContextRehydrate(args[1:], out)
 	case "packet":
@@ -920,6 +926,116 @@ func runContextCheckpoint(args []string, out io.Writer) error {
 		_, _ = fmt.Fprintf(out, "Updated session checkpoint %s\n", session.SessionID)
 	}
 	_, _ = fmt.Fprintf(out, "Trigger: %s\n", session.Trigger)
+	return nil
+}
+
+func runContextSummarize(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("context summarize", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	sessionID := fs.String("session", "", "session id")
+	note := fs.String("note", "", "summary note")
+	actor := fs.String("actor", "", "actor id")
+	commandID := fs.String("command-id", "", "idempotency command id")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "context-summarize", *actor, *commandID, defaultMutationAuthDeps())
+	if err != nil {
+		return err
+	}
+
+	session, err := s.SummarizeSession(ctx, store.SummarizeSessionParams{
+		SessionID: *sessionID,
+		Note:      *note,
+		Actor:     identity.Actor,
+		CommandID: identity.CommandID,
+	})
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "context summarize",
+			Data: contextSessionData{
+				Session: session,
+			},
+		})
+	}
+
+	_, _ = fmt.Fprintf(out, "Summarized session %s\n", session.SessionID)
+	if strings.TrimSpace(session.SummaryEventID) != "" {
+		_, _ = fmt.Fprintf(out, "Summary Event: %s\n", session.SummaryEventID)
+	}
+	return nil
+}
+
+func runContextClose(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("context close", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	sessionID := fs.String("session", "", "session id")
+	reason := fs.String("reason", "", "close reason")
+	actor := fs.String("actor", "", "actor id")
+	commandID := fs.String("command-id", "", "idempotency command id")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "context-close", *actor, *commandID, defaultMutationAuthDeps())
+	if err != nil {
+		return err
+	}
+
+	session, err := s.CloseSession(ctx, store.CloseSessionParams{
+		SessionID: *sessionID,
+		Reason:    *reason,
+		Actor:     identity.Actor,
+		CommandID: identity.CommandID,
+	})
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "context close",
+			Data: contextSessionData{
+				Session: session,
+			},
+		})
+	}
+
+	_, _ = fmt.Fprintf(out, "Closed session %s\n", session.SessionID)
+	if strings.TrimSpace(session.EndedAt) != "" {
+		_, _ = fmt.Fprintf(out, "Ended At: %s\n", session.EndedAt)
+	}
 	return nil
 }
 
@@ -2586,6 +2702,10 @@ type contextCheckpointData struct {
 	Created bool          `json:"created"`
 }
 
+type contextSessionData struct {
+	Session store.Session `json:"session"`
+}
+
 type contextRehydrateData struct {
 	SessionID string                `json:"session_id"`
 	Source    string                `json:"source"`
@@ -2877,6 +2997,8 @@ func printHelp(out io.Writer) {
 	ui.bullet("memori issue next [--agent <id>] [--json]")
 	ui.bullet("memori board [--db <path>] [--agent <id>] [--watch] [--interval <duration>] [--json]")
 	ui.bullet("memori context checkpoint --session <id> [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]")
+	ui.bullet("memori context summarize --session <id> [--note <text>] [--actor <actor>] [--command-id <id>] [--json]")
+	ui.bullet("memori context close --session <id> [--reason <text>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori context packet build --scope issue|session --id <id> [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori context packet show --packet <id> [--json]")
 	ui.bullet("memori context packet use --agent <id> --packet <id> [--actor <actor>] [--command-id <id>] [--json]")

@@ -48,6 +48,8 @@ const (
 	eventTypeIssueLink           = "issue.linked"
 	eventTypeGateEval            = "gate.evaluated"
 	eventTypeSessionCheckpoint   = "session.checkpointed"
+	eventTypeSessionSummarized   = "session.summarized"
+	eventTypeSessionClosed       = "session.closed"
 	eventTypePacketBuilt         = "packet.built"
 	eventTypeFocusUsed           = "focus.used"
 	eventTypeGateTemplateCreate  = "gate_template.created"
@@ -176,6 +178,20 @@ type GetGateStatusParams struct {
 type CheckpointSessionParams struct {
 	SessionID string
 	Trigger   string
+	Actor     string
+	CommandID string
+}
+
+type SummarizeSessionParams struct {
+	SessionID string
+	Note      string
+	Actor     string
+	CommandID string
+}
+
+type CloseSessionParams struct {
+	SessionID string
+	Reason    string
 	Actor     string
 	CommandID string
 }
@@ -355,6 +371,28 @@ type sessionCheckpointedPayload struct {
 	ContextChunkContent string         `json:"context_chunk_content"`
 	ContextChunkMeta    map[string]any `json:"context_chunk_metadata"`
 	CreatedBy           string         `json:"created_by"`
+}
+
+type sessionSummarizedPayload struct {
+	SessionID           string         `json:"session_id"`
+	Summary             map[string]any `json:"summary"`
+	SummarizedAt        string         `json:"summarized_at"`
+	ContextChunkID      string         `json:"context_chunk_id"`
+	ContextChunkKind    string         `json:"context_chunk_kind"`
+	ContextChunkContent string         `json:"context_chunk_content"`
+	ContextChunkMeta    map[string]any `json:"context_chunk_metadata"`
+}
+
+type sessionClosedPayload struct {
+	SessionID           string         `json:"session_id"`
+	EndedAt             string         `json:"ended_at"`
+	SummaryEventID      string         `json:"summary_event_id,omitempty"`
+	Reason              string         `json:"reason,omitempty"`
+	ClosedAt            string         `json:"closed_at"`
+	ContextChunkID      string         `json:"context_chunk_id"`
+	ContextChunkKind    string         `json:"context_chunk_kind"`
+	ContextChunkContent string         `json:"context_chunk_content"`
+	ContextChunkMeta    map[string]any `json:"context_chunk_metadata"`
 }
 
 type packetBuiltPayload struct {
@@ -1660,6 +1698,9 @@ func (s *Store) CheckpointSession(ctx context.Context, p CheckpointSessionParams
 	if err != nil && !strings.Contains(err.Error(), "not found") {
 		return Session{}, false, err
 	}
+	if sessionExists && strings.TrimSpace(existingSession.EndedAt) != "" {
+		return Session{}, false, fmt.Errorf("session %q is closed; start a new session id to checkpoint more work", sessionID)
+	}
 
 	now := nowUTC()
 	latestEventID, err := latestEventIDTx(ctx, tx)
@@ -1732,6 +1773,181 @@ func (s *Store) CheckpointSession(ctx context.Context, p CheckpointSessionParams
 	return session, appendRes.Event.EntitySeq == 1, nil
 }
 
+func (s *Store) SummarizeSession(ctx context.Context, p SummarizeSessionParams) (Session, error) {
+	sessionID := strings.TrimSpace(p.SessionID)
+	if sessionID == "" {
+		return Session{}, errors.New("--session is required")
+	}
+	actor := strings.TrimSpace(p.Actor)
+	if actor == "" {
+		actor = defaultActor()
+	}
+	commandID := strings.TrimSpace(p.CommandID)
+	if commandID == "" {
+		return Session{}, errors.New("--command-id is required")
+	}
+	note := strings.TrimSpace(p.Note)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Session{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	session, err := sessionByIDTx(ctx, tx, sessionID)
+	if err != nil {
+		return Session{}, err
+	}
+	relevantChunks, totalChunkCount, err := listRelevantContextChunksTx(ctx, tx, "session", sessionID, packetRelevantChunkLimit)
+	if err != nil {
+		return Session{}, err
+	}
+	latestEventID, err := latestEventIDTx(ctx, tx)
+	if err != nil {
+		return Session{}, err
+	}
+	summary := buildStructuredSessionSummary(session, totalChunkCount, relevantChunks, note, latestEventID)
+	summarizedAt := nowUTC()
+	chunkID := newID("chk")
+	chunkMetadata := map[string]any{
+		"summary":         summary,
+		"latest_event_id": latestEventID,
+	}
+	if note != "" {
+		chunkMetadata["note"] = note
+	}
+	payloadBytes, err := json.Marshal(sessionSummarizedPayload{
+		SessionID:           sessionID,
+		Summary:             summary,
+		SummarizedAt:        summarizedAt,
+		ContextChunkID:      chunkID,
+		ContextChunkKind:    "summary",
+		ContextChunkContent: sessionSummaryChunkContent(sessionID, note),
+		ContextChunkMeta:    chunkMetadata,
+	})
+	if err != nil {
+		return Session{}, fmt.Errorf("marshal session summary payload: %w", err)
+	}
+
+	appendRes, err := s.appendEventTx(ctx, tx, appendEventRequest{
+		EntityType:          entityTypeSession,
+		EntityID:            sessionID,
+		EventType:           eventTypeSessionSummarized,
+		PayloadJSON:         string(payloadBytes),
+		Actor:               actor,
+		CommandID:           commandID,
+		EventPayloadVersion: 1,
+	})
+	if err != nil {
+		return Session{}, err
+	}
+	if appendRes.Event.EventType != eventTypeSessionSummarized {
+		return Session{}, fmt.Errorf("command id already used by %q", appendRes.Event.EventType)
+	}
+	if err := applySessionSummarizedProjectionTx(ctx, tx, appendRes.Event); err != nil {
+		return Session{}, err
+	}
+
+	session, err = sessionByIDTx(ctx, tx, sessionID)
+	if err != nil {
+		return Session{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Session{}, fmt.Errorf("commit tx: %w", err)
+	}
+	return session, nil
+}
+
+func (s *Store) CloseSession(ctx context.Context, p CloseSessionParams) (Session, error) {
+	sessionID := strings.TrimSpace(p.SessionID)
+	if sessionID == "" {
+		return Session{}, errors.New("--session is required")
+	}
+	actor := strings.TrimSpace(p.Actor)
+	if actor == "" {
+		actor = defaultActor()
+	}
+	commandID := strings.TrimSpace(p.CommandID)
+	if commandID == "" {
+		return Session{}, errors.New("--command-id is required")
+	}
+	reason := strings.TrimSpace(p.Reason)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Session{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	session, err := sessionByIDTx(ctx, tx, sessionID)
+	if err != nil {
+		return Session{}, err
+	}
+	if strings.TrimSpace(session.EndedAt) != "" {
+		return Session{}, fmt.Errorf("session %q is already closed", sessionID)
+	}
+	closedAt := nowUTC()
+	latestEventID, err := latestEventIDTx(ctx, tx)
+	if err != nil {
+		return Session{}, err
+	}
+	chunkID := newID("chk")
+	chunkMetadata := map[string]any{
+		"latest_event_id": latestEventID,
+		"status":          "closed",
+	}
+	if reason != "" {
+		chunkMetadata["reason"] = reason
+	}
+	if strings.TrimSpace(session.SummaryEventID) != "" {
+		chunkMetadata["summary_event_id"] = session.SummaryEventID
+	}
+	payloadBytes, err := json.Marshal(sessionClosedPayload{
+		SessionID:           sessionID,
+		EndedAt:             closedAt,
+		SummaryEventID:      session.SummaryEventID,
+		Reason:              reason,
+		ClosedAt:            closedAt,
+		ContextChunkID:      chunkID,
+		ContextChunkKind:    "closure",
+		ContextChunkContent: sessionCloseChunkContent(sessionID, reason),
+		ContextChunkMeta:    chunkMetadata,
+	})
+	if err != nil {
+		return Session{}, fmt.Errorf("marshal session close payload: %w", err)
+	}
+
+	appendRes, err := s.appendEventTx(ctx, tx, appendEventRequest{
+		EntityType:          entityTypeSession,
+		EntityID:            sessionID,
+		EventType:           eventTypeSessionClosed,
+		PayloadJSON:         string(payloadBytes),
+		Actor:               actor,
+		CommandID:           commandID,
+		EventPayloadVersion: 1,
+	})
+	if err != nil {
+		return Session{}, err
+	}
+	if appendRes.Event.EventType != eventTypeSessionClosed {
+		return Session{}, fmt.Errorf("command id already used by %q", appendRes.Event.EventType)
+	}
+	if err := applySessionClosedProjectionTx(ctx, tx, appendRes.Event); err != nil {
+		return Session{}, err
+	}
+
+	session, err = sessionByIDTx(ctx, tx, sessionID)
+	if err != nil {
+		return Session{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Session{}, fmt.Errorf("commit tx: %w", err)
+	}
+	return session, nil
+}
+
 func (s *Store) RehydrateSession(ctx context.Context, p RehydrateSessionParams) (SessionRehydrateResult, error) {
 	sessionID := strings.TrimSpace(p.SessionID)
 	if sessionID == "" {
@@ -1757,7 +1973,64 @@ func (s *Store) RehydrateSession(ctx context.Context, p RehydrateSessionParams) 
 	result := SessionRehydrateResult{
 		SessionID: sessionID,
 	}
-	if found {
+	if strings.TrimSpace(session.EndedAt) != "" {
+		if found && sessionPacketMatchesClosedLifecycle(packet, session) {
+			result.Source = "packet"
+			result.Packet = packet
+		} else {
+			latestEventID, err := latestEventIDTx(ctx, tx)
+			if err != nil {
+				return SessionRehydrateResult{}, err
+			}
+			relevantChunks, totalChunkCount, err := listRelevantContextChunksTx(ctx, tx, "session", sessionID, packetRelevantChunkLimit)
+			if err != nil {
+				return SessionRehydrateResult{}, err
+			}
+			eventCount, err := countEventsForEntityTx(ctx, tx, entityTypeSession, sessionID)
+			if err != nil {
+				return SessionRehydrateResult{}, err
+			}
+			packetJSON := newBasePacketJSON("session", sessionID)
+			packetJSON["goal"] = "Review closed session context"
+			state := map[string]any{
+				"session_id":       sessionID,
+				"status":           "closed",
+				"started_at":       session.StartedAt,
+			}
+			if strings.TrimSpace(session.EndedAt) != "" {
+				state["ended_at"] = session.EndedAt
+			}
+			if strings.TrimSpace(session.SummaryEventID) != "" {
+				state["summary_event_id"] = session.SummaryEventID
+			}
+			packetJSON["state"] = state
+			packetJSON["decision_summary"] = buildSessionDecisionSummary(session, totalChunkCount)
+			packetJSON["source"] = "closed-session-summary"
+			packetJSON["next_actions"] = []any{
+				"Review how the session concluded before resuming related work",
+				"Start a new session if more execution is needed",
+			}
+			continuity := packetJSON["continuity"].(map[string]any)
+			continuity["relevant_chunks"] = relevantChunks
+			continuity["compaction"] = buildCompactionPolicy("session", eventCount, 0, totalChunkCount)
+			if latestEventID != "" {
+				packetJSON["latest_event_id"] = latestEventID
+			}
+			if strings.TrimSpace(session.SummaryEventID) == "" {
+				packetJSON["source"] = "closed-session-fallback"
+				result.Source = "closed-session-fallback"
+			} else {
+				result.Source = "closed-session-summary"
+			}
+			result.Packet = RehydratePacket{
+				Scope:               "session",
+				Packet:              packetJSON,
+				PacketSchemaVersion: packetSchemaVersion,
+				BuiltFromEventID:    latestEventID,
+				CreatedAt:           nowUTC(),
+			}
+		}
+	} else if found {
 		result.Source = "packet"
 		result.Packet = packet
 	} else {
@@ -1905,10 +2178,6 @@ func (s *Store) BuildRehydratePacket(ctx context.Context, p BuildPacketParams) (
 		if err != nil {
 			return RehydratePacket{}, err
 		}
-		packetJSON["goal"] = "Resume session context"
-		packetJSON["state"] = map[string]any{
-			"session_id": scopeID,
-		}
 		relevantChunks, totalChunkCount, err := listRelevantContextChunksTx(ctx, tx, "session", scopeID, packetRelevantChunkLimit)
 		if err != nil {
 			return RehydratePacket{}, err
@@ -1917,14 +2186,39 @@ func (s *Store) BuildRehydratePacket(ctx context.Context, p BuildPacketParams) (
 		if err != nil {
 			return RehydratePacket{}, err
 		}
+		status := sessionLifecycleStatus(session)
+		goal := "Resume session context"
+		nextActions := []any{
+			"Review recent context chunks and continue execution",
+		}
+		if status == "closed" {
+			goal = "Review closed session context"
+			nextActions = []any{
+				"Review how the session concluded before resuming related work",
+				"Start a new session if more execution is needed",
+			}
+		}
+		state := map[string]any{
+			"session_id": scopeID,
+			"status":     status,
+			"started_at": session.StartedAt,
+		}
+		if strings.TrimSpace(session.EndedAt) != "" {
+			state["ended_at"] = session.EndedAt
+		}
+		if strings.TrimSpace(session.SummaryEventID) != "" {
+			state["summary_event_id"] = session.SummaryEventID
+		}
+		packetJSON["goal"] = goal
+		packetJSON["state"] = state
 		packetJSON["decision_summary"] = buildSessionDecisionSummary(session, totalChunkCount)
 		continuity := packetJSON["continuity"].(map[string]any)
 		continuity["relevant_chunks"] = relevantChunks
 		continuity["compaction"] = buildCompactionPolicy("session", eventCount, 0, totalChunkCount)
 		if len(relevantChunks) > 0 {
-			packetJSON["next_actions"] = []any{
-				"Review recent context chunks and continue execution",
-			}
+			packetJSON["next_actions"] = nextActions
+		} else if status == "closed" {
+			packetJSON["next_actions"] = nextActions
 		}
 	}
 
@@ -3227,6 +3521,10 @@ func applyEventProjectionTx(ctx context.Context, tx *sql.Tx, event Event) error 
 		return applyGateEvaluatedProjectionTx(ctx, tx, event)
 	case eventTypeSessionCheckpoint:
 		return applySessionCheckpointedProjectionTx(ctx, tx, event)
+	case eventTypeSessionSummarized:
+		return applySessionSummarizedProjectionTx(ctx, tx, event)
+	case eventTypeSessionClosed:
+		return applySessionClosedProjectionTx(ctx, tx, event)
 	case eventTypePacketBuilt:
 		return applyPacketBuiltProjectionTx(ctx, tx, event)
 	case eventTypeFocusUsed:
@@ -3534,6 +3832,116 @@ func applySessionCheckpointedProjectionTx(ctx context.Context, tx *sql.Tx, event
 	)
 	if err != nil {
 		return fmt.Errorf("upsert context chunk from event %s: %w", event.EventID, err)
+	}
+
+	return nil
+}
+
+func applySessionSummarizedProjectionTx(ctx context.Context, tx *sql.Tx, event Event) error {
+	var payload sessionSummarizedPayload
+	if err := json.Unmarshal([]byte(event.PayloadJSON), &payload); err != nil {
+		return fmt.Errorf("decode session.summarized payload for event %s: %w", event.EventID, err)
+	}
+	contextChunkMetaJSON, err := json.Marshal(payload.ContextChunkMeta)
+	if err != nil {
+		return fmt.Errorf("encode session.summarized context metadata for event %s: %w", event.EventID, err)
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE sessions
+		SET summary_event_id = ?
+		WHERE session_id = ?
+	`, event.EventID, payload.SessionID)
+	if err != nil {
+		return fmt.Errorf("update session summary marker from event %s: %w", event.EventID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check session summary rows for event %s: %w", event.EventID, err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("update session summary marker from event %s: session %q not found", event.EventID, payload.SessionID)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO context_chunks(
+			chunk_id, session_id, entity_type, entity_id, kind, content, metadata_json, embedding_ref, created_at
+		) VALUES(?, ?, ?, ?, ?, ?, ?, NULL, ?)
+		ON CONFLICT(chunk_id) DO UPDATE SET
+			session_id=excluded.session_id,
+			entity_type=excluded.entity_type,
+			entity_id=excluded.entity_id,
+			kind=excluded.kind,
+			content=excluded.content,
+			metadata_json=excluded.metadata_json,
+			created_at=excluded.created_at
+	`,
+		payload.ContextChunkID,
+		payload.SessionID,
+		entityTypeSession,
+		payload.SessionID,
+		payload.ContextChunkKind,
+		payload.ContextChunkContent,
+		string(contextChunkMetaJSON),
+		payload.SummarizedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert summary context chunk from event %s: %w", event.EventID, err)
+	}
+
+	return nil
+}
+
+func applySessionClosedProjectionTx(ctx context.Context, tx *sql.Tx, event Event) error {
+	var payload sessionClosedPayload
+	if err := json.Unmarshal([]byte(event.PayloadJSON), &payload); err != nil {
+		return fmt.Errorf("decode session.closed payload for event %s: %w", event.EventID, err)
+	}
+	contextChunkMetaJSON, err := json.Marshal(payload.ContextChunkMeta)
+	if err != nil {
+		return fmt.Errorf("encode session.closed context metadata for event %s: %w", event.EventID, err)
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE sessions
+		SET ended_at = ?, summary_event_id = COALESCE(NULLIF(?, ''), summary_event_id)
+		WHERE session_id = ?
+	`, payload.EndedAt, payload.SummaryEventID, payload.SessionID)
+	if err != nil {
+		return fmt.Errorf("update session closure markers from event %s: %w", event.EventID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check session closure rows for event %s: %w", event.EventID, err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("update session closure markers from event %s: session %q not found", event.EventID, payload.SessionID)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO context_chunks(
+			chunk_id, session_id, entity_type, entity_id, kind, content, metadata_json, embedding_ref, created_at
+		) VALUES(?, ?, ?, ?, ?, ?, ?, NULL, ?)
+		ON CONFLICT(chunk_id) DO UPDATE SET
+			session_id=excluded.session_id,
+			entity_type=excluded.entity_type,
+			entity_id=excluded.entity_id,
+			kind=excluded.kind,
+			content=excluded.content,
+			metadata_json=excluded.metadata_json,
+			created_at=excluded.created_at
+	`,
+		payload.ContextChunkID,
+		payload.SessionID,
+		entityTypeSession,
+		payload.SessionID,
+		payload.ContextChunkKind,
+		payload.ContextChunkContent,
+		string(contextChunkMetaJSON),
+		payload.ClosedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert closure context chunk from event %s: %w", event.EventID, err)
 	}
 
 	return nil
@@ -5478,12 +5886,23 @@ func newBasePacketJSON(scope, scopeID string) map[string]any {
 	}
 }
 
+func sessionLifecycleStatus(session Session) string {
+	if strings.TrimSpace(session.EndedAt) != "" {
+		return "closed"
+	}
+	return "active"
+}
+
 func buildSessionDecisionSummary(session Session, totalChunkCount int) map[string]any {
 	summary := map[string]any{
 		"session_id":          session.SessionID,
+		"status":              sessionLifecycleStatus(session),
 		"trigger":             session.Trigger,
 		"started_at":          session.StartedAt,
 		"context_chunk_count": totalChunkCount,
+	}
+	if checkpointLatestEventID := strings.TrimSpace(anyToString(session.Checkpoint["latest_event_id"])); checkpointLatestEventID != "" {
+		summary["checkpoint_latest_event_id"] = checkpointLatestEventID
 	}
 	if strings.TrimSpace(session.EndedAt) != "" {
 		summary["ended_at"] = session.EndedAt
@@ -5492,6 +5911,69 @@ func buildSessionDecisionSummary(session Session, totalChunkCount int) map[strin
 		summary["summary_event_id"] = session.SummaryEventID
 	}
 	return summary
+}
+
+func buildStructuredSessionSummary(session Session, totalChunkCount int, relevantChunks []any, note, latestEventID string) map[string]any {
+	summary := buildSessionDecisionSummary(session, totalChunkCount)
+	if latestEventID != "" {
+		summary["ledger_latest_event_id"] = latestEventID
+	}
+	if note != "" {
+		summary["note"] = note
+	}
+	recentKinds := make([]string, 0, len(relevantChunks))
+	for _, rawChunk := range relevantChunks {
+		chunk, ok := rawChunk.(map[string]any)
+		if !ok {
+			continue
+		}
+		kind := strings.TrimSpace(anyToString(chunk["kind"]))
+		if kind == "" {
+			continue
+		}
+		recentKinds = append(recentKinds, kind)
+	}
+	if len(recentKinds) > 0 {
+		summary["recent_chunk_kinds"] = recentKinds
+	}
+	return summary
+}
+
+func sessionSummaryChunkContent(sessionID, note string) string {
+	if note == "" {
+		return fmt.Sprintf("summary for session %s", sessionID)
+	}
+	return fmt.Sprintf("summary for session %s: %s", sessionID, note)
+}
+
+func sessionCloseChunkContent(sessionID, reason string) string {
+	if reason == "" {
+		return fmt.Sprintf("closed session %s", sessionID)
+	}
+	return fmt.Sprintf("closed session %s: %s", sessionID, reason)
+}
+
+func sessionPacketMatchesClosedLifecycle(packet RehydratePacket, session Session) bool {
+	if packet.Scope != "session" {
+		return false
+	}
+	if strings.TrimSpace(anyToString(packet.Packet["scope_id"])) != session.SessionID {
+		return false
+	}
+	state, ok := packet.Packet["state"].(map[string]any)
+	if !ok {
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(anyToString(state["status"]))) != "closed" {
+		return false
+	}
+	if strings.TrimSpace(anyToString(state["ended_at"])) != strings.TrimSpace(session.EndedAt) {
+		return false
+	}
+	if summaryEventID := strings.TrimSpace(session.SummaryEventID); summaryEventID != "" && strings.TrimSpace(anyToString(state["summary_event_id"])) != summaryEventID {
+		return false
+	}
+	return true
 }
 
 func buildIssueDecisionSummary(issue Issue, cycleNo int, gates []any, openLoops []OpenLoop, linkedWorkItems []any) map[string]any {

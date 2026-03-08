@@ -3429,6 +3429,164 @@ func TestSessionCheckpointPacketAndRehydrateFlow(t *testing.T) {
 	}
 }
 
+func TestSessionLifecycleSummariesAndClosedRehydrateFlow(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	session, created, err := s.CheckpointSession(ctx, CheckpointSessionParams{
+		SessionID: "sess-life-1",
+		Trigger:   "manual",
+		Actor:     "agent-1",
+		CommandID: "cmd-session-life-checkpoint-1",
+	})
+	if err != nil {
+		t.Fatalf("checkpoint session: %v", err)
+	}
+	if !created {
+		t.Fatalf("expected first checkpoint to create session")
+	}
+
+	activePacket, err := s.BuildRehydratePacket(ctx, BuildPacketParams{
+		Scope:     "session",
+		ScopeID:   session.SessionID,
+		Actor:     "agent-1",
+		CommandID: "cmd-session-life-packet-active-1",
+	})
+	if err != nil {
+		t.Fatalf("build active session packet: %v", err)
+	}
+	if activePacket.PacketID == "" {
+		t.Fatalf("expected active session packet id")
+	}
+
+	summarized, err := s.SummarizeSession(ctx, SummarizeSessionParams{
+		SessionID: session.SessionID,
+		Note:      "paused after initial triage",
+		Actor:     "agent-1",
+		CommandID: "cmd-session-life-summary-1",
+	})
+	if err != nil {
+		t.Fatalf("summarize session: %v", err)
+	}
+	if summarized.SummaryEventID == "" {
+		t.Fatalf("expected summary_event_id after summarize, got %#v", summarized)
+	}
+	if summarized.EndedAt != "" {
+		t.Fatalf("expected summarized session to remain active, got %#v", summarized)
+	}
+
+	closed, err := s.CloseSession(ctx, CloseSessionParams{
+		SessionID: session.SessionID,
+		Reason:    "handoff complete",
+		Actor:     "agent-1",
+		CommandID: "cmd-session-life-close-1",
+	})
+	if err != nil {
+		t.Fatalf("close session: %v", err)
+	}
+	if closed.EndedAt == "" {
+		t.Fatalf("expected ended_at after close, got %#v", closed)
+	}
+	if closed.SummaryEventID != summarized.SummaryEventID {
+		t.Fatalf("expected close to preserve summary_event_id %q, got %q", summarized.SummaryEventID, closed.SummaryEventID)
+	}
+
+	if _, _, err := s.CheckpointSession(ctx, CheckpointSessionParams{
+		SessionID: session.SessionID,
+		Trigger:   "manual",
+		Actor:     "agent-1",
+		CommandID: "cmd-session-life-checkpoint-2",
+	}); err == nil || !strings.Contains(err.Error(), "is closed") {
+		t.Fatalf("expected closed-session checkpoint rejection, got %v", err)
+	}
+
+	closedFallback, err := s.RehydrateSession(ctx, RehydrateSessionParams{SessionID: session.SessionID})
+	if err != nil {
+		t.Fatalf("rehydrate closed session fallback: %v", err)
+	}
+	if closedFallback.Source != "closed-session-summary" {
+		t.Fatalf("expected closed-session-summary source, got %q", closedFallback.Source)
+	}
+	state, ok := closedFallback.Packet.Packet["state"].(map[string]any)
+	if !ok || anyToString(state["status"]) != "closed" {
+		t.Fatalf("expected closed session state, got %#v", closedFallback.Packet.Packet["state"])
+	}
+	continuity, ok := closedFallback.Packet.Packet["continuity"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected continuity metadata, got %#v", closedFallback.Packet.Packet["continuity"])
+	}
+	relevantChunks, ok := continuity["relevant_chunks"].([]any)
+	if !ok || len(relevantChunks) < 2 {
+		t.Fatalf("expected summary and closure chunks in fallback, got %#v", continuity["relevant_chunks"])
+	}
+
+	closedPacket, err := s.BuildRehydratePacket(ctx, BuildPacketParams{
+		Scope:     "session",
+		ScopeID:   session.SessionID,
+		Actor:     "agent-1",
+		CommandID: "cmd-session-life-packet-closed-1",
+	})
+	if err != nil {
+		t.Fatalf("build closed session packet: %v", err)
+	}
+	closedPacketState, ok := closedPacket.Packet["state"].(map[string]any)
+	if !ok || anyToString(closedPacketState["status"]) != "closed" {
+		t.Fatalf("expected closed packet state, got %#v", closedPacket.Packet["state"])
+	}
+	closedSummary, ok := closedPacket.Packet["decision_summary"].(map[string]any)
+	if !ok || anyToString(closedSummary["summary_event_id"]) != summarized.SummaryEventID {
+		t.Fatalf("expected closed packet summary metadata, got %#v", closedPacket.Packet["decision_summary"])
+	}
+
+	rehydratedPacket, err := s.RehydrateSession(ctx, RehydrateSessionParams{SessionID: session.SessionID})
+	if err != nil {
+		t.Fatalf("rehydrate closed session packet: %v", err)
+	}
+	if rehydratedPacket.Source != "packet" || rehydratedPacket.Packet.PacketID != closedPacket.PacketID {
+		t.Fatalf("expected packet-first closed rehydrate, got %#v", rehydratedPacket)
+	}
+
+	sessionEvents, err := s.ListEventsForEntity(ctx, "session", session.SessionID)
+	if err != nil {
+		t.Fatalf("list session events: %v", err)
+	}
+	if len(sessionEvents) != 3 {
+		t.Fatalf("expected checkpoint, summary, and close events, got %#v", sessionEvents)
+	}
+	if sessionEvents[1].EventType != "session.summarized" || sessionEvents[2].EventType != "session.closed" {
+		t.Fatalf("unexpected session lifecycle events: %#v", sessionEvents)
+	}
+
+	var summaryChunkCount, closureChunkCount int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM context_chunks WHERE session_id = ? AND kind = 'summary'`, session.SessionID).Scan(&summaryChunkCount); err != nil {
+		t.Fatalf("count summary chunks: %v", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM context_chunks WHERE session_id = ? AND kind = 'closure'`, session.SessionID).Scan(&closureChunkCount); err != nil {
+		t.Fatalf("count closure chunks: %v", err)
+	}
+	if summaryChunkCount != 1 || closureChunkCount != 1 {
+		t.Fatalf("expected summary and closure chunks, got summary=%d closure=%d", summaryChunkCount, closureChunkCount)
+	}
+
+	if _, err := s.ReplayProjections(ctx); err != nil {
+		t.Fatalf("replay projections: %v", err)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx after replay: %v", err)
+	}
+	defer tx.Rollback()
+	replayedSession, err := sessionByIDTx(ctx, tx, session.SessionID)
+	if err != nil {
+		t.Fatalf("load replayed session: %v", err)
+	}
+	if replayedSession.EndedAt == "" || replayedSession.SummaryEventID == "" {
+		t.Fatalf("expected replayed lifecycle markers, got %#v", replayedSession)
+	}
+}
+
 func TestReplayRebuildsEventSourcedPacketsAndIssueSummaries(t *testing.T) {
 	t.Parallel()
 
