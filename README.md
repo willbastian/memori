@@ -31,6 +31,41 @@ Traditional issue trackers are good at coordination, but they are not designed f
 | Replay | Rebuilds projections from the event ledger with `memori db replay`. |
 | Provenance | Distinguishes human and LLM actors and applies stricter policy to executable gate criteria. |
 
+## System architecture
+
+```mermaid
+flowchart TD
+    Human["Human operator"]
+    Agent["Agent or automation"]
+    CLI["memori CLI"]
+    Auth["Auth and provenance layer"]
+    Store["Store and command handlers"]
+    Ledger[("Append-only event ledger")]
+    Proj["Derived projections"]
+    SQLite[("SQLite database")]
+    Gates["Issue, gate, packet, focus, and session state"]
+    Replay["db replay / db verify / db migrate"]
+    Release["Release workflow and artifacts"]
+    Install["Source install or release installer"]
+
+    Human --> CLI
+    Agent --> CLI
+    CLI --> Auth
+    Auth --> Store
+    Store --> Ledger
+    Store --> Proj
+    Ledger --> Proj
+    Ledger --> SQLite
+    Proj --> SQLite
+    Proj --> Gates
+    Replay --> Ledger
+    Replay --> Proj
+    Release --> Install
+    Install --> CLI
+```
+
+The CLI is the only product surface today. It writes append-only events, rebuilds derived state from that ledger, and exposes the resulting issue, gate, packet, focus, and session views from the local SQLite store.
+
 ## What the repository includes today
 
 - SQLite-backed local database, defaulting to `.memori/memori.db`
@@ -180,6 +215,36 @@ Schema compatibility expectations:
 ## Adopt memori in a new repository
 
 These steps assume you installed the `memori` binary. If you are working from a local checkout instead, replace `memori` with `go run ./cmd/memori`.
+
+## Human and agent workflow
+
+```mermaid
+flowchart LR
+    Pick["Pick work<br/>issue next / board / issue show"]
+    Start["Start or update issue<br/>issue create / issue update --status inprogress"]
+    Work["Do the work<br/>human edits or agent execution"]
+    Context["Capture continuity<br/>context checkpoint / summarize / close / rehydrate"]
+    Template{"Approved gate template<br/>available for issue type?"}
+    Review["Human reviews or approves<br/>gate template pending / approve"]
+    Freeze["Freeze completion contract<br/>gate set instantiate + lock"]
+    Verify["Prove required gates<br/>gate verify"]
+    Close["Close the issue<br/>issue update --status done"]
+    Resume["Resume later from packets,<br/>sessions, and board context"]
+
+    Pick --> Start
+    Start --> Work
+    Work --> Context
+    Context --> Template
+    Template -- no --> Review
+    Review --> Freeze
+    Template -- yes --> Freeze
+    Freeze --> Verify
+    Verify --> Close
+    Context --> Resume
+    Resume --> Pick
+```
+
+Humans and agents operate against the same ledger. The usual loop is: pick tracked work, move it into progress, do the implementation, capture continuity as you go, freeze the close contract with a gate set, verify the required proof, and only then mark the issue `done`.
 
 ### 1. Initialize project state
 
