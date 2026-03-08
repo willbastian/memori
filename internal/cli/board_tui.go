@@ -48,27 +48,31 @@ type boardTUIModel struct {
 }
 
 type boardTheme struct {
-	colors     bool
-	titleFG    string
-	titleBG    string
-	accentFG   string
-	mutedFG    string
-	borderFG   string
-	selectedFG string
-	selectedBG string
-	panelBG    string
-	helpBG     string
-	helpFG     string
-	detailFG   string
-	activeFG   string
-	activeBG   string
-	blockedFG  string
-	blockedBG  string
-	readyFG    string
-	readyBG    string
-	nextFG     string
-	nextBG     string
-	metaFG     string
+	colors      bool
+	titleFG     string
+	titleBG     string
+	titleMetaBG string
+	accentFG    string
+	mutedFG     string
+	borderFG    string
+	selectedFG  string
+	selectedBG  string
+	panelBG     string
+	panelAltBG  string
+	helpBG      string
+	helpFG      string
+	detailFG    string
+	activeFG    string
+	activeBG    string
+	blockedFG   string
+	blockedBG   string
+	readyFG     string
+	readyBG     string
+	nextFG      string
+	nextBG      string
+	metaFG      string
+	keyFG       string
+	chromeFG    string
 }
 
 func runBoardTUI(ctx context.Context, s *store.Store, agent string, interval time.Duration, out io.Writer) error {
@@ -306,27 +310,31 @@ func (model boardTUIModel) selectedRow() (boardIssueRow, bool) {
 
 func renderBoardTUI(model boardTUIModel, colors bool) string {
 	theme := boardTheme{
-		colors:     colors,
-		titleFG:    "226;232;240",
-		titleBG:    "15;23;42",
-		accentFG:   "125;211;252",
-		mutedFG:    "148;163;184",
-		borderFG:   "71;85;105",
-		selectedFG: "248;250;252",
-		selectedBG: "30;41;59",
-		panelBG:    "15;23;42",
-		helpBG:     "17;24;39",
-		helpFG:     "226;232;240",
-		detailFG:   "226;232;240",
-		activeFG:   "17;24;39",
-		activeBG:   "251;191;36",
-		blockedFG:  "255;241;242",
-		blockedBG:  "190;24;93",
-		readyFG:    "8;47;73",
-		readyBG:    "103;232;249",
-		nextFG:     "36;16;56",
-		nextBG:     "196;181;253",
-		metaFG:     "94;234;212",
+		colors:      colors,
+		titleFG:     "241;245;249",
+		titleBG:     "15;23;42",
+		titleMetaBG: "30;41;59",
+		accentFG:    "103;232;249",
+		mutedFG:     "148;163;184",
+		borderFG:    "71;85;105",
+		selectedFG:  "248;250;252",
+		selectedBG:  "37;99;235",
+		panelBG:     "15;23;42",
+		panelAltBG:  "17;24;39",
+		helpBG:      "30;41;59",
+		helpFG:      "226;232;240",
+		detailFG:    "226;232;240",
+		activeFG:    "17;24;39",
+		activeBG:    "250;204;21",
+		blockedFG:   "255;241;242",
+		blockedBG:   "225;29;72",
+		readyFG:     "8;47;73",
+		readyBG:     "45;212;191",
+		nextFG:      "30;27;75",
+		nextBG:      "196;181;253",
+		metaFG:      "125;211;252",
+		keyFG:       "251;191;36",
+		chromeFG:    "30;41;59",
 	}
 
 	width := maxInt(model.width, 60)
@@ -361,24 +369,24 @@ func renderBoardTUI(model boardTUIModel, colors bool) string {
 }
 
 func boardHeaderLine(model boardTUIModel, theme boardTheme, width int) string {
-	title := " memori board "
+	title := " MEMORI BOARD "
 	meta := fmt.Sprintf(" %s ", formatBoardSummary(model.snapshot.Summary, false))
 	if model.snapshot.Agent != "" {
-		meta += fmt.Sprintf("agent:%s ", model.snapshot.Agent)
+		meta += fmt.Sprintf(" AGENT %s ", strings.ToUpper(model.snapshot.Agent))
+	}
+	if len(meta) > width/2 {
+		meta = truncateBoardLine(meta, width/2)
 	}
 	left := theme.paintLine(theme.titleFG, theme.titleBG, true, padRight(title, width))
-	if len(meta) < width-len(title) {
-		rightStart := maxInt(width-len(meta), len(title))
-		left = replaceSegment(left, rightStart, theme.paintLine(theme.accentFG, theme.titleBG, false, meta))
-	}
-	return left
+	rightStart := maxInt(width-len(meta), len(title))
+	return replaceSegment(left, rightStart, theme.paintLine(theme.accentFG, theme.titleMetaBG, true, meta))
 }
 
 func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
 	tabs := make([]string, 0, 4)
 	for _, lane := range []boardLane{boardLaneNext, boardLaneActive, boardLaneBlocked, boardLaneReady} {
 		label := fmt.Sprintf(" %s %d ", strings.ToUpper(boardLaneTitle(lane)), len(model.rowsForLane(lane)))
-		fg, bg := theme.metaFG, ""
+		fg, bg := theme.mutedFG, theme.panelAltBG
 		bold := false
 		switch lane {
 		case boardLaneNext:
@@ -396,6 +404,9 @@ func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
 		}
 		if lane == model.lane {
 			bold = true
+			label = ">" + label + "<"
+		} else {
+			label = " " + label + " "
 		}
 		tabs = append(tabs, theme.paintLine(fg, bg, bold, label))
 	}
@@ -409,12 +420,15 @@ func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
 
 func boardListPanel(model boardTUIModel, theme boardTheme, width, height int) []string {
 	lines := make([]string, 0, height)
-	title := fmt.Sprintf(" %s lane ", boardLaneTitle(model.lane))
-	lines = append(lines, theme.paintLine(theme.accentFG, theme.panelBG, true, padRight(title, width)))
+	title := fmt.Sprintf(" %s lane ", strings.ToUpper(boardLaneTitle(model.lane)))
+	subtitle := fmt.Sprintf(" %d item(s) ", len(model.rows()))
+	header := theme.paintLine(theme.accentFG, theme.panelBG, true, padRight(title, width))
+	header = replaceSegment(header, maxInt(width-len(subtitle), len(title)), theme.paintLine(theme.mutedFG, theme.panelAltBG, false, subtitle))
+	lines = append(lines, header)
 
 	rows := model.rows()
 	if len(rows) == 0 {
-		lines = append(lines, theme.paintLine(theme.mutedFG, "", false, padRight(" no issues in this lane", width)))
+		lines = append(lines, theme.paintLine(theme.mutedFG, "", false, padRight("  no issues in this lane", width)))
 		for len(lines) < height {
 			lines = append(lines, padRight("", width))
 		}
@@ -436,7 +450,11 @@ func boardListPanel(model boardTUIModel, theme boardTheme, width, height int) []
 		if idx == model.index {
 			line = theme.paintLine(theme.selectedFG, theme.selectedBG, true, line)
 		} else {
-			line = theme.paintLine(theme.detailFG, "", false, line)
+			bg := ""
+			if idx%2 == 1 {
+				bg = theme.panelAltBG
+			}
+			line = theme.paintLine(theme.detailFG, bg, false, line)
 		}
 		lines = append(lines, line)
 	}
@@ -448,9 +466,9 @@ func boardListPanel(model boardTUIModel, theme boardTheme, width, height int) []
 
 func boardListRow(row boardIssueRow, showScore bool, width int) string {
 	chip := boardStatusCode(row.Issue.Status)
-	base := fmt.Sprintf(" %s %-10s %s", chip, row.Issue.ID, row.Issue.Title)
+	base := fmt.Sprintf(" %-3s %-10s %s", chip, row.Issue.ID, row.Issue.Title)
 	if showScore && row.Score > 0 {
-		base = fmt.Sprintf(" %s %-10s %s · %d", chip, row.Issue.ID, row.Issue.Title, row.Score)
+		base = fmt.Sprintf(" %-3s %-10s %s · s%d", chip, row.Issue.ID, row.Issue.Title, row.Score)
 	}
 	return truncateBoardLine(base, width)
 }
@@ -458,8 +476,8 @@ func boardListRow(row boardIssueRow, showScore bool, width int) string {
 func boardDetailPanel(model boardTUIModel, theme boardTheme, width, height int) []string {
 	lines := make([]string, 0, height)
 	if !model.detailOpen {
-		lines = append(lines, theme.paintLine(theme.mutedFG, theme.panelBG, true, padRight(" details hidden ", width)))
-		lines = append(lines, theme.paintLine(theme.mutedFG, "", false, padRight(" press <enter> to expand the selected issue", width)))
+		lines = append(lines, theme.paintLine(theme.accentFG, theme.panelBG, true, padRight(" ISSUE DETAIL ", width)))
+		lines = append(lines, theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(" press <enter> to expand the selected issue ", width)))
 		for len(lines) < height {
 			lines = append(lines, padRight("", width))
 		}
@@ -475,19 +493,20 @@ func boardDetailPanel(model boardTUIModel, theme boardTheme, width, height int) 
 		return lines
 	}
 
-	lines = append(lines, theme.paintLine(theme.accentFG, theme.panelBG, true, padRight(" issue detail ", width)))
-	lines = append(lines, theme.paintLine(theme.detailFG, "", true, padRight(row.Issue.ID+" · "+row.Issue.Title, width)))
+	lines = append(lines, theme.paintLine(theme.accentFG, theme.panelBG, true, padRight(" ISSUE DETAIL ", width)))
+	lines = append(lines, theme.paintLine(theme.detailFG, theme.panelAltBG, true, padRight(" "+row.Issue.ID+" · "+row.Issue.Title+" ", width)))
 	meta := []string{
-		"type:" + row.Issue.Type,
-		"status:" + row.Issue.Status,
+		boardMetaToken(theme, row.Issue.Type, theme.metaFG, ""),
+		boardMetaToken(theme, row.Issue.Status, boardStatusPalette(theme, row.Issue.Status), ""),
 	}
 	if row.Issue.Priority != "" {
-		meta = append(meta, "priority:"+row.Issue.Priority)
+		meta = append(meta, boardMetaToken(theme, row.Issue.Priority, theme.keyFG, ""))
 	}
 	if row.Issue.ParentID != "" {
-		meta = append(meta, "parent:"+row.Issue.ParentID)
+		meta = append(meta, boardMetaToken(theme, "parent "+row.Issue.ParentID, theme.mutedFG, ""))
 	}
-	lines = append(lines, theme.paintLine(theme.metaFG, "", false, padRight(strings.Join(meta, "  "), width)))
+	lines = append(lines, padVisual(strings.Join(meta, " "), width))
+	lines = append(lines, theme.paintLine(theme.borderFG, "", false, strings.Repeat(".", width)))
 
 	for _, line := range boardWrappedSection("Reasons", strings.Join(orderBoardReasons(row.Reasons), "; "), width) {
 		lines = append(lines, theme.paintLine(theme.detailFG, "", false, line))
@@ -514,7 +533,7 @@ func boardWrappedSection(label, value string, width int) []string {
 	if value == "" {
 		return nil
 	}
-	lines := []string{truncateBoardLine(label+":", width)}
+	lines := []string{truncateBoardLine(strings.ToUpper(label)+":", width)}
 	for _, line := range wrapText(value, maxInt(width-2, 20)) {
 		lines = append(lines, truncateBoardLine("  "+line, width))
 	}
@@ -523,13 +542,13 @@ func boardWrappedSection(label, value string, width int) []string {
 
 func boardHelpPanel(theme boardTheme, width, height int) []string {
 	lines := []string{
-		theme.paintLine(theme.helpFG, theme.helpBG, true, padRight(" keyboard ", width)),
-		theme.paintLine(theme.helpFG, "", false, padRight(" j/k move selection", width)),
-		theme.paintLine(theme.helpFG, "", false, padRight(" h/l switch lanes", width)),
-		theme.paintLine(theme.helpFG, "", false, padRight(" g/G jump top/bottom", width)),
-		theme.paintLine(theme.helpFG, "", false, padRight(" enter toggle detail", width)),
-		theme.paintLine(theme.helpFG, "", false, padRight(" ? toggle help", width)),
-		theme.paintLine(theme.helpFG, "", false, padRight(" q quit", width)),
+		theme.paintLine(theme.helpFG, theme.helpBG, true, padRight(" KEYBOARD ", width)),
+		boardHelpLine(theme, "j / k", "move selection", width),
+		boardHelpLine(theme, "h / l", "switch lanes", width),
+		boardHelpLine(theme, "g / G", "jump top / bottom", width),
+		boardHelpLine(theme, "enter", "toggle issue detail", width),
+		boardHelpLine(theme, "?", "toggle help", width),
+		boardHelpLine(theme, "q", "quit", width),
 	}
 	for len(lines) < height {
 		lines = append(lines, padRight("", width))
@@ -542,8 +561,8 @@ func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
 	if !ok {
 		return theme.paintLine(theme.mutedFG, "", false, padRight("No selectable issues", width))
 	}
-	footer := fmt.Sprintf("Selected: %s · %s", row.Issue.ID, row.Issue.Status)
-	return theme.paintLine(theme.mutedFG, "", false, padRight(truncateBoardLine(footer, width), width))
+	footer := fmt.Sprintf(" Selected %s  |  %s  |  %s ", row.Issue.ID, row.Issue.Status, truncateBoardLine(row.Issue.Title, maxInt(width/2, 20)))
+	return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
 }
 
 func boardJoinColumns(left, right []string, leftWidth, rightWidth int) []string {
@@ -581,13 +600,39 @@ func boardLaneTitle(lane boardLane) string {
 func boardStatusCode(status string) string {
 	switch status {
 	case "InProgress":
-		return "IP"
+		return ">>"
 	case "Blocked":
-		return "BL"
+		return "!!"
 	case "Done":
-		return "DN"
+		return "OK"
 	default:
-		return "TD"
+		return ".."
+	}
+}
+
+func boardHelpLine(theme boardTheme, key, desc string, width int) string {
+	keyText := theme.paintLine(theme.keyFG, "", true, " "+padRight(key, 7)+" ")
+	descText := theme.paintLine(theme.helpFG, "", false, desc)
+	return padVisual(keyText+descText, width)
+}
+
+func boardMetaToken(theme boardTheme, value, fg, bg string) string {
+	if bg == "" {
+		bg = theme.panelAltBG
+	}
+	return theme.paintLine(fg, bg, true, " "+value+" ")
+}
+
+func boardStatusPalette(theme boardTheme, status string) string {
+	switch status {
+	case "InProgress":
+		return theme.activeBG
+	case "Blocked":
+		return theme.blockedBG
+	case "Done":
+		return theme.readyBG
+	default:
+		return theme.nextBG
 	}
 }
 

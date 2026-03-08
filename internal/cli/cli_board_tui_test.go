@@ -94,11 +94,11 @@ func TestRenderBoardTUIWideShowsDetailPane(t *testing.T) {
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
-		"memori board",
+		"MEMORI BOARD",
 		"NEXT 1",
-		"issue detail",
+		"ISSUE DETAIL",
 		"mem-a111111 · Next one",
-		"Reasons:",
+		"REASONS:",
 		"focus for resume",
 	} {
 		if !strings.Contains(rendered, want) {
@@ -117,9 +117,9 @@ func TestRenderBoardTUINarrowShowsSinglePaneAndHelp(t *testing.T) {
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
-		"keyboard",
-		"j/k move selection",
-		"q quit",
+		"KEYBOARD",
+		"move selection",
+		"quit",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected narrow help render to contain %q, got:\n%s", want, rendered)
