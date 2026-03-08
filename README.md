@@ -34,7 +34,7 @@ Traditional issue trackers are good at coordination, but they are not designed f
 ## What the repository includes today
 
 - SQLite-backed local database, defaulting to `.memori/memori.db`
-- `issue create`, `issue update`, `issue show`, `issue link`, `backlog`, and `issue next`
+- `issue create`, `issue update`, `issue show`, `issue link`, `backlog`, `board`, and `issue next`
 - append-only event log with deterministic ordering and idempotent command handling
 - gate template creation, approval, instantiation, locking, evaluation, verification, and status inspection
 - close validation that requires a locked gate set, passing required gates, and closed child issues
@@ -85,6 +85,7 @@ Inspect current state:
 
 ```bash
 go run ./cmd/memori backlog
+go run ./cmd/memori board --watch --interval 5s
 go run ./cmd/memori db status
 go run ./cmd/memori auth status
 ```
@@ -195,7 +196,26 @@ For executable gates, the expected flow is:
 2. the agent instantiates and locks that approved gate set for the issue
 3. the agent runs `gate verify` and then marks the issue `done`
 
-### 3. Resume and handoff flow
+### 3. Live board view for terminal splits
+
+Use `board` when you want a continuously refreshing terminal snapshot instead of rerunning multiple inspection commands by hand.
+
+```bash
+go run ./cmd/memori board --watch --interval 5s
+go run ./cmd/memori board --agent writer-1 --watch --interval 3s
+go run ./cmd/memori board --agent writer-1 --json
+```
+
+The board surfaces:
+
+- active work (`InProgress`)
+- blocked work (`Blocked`)
+- ready work (`Todo`) ranked from existing `issue next` guidance
+- likely next work, including continuity signals such as focus, packets, open loops, and gate state
+
+For split panes, keep one shell running `board --watch` and do mutations in another. Use `--agent` when you want the likely-next panel to reflect a specific worker's current focus and recovery packet state.
+
+### 4. Resume and handoff flow
 
 memori’s context commands are built for “pick the work back up” scenarios.
 
@@ -232,7 +252,7 @@ Issue packets currently include:
 
 `issue next` uses these continuity signals as part of triage, so an agent can prefer work that already has focus, packets, unresolved loops, or failing gates that need attention.
 
-### 4. Replay and integrity checks
+### 5. Replay and integrity checks
 
 When you want to rebuild derived state from the ledger, use replay:
 
@@ -256,6 +276,7 @@ Use replay when projections need to be recomputed. Use rehydrate when a worker n
 
 - `memori help`
 - `memori backlog`
+- `memori board`
 - `memori issue show`
 - `memori gate status`
 - `memori event log`
@@ -280,6 +301,7 @@ Use replay when projections need to be recomputed. Use rehydrate when a worker n
 ### Agent continuity
 
 - `memori issue next`
+- `memori board`
 - `memori context checkpoint`
 - `memori context packet build`
 - `memori context packet show`

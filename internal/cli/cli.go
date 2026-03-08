@@ -49,6 +49,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return runContext(args[1:], stdout)
 	case "backlog":
 		return runBacklog(args[1:], stdout)
+	case "board":
+		return runBoard(args[1:], stdout)
 	case "event":
 		return runEvent(args[1:], stdout)
 	case "db":
@@ -77,6 +79,7 @@ func runHelp(args []string, out io.Writer) error {
 			"memori issue update --key <prefix-shortSHA> [--status todo|inprogress|blocked|done] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--actor <actor>] [--command-id <id>] [--json]",
 			"memori issue show --key <prefix-shortSHA> [--json]",
 			"memori issue next [--agent <id>] [--json]",
+			"memori board [--db <path>] [--agent <id>] [--watch] [--interval <duration>] [--json]",
 			"memori gate template create --id <template-id> --version <n> --applies-to epic|story|task|bug [--applies-to ...] --file <path> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate template approve --id <template-id> --version <n> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate template list [--type epic|story|task|bug] [--json]",
@@ -2786,6 +2789,7 @@ func printHelp(out io.Writer) {
 	ui.section("Human Workflows")
 	ui.bullet("memori auth status [--db <path>] [--json]")
 	ui.bullet("memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done] [--parent <key>] [--json]")
+	ui.bullet("memori board [--db <path>] [--agent <id>] [--watch] [--interval <duration>] [--json]")
 	ui.bullet("memori issue show --key <prefix-shortSHA> [--json]")
 	ui.bullet("memori gate status --issue <prefix-shortSHA> [--cycle <n>] [--json]")
 	ui.bullet("memori event log --entity <entityType:id|id> [--json]")
@@ -2794,6 +2798,7 @@ func printHelp(out io.Writer) {
 	ui.blank()
 	ui.section("Agent Workflows")
 	ui.bullet("memori issue next [--agent <id>] [--json]")
+	ui.bullet("memori board [--db <path>] [--agent <id>] [--watch] [--interval <duration>] [--json]")
 	ui.bullet("memori context checkpoint --session <id> [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori context packet build --scope issue|session --id <id> [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori context packet show --packet <id> [--json]")
