@@ -120,6 +120,67 @@ func TestBoardTUIApplySnapshotPreservesExpansionStateForHierarchyRows(t *testing
 	}
 }
 
+func TestBoardTUIHierarchyNavigationAndFolding(t *testing.T) {
+	t.Parallel()
+
+	parent := boardIssueRow{
+		Issue: boardTestIssue("mem-a111111", "Story", "Todo", "Parent story"),
+		Hierarchy: boardIssueHierarchy{
+			ChildIDs:        []string{"mem-b222222", "mem-c333333"},
+			ChildCount:      2,
+			DescendantCount: 2,
+			HasChildren:     true,
+		},
+	}
+	childOne := boardIssueRow{
+		Issue: boardTestIssue("mem-b222222", "Task", "Todo", "Child task"),
+		Hierarchy: boardIssueHierarchy{
+			Depth:       1,
+			Path:        []string{"mem-a111111", "mem-b222222"},
+			AncestorIDs: []string{"mem-a111111"},
+			ParentID:    "mem-a111111",
+		},
+	}
+	childTwo := boardIssueRow{
+		Issue: boardTestIssue("mem-c333333", "Bug", "Todo", "Second child"),
+		Hierarchy: boardIssueHierarchy{
+			Depth:       1,
+			Path:        []string{"mem-a111111", "mem-c333333"},
+			AncestorIDs: []string{"mem-a111111"},
+			ParentID:    "mem-a111111",
+		},
+	}
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{parent, childOne, childTwo},
+	}, 120, 28)
+
+	rows := model.rowsForLane(boardLaneReady)
+	if len(rows) != 3 || rows[0].Issue.ID != "mem-a111111" || rows[1].Issue.ID != "mem-b222222" {
+		t.Fatalf("expected expanded tree ordering, got %+v", rows)
+	}
+
+	model = boardReduce(model, boardActionChild)
+	if model.selectedIssue != "mem-b222222" {
+		t.Fatalf("expected ] to jump to first child, got %+v", model)
+	}
+
+	model = boardReduce(model, boardActionParent)
+	if model.selectedIssue != "mem-a111111" {
+		t.Fatalf("expected [ to jump to parent, got %+v", model)
+	}
+
+	model = boardReduce(model, boardActionCollapse)
+	if got := len(model.rowsForLane(boardLaneReady)); got != 1 {
+		t.Fatalf("expected collapsed tree to hide children, got %d rows", got)
+	}
+
+	model = boardReduce(model, boardActionExpand)
+	if got := len(model.rowsForLane(boardLaneReady)); got != 3 {
+		t.Fatalf("expected expanded tree to restore children, got %d rows", got)
+	}
+}
+
 func TestRenderBoardTUIWideShowsDetailPane(t *testing.T) {
 	t.Parallel()
 
@@ -164,10 +225,64 @@ func TestRenderBoardTUINarrowShowsSinglePaneAndHelp(t *testing.T) {
 	for _, want := range []string{
 		"KEYBOARD",
 		"move selection",
+		"jump parent / child",
 		"quit",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected narrow help render to contain %q, got:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestRenderBoardTUIShowsHierarchyCuesInListAndDetail(t *testing.T) {
+	t.Parallel()
+
+	parent := boardTestIssue("mem-a111111", "Story", "Todo", "Parent story")
+	parent.Description = "Parent work item."
+	child := boardTestIssue("mem-b222222", "Task", "Todo", "Child task")
+	child.Description = "Child work item."
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{
+			{
+				Issue: parent,
+				Hierarchy: boardIssueHierarchy{
+					ChildIDs:        []string{"mem-b222222"},
+					ChildCount:      1,
+					DescendantCount: 1,
+					HasChildren:     true,
+				},
+			},
+			{
+				Issue: child,
+				Hierarchy: boardIssueHierarchy{
+					Depth:           1,
+					Path:            []string{"mem-a111111", "mem-b222222"},
+					AncestorIDs:     []string{"mem-a111111"},
+					ParentID:        "mem-a111111",
+					ParentTitle:     "Parent story",
+					ParentType:      "Story",
+					ParentStatus:    "Todo",
+					DescendantCount: 0,
+				},
+			},
+		},
+	}, 108, 24)
+	model.lane = boardLaneReady
+	model.index = 1
+	model.detailOpen = true
+	model = boardNormalizeModel(model)
+
+	rendered := renderBoardTUI(model, false)
+	for _, want := range []string{
+		"[-] a111111  Parent story",
+		"|- b222222  Child task",
+		"[ HIERARCHY ]",
+		"path: mem-a111111 > mem-b222222",
+		"parent: mem-a111111 (Parent story)",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected hierarchy render to contain %q, got:\n%s", want, rendered)
 		}
 	}
 }

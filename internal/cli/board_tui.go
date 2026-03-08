@@ -33,6 +33,10 @@ const (
 	boardActionBottom
 	boardActionToggleDetail
 	boardActionToggleHelp
+	boardActionParent
+	boardActionChild
+	boardActionCollapse
+	boardActionExpand
 	boardActionQuit
 )
 
@@ -168,15 +172,9 @@ func boardApplySnapshot(model boardTUIModel, snapshot boardSnapshot, width, heig
 	if selectedIssue == "" {
 		return model
 	}
-	for _, lane := range model.availableLanes() {
-		rows := model.rowsForLane(lane)
-		for idx, row := range rows {
-			if row.Issue.ID == selectedIssue {
-				model.lane = lane
-				model.index = idx
-				return boardClampSelection(model)
-			}
-		}
+	model = boardFocusIssue(model, selectedIssue)
+	if model.selectedIssue == selectedIssue {
+		return model
 	}
 	return model
 }
@@ -207,6 +205,27 @@ func boardReduce(model boardTUIModel, action boardAction) boardTUIModel {
 		model.detailOpen = !model.detailOpen
 	case boardActionToggleHelp:
 		model.helpOpen = !model.helpOpen
+	case boardActionParent:
+		if row, ok := model.selectedRow(); ok && row.Hierarchy.ParentID != "" {
+			model = boardFocusIssue(model, row.Hierarchy.ParentID)
+		}
+	case boardActionChild:
+		if row, ok := model.selectedRow(); ok {
+			for _, childID := range row.Hierarchy.ChildIDs {
+				if next := boardFocusIssue(model, childID); next.selectedIssue == childID {
+					model = next
+					break
+				}
+			}
+		}
+	case boardActionCollapse:
+		if row, ok := model.selectedRow(); ok && row.Hierarchy.HasChildren {
+			model.expanded[row.Issue.ID] = false
+		}
+	case boardActionExpand:
+		if row, ok := model.selectedRow(); ok && row.Hierarchy.HasChildren {
+			model.expanded[row.Issue.ID] = true
+		}
 	case boardActionQuit:
 		return model
 	}
@@ -337,6 +356,14 @@ func (model boardTUIModel) rows() []boardIssueRow {
 }
 
 func (model boardTUIModel) rowsForLane(lane boardLane) []boardIssueRow {
+	rows := model.rawRowsForLane(lane)
+	if lane == boardLaneNext {
+		return append([]boardIssueRow(nil), rows...)
+	}
+	return boardVisibleRows(rows, model.expanded)
+}
+
+func (model boardTUIModel) rawRowsForLane(lane boardLane) []boardIssueRow {
 	switch lane {
 	case boardLaneNext:
 		return model.snapshot.LikelyNext
@@ -349,6 +376,10 @@ func (model boardTUIModel) rowsForLane(lane boardLane) []boardIssueRow {
 	default:
 		return nil
 	}
+}
+
+func (model boardTUIModel) issueCountForLane(lane boardLane) int {
+	return len(model.rawRowsForLane(lane))
 }
 
 func (model boardTUIModel) selectedRow() (boardIssueRow, bool) {
@@ -446,7 +477,7 @@ func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
 	}
 	tabs := make([]string, 0, 4)
 	for _, lane := range []boardLane{boardLaneNext, boardLaneActive, boardLaneBlocked, boardLaneReady} {
-		label := fmt.Sprintf(" %s %d ", strings.ToUpper(boardLaneTitle(lane)), len(model.rowsForLane(lane)))
+		label := fmt.Sprintf(" %s %d ", strings.ToUpper(boardLaneTitle(lane)), model.issueCountForLane(lane))
 		fg, bg := theme.mutedFG, theme.panelAltBG
 		bold := false
 		switch lane {
@@ -471,7 +502,7 @@ func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
 		}
 		tabs = append(tabs, theme.paintLine(fg, bg, bold, label))
 	}
-	help := theme.paintLine(theme.mutedFG, "", false, " h/l lanes  j/k move  enter detail  ? help  q quit ")
+	help := theme.paintLine(theme.mutedFG, "", false, " h/l lanes  j/k move  [] tree  {} fold  enter detail  ? help  q quit ")
 	line := strings.Join(tabs, " ")
 	if len(stripANSI(line))+len(stripANSI(help))+1 <= width {
 		line += padRight("", width-len(stripANSI(line))-len(stripANSI(help))) + help
@@ -482,7 +513,12 @@ func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
 func boardListPanel(model boardTUIModel, theme boardTheme, width, height int) []string {
 	lines := make([]string, 0, height)
 	title := fmt.Sprintf(" %s ", strings.ToUpper(boardLaneTitle(model.lane)))
-	subtitle := fmt.Sprintf(" %d ", len(model.rows()))
+	visibleCount := len(model.rows())
+	totalCount := model.issueCountForLane(model.lane)
+	subtitle := fmt.Sprintf(" %d ", totalCount)
+	if visibleCount != totalCount {
+		subtitle = fmt.Sprintf(" %d/%d ", visibleCount, totalCount)
+	}
 	header := theme.paintLine(theme.accentFG, theme.panelBG, true, padRight(title, width))
 	header = replaceSegment(header, maxInt(width-len(subtitle), len(title)), theme.paintLine(theme.mutedFG, theme.panelAltBG, false, subtitle))
 	lines = append(lines, header)
@@ -507,7 +543,7 @@ func boardListPanel(model boardTUIModel, theme boardTheme, width, height int) []
 	end := minInt(start+visible, len(rows))
 	for idx := start; idx < end; idx++ {
 		row := rows[idx]
-		line := boardListRow(row, model.lane == boardLaneNext, width)
+		line := boardRenderListRow(model, row, model.lane == boardLaneNext, width)
 		if idx == model.index {
 			line = theme.paintLine(theme.selectedFG, theme.selectedBG, true, line)
 		} else {
@@ -526,17 +562,22 @@ func boardListPanel(model boardTUIModel, theme boardTheme, width, height int) []
 }
 
 func boardListRow(row boardIssueRow, showScore bool, width int) string {
+	return boardRenderListRow(boardTUIModel{}, row, showScore, width)
+}
+
+func boardRenderListRow(model boardTUIModel, row boardIssueRow, showScore bool, width int) string {
 	chip := boardStatusCode(row.Issue.Status)
 	issueID := boardDisplayIssueID(row.Issue.ID, width)
+	prefix := boardListHierarchyPrefix(model, row)
 	switch {
 	case width < 28:
-		return truncateBoardLine(fmt.Sprintf(" %s %s", chip, row.Issue.Title), width)
+		return truncateBoardLine(fmt.Sprintf(" %s %s%s", chip, prefix, row.Issue.Title), width)
 	case width < 40:
-		return truncateBoardLine(fmt.Sprintf(" %s %s %s", chip, issueID, row.Issue.Title), width)
+		return truncateBoardLine(fmt.Sprintf(" %s %s%s %s", chip, prefix, issueID, row.Issue.Title), width)
 	case showScore && row.Score > 0 && width >= 52:
-		return truncateBoardLine(fmt.Sprintf(" %-3s %-8s %s · s%d", chip, issueID, row.Issue.Title, row.Score), width)
+		return truncateBoardLine(fmt.Sprintf(" %-3s %s%-8s %s · s%d", chip, prefix, issueID, row.Issue.Title, row.Score), width)
 	default:
-		return truncateBoardLine(fmt.Sprintf(" %-3s %-8s %s", chip, issueID, row.Issue.Title), width)
+		return truncateBoardLine(fmt.Sprintf(" %-3s %s%-8s %s", chip, prefix, issueID, row.Issue.Title), width)
 	}
 }
 
@@ -571,6 +612,9 @@ func boardDetailPanel(model boardTUIModel, theme boardTheme, width, height int) 
 	}
 	if row.Issue.ParentID != "" {
 		meta = append(meta, boardMetaToken(theme, "parent "+row.Issue.ParentID, theme.mutedFG, ""))
+	}
+	if row.Hierarchy.HasChildren {
+		meta = append(meta, boardMetaToken(theme, fmt.Sprintf("%d child", row.Hierarchy.ChildCount), theme.accentFG, ""))
 	}
 	lines = append(lines, padVisual(strings.Join(meta, " "), width))
 	lines = append(lines, theme.paintLine(theme.borderFG, "", false, strings.Repeat(".", width)))
@@ -607,12 +651,14 @@ func boardDetailSections(row boardIssueRow, width int, compact bool) []boardDeta
 		sections = append(sections, boardDetailSection{label: label, lines: lines, muted: muted})
 	}
 
+	hierarchyLabel, hierarchy := boardHierarchySection(row, width)
 	descriptionLabel, description := boardWrappedSection("Description", row.Issue.Description, width)
 	acceptanceLabel, acceptance := boardWrappedSection("Acceptance", row.Issue.Acceptance, width)
 	reasonsLabel, reasons := boardWrappedSection("Reasons", strings.Join(orderBoardReasons(row.Reasons), "; "), width)
 	referencesLabel, references := boardReferenceSection(row.Issue.References, width)
 
 	if compact {
+		appendSection(hierarchyLabel, hierarchy, false)
 		appendSection(descriptionLabel, description, false)
 		appendSection(acceptanceLabel, acceptance, false)
 		appendSection(referencesLabel, references, true)
@@ -620,11 +666,50 @@ func boardDetailSections(row boardIssueRow, width int, compact bool) []boardDeta
 		return sections
 	}
 
+	appendSection(hierarchyLabel, hierarchy, false)
 	appendSection(reasonsLabel, reasons, false)
 	appendSection(descriptionLabel, description, false)
 	appendSection(acceptanceLabel, acceptance, false)
 	appendSection(referencesLabel, references, true)
 	return sections
+}
+
+func boardHierarchySection(row boardIssueRow, width int) (string, []string) {
+	lines := make([]string, 0, 4)
+	appendWrapped := func(label, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		for idx, line := range wrapText(value, maxInt(width-2, 20)) {
+			prefix := "  "
+			if idx == 0 {
+				prefix = "  " + label + ": "
+			}
+			lines = append(lines, truncateBoardLine(prefix+line, width))
+		}
+	}
+
+	if len(row.Hierarchy.Path) > 1 {
+		appendWrapped("path", strings.Join(row.Hierarchy.Path, " > "))
+	}
+	if row.Hierarchy.ParentID != "" {
+		parent := row.Hierarchy.ParentID
+		if row.Hierarchy.ParentTitle != "" {
+			parent += " (" + row.Hierarchy.ParentTitle + ")"
+		}
+		appendWrapped("parent", parent)
+	}
+	if len(row.Hierarchy.ChildIDs) > 0 {
+		appendWrapped("children", strings.Join(row.Hierarchy.ChildIDs, ", "))
+	}
+	if row.Hierarchy.Depth > 0 || row.Hierarchy.DescendantCount > 0 {
+		appendWrapped("shape", fmt.Sprintf("depth %d, descendants %d", row.Hierarchy.Depth, row.Hierarchy.DescendantCount))
+	}
+	if len(lines) == 0 {
+		return "", nil
+	}
+	return "Hierarchy", lines
 }
 
 func boardReferenceSection(refs []string, width int) (string, []string) {
@@ -682,6 +767,8 @@ func boardHelpPanel(theme boardTheme, width, height int) []string {
 		theme.paintLine(theme.helpFG, theme.helpBG, true, padRight(" KEYBOARD ", width)),
 		boardHelpLine(theme, "j / k", "move selection", width),
 		boardHelpLine(theme, "h / l", "switch lanes", width),
+		boardHelpLine(theme, "[ / ]", "jump parent / child", width),
+		boardHelpLine(theme, "{ / }", "collapse / expand subtree", width),
 		boardHelpLine(theme, "g / G", "jump top / bottom", width),
 		boardHelpLine(theme, "enter", "toggle issue detail", width),
 		boardHelpLine(theme, "?", "toggle help", width),
@@ -801,10 +888,10 @@ func formatBoardSummaryCompact(summary boardSummary) string {
 
 func formatBoardTabsCompact(model boardTUIModel) string {
 	parts := []string{
-		fmt.Sprintf("N%d", len(model.snapshot.LikelyNext)),
-		fmt.Sprintf("A%d", len(model.snapshot.Active)),
-		fmt.Sprintf("B%d", len(model.snapshot.Blocked)),
-		fmt.Sprintf("R%d", len(model.snapshot.Ready)),
+		fmt.Sprintf("N%d", model.issueCountForLane(boardLaneNext)),
+		fmt.Sprintf("A%d", model.issueCountForLane(boardLaneActive)),
+		fmt.Sprintf("B%d", model.issueCountForLane(boardLaneBlocked)),
+		fmt.Sprintf("R%d", model.issueCountForLane(boardLaneReady)),
 	}
 	line := strings.Join(parts, " ")
 	return boardLaneTitle(model.lane) + " | " + line
@@ -846,6 +933,14 @@ func readBoardAction(reader *bufio.Reader) (boardAction, error) {
 		return boardActionBottom, nil
 	case '?':
 		return boardActionToggleHelp, nil
+	case '[':
+		return boardActionParent, nil
+	case ']':
+		return boardActionChild, nil
+	case '{':
+		return boardActionCollapse, nil
+	case '}':
+		return boardActionExpand, nil
 	case '\r', '\n', ' ':
 		return boardActionToggleDetail, nil
 	case 27:
@@ -944,6 +1039,121 @@ func replaceSegment(line string, start int, segment string) string {
 		suffixStart = len(raw)
 	}
 	return prefix + segment + raw[suffixStart:]
+}
+
+func boardVisibleRows(rows []boardIssueRow, expanded map[string]bool) []boardIssueRow {
+	if len(rows) <= 1 {
+		return append([]boardIssueRow(nil), rows...)
+	}
+	rowByID := make(map[string]boardIssueRow, len(rows))
+	for _, row := range rows {
+		rowByID[row.Issue.ID] = row
+	}
+	childrenByParent := make(map[string][]boardIssueRow)
+	roots := make([]boardIssueRow, 0, len(rows))
+	for _, row := range rows {
+		parentID := row.Hierarchy.ParentID
+		if parentID != "" {
+			if _, ok := rowByID[parentID]; ok {
+				childrenByParent[parentID] = append(childrenByParent[parentID], row)
+				continue
+			}
+		}
+		roots = append(roots, row)
+	}
+
+	visible := make([]boardIssueRow, 0, len(rows))
+	var walk func(boardIssueRow)
+	walk = func(row boardIssueRow) {
+		visible = append(visible, row)
+		if !row.Hierarchy.HasChildren || !expanded[row.Issue.ID] {
+			return
+		}
+		for _, child := range childrenByParent[row.Issue.ID] {
+			walk(child)
+		}
+	}
+	for _, root := range roots {
+		walk(root)
+	}
+	return visible
+}
+
+func boardFocusIssue(model boardTUIModel, issueID string) boardTUIModel {
+	for _, lane := range []boardLane{boardLaneNext, boardLaneActive, boardLaneBlocked, boardLaneReady} {
+		for _, row := range model.rawRowsForLane(lane) {
+			if row.Issue.ID != issueID {
+				continue
+			}
+			for _, ancestorID := range row.Hierarchy.AncestorIDs {
+				model.expanded[ancestorID] = true
+			}
+			model.lane = lane
+			rows := model.rowsForLane(lane)
+			for idx, visible := range rows {
+				if visible.Issue.ID == issueID {
+					model.index = idx
+					model.selectedIssue = issueID
+					return boardClampSelection(model)
+				}
+			}
+		}
+	}
+	return boardClampSelection(model)
+}
+
+func boardListHierarchyPrefix(model boardTUIModel, row boardIssueRow) string {
+	if row.Hierarchy.Depth == 0 {
+		if row.Hierarchy.HasChildren {
+			if model.expanded[row.Issue.ID] {
+				return "[-] "
+			}
+			return "[+] "
+		}
+		return ""
+	}
+
+	inLaneDepth, parentInLane := boardLaneDepth(model.rawRowsForLane(model.lane), row)
+	if !parentInLane {
+		if row.Hierarchy.HasChildren {
+			if model.expanded[row.Issue.ID] {
+				return "^[-] "
+			}
+			return "^[+] "
+		}
+		return "^ "
+	}
+
+	indent := strings.Repeat("  ", maxInt(inLaneDepth-1, 0))
+	if row.Hierarchy.HasChildren {
+		if model.expanded[row.Issue.ID] {
+			return indent + "[-] "
+		}
+		return indent + "[+] "
+	}
+	return indent + "|- "
+}
+
+func boardLaneDepth(rows []boardIssueRow, row boardIssueRow) (int, bool) {
+	if len(row.Hierarchy.AncestorIDs) == 0 {
+		return 0, false
+	}
+	inLane := make(map[string]struct{}, len(rows))
+	for _, candidate := range rows {
+		inLane[candidate.Issue.ID] = struct{}{}
+	}
+	depth := 0
+	parentInLane := false
+	for _, ancestorID := range row.Hierarchy.AncestorIDs {
+		if _, ok := inLane[ancestorID]; !ok {
+			continue
+		}
+		depth++
+		if ancestorID == row.Hierarchy.ParentID {
+			parentInLane = true
+		}
+	}
+	return depth, parentInLane
 }
 
 func (theme boardTheme) paintLine(fg, bg string, bold bool, value string) string {
