@@ -92,6 +92,9 @@ type boardTheme struct {
 	chromeFG    string
 }
 
+// TODO(mem-5ece68e): split terminal control, input wiring, and render-loop setup
+// behind injectable adapters so the Darwin interactive loop can be covered
+// without PTY-driven tests before board_tui.go is decomposed.
 func runBoardTUI(ctx context.Context, s *store.Store, agent string, interval time.Duration, out io.Writer) error {
 	restore, err := boardEnterRawMode()
 	if err != nil {

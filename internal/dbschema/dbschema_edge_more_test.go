@@ -183,3 +183,79 @@ func TestClosedDBHelpersSurfaceQueryErrors(t *testing.T) {
 		t.Fatalf("expected sqliteTableExists query error, got %v", err)
 	}
 }
+
+func TestSyncMigrationAuditBackfillsMissingAppliedAtAndMetadata(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestDB(t)
+	status, err := Migrate(ctx, db, nil)
+	if err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx, `DELETE FROM schema_migrations`); err != nil {
+		t.Fatalf("clear schema_migrations: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE goose_db_version SET tstamp = NULL WHERE version_id = ?`, status.CurrentVersion); err != nil {
+		t.Fatalf("clear goose tstamp: %v", err)
+	}
+
+	if err := syncMigrationAudit(ctx, db); err != nil {
+		t.Fatalf("syncMigrationAudit: %v", err)
+	}
+
+	var (
+		appliedAt string
+		appliedBy string
+		success   int
+	)
+	if err := db.QueryRowContext(ctx, `
+		SELECT applied_at, applied_by, success
+		FROM schema_migrations
+		WHERE version = ?
+	`, status.CurrentVersion).Scan(&appliedAt, &appliedBy, &success); err != nil {
+		t.Fatalf("read synced migration audit row: %v", err)
+	}
+	if strings.TrimSpace(appliedAt) == "" {
+		t.Fatal("expected syncMigrationAudit to backfill applied_at")
+	}
+	if appliedBy != "github.com/willbastian/memori/internal/dbschema" || success != 1 {
+		t.Fatalf("unexpected synced migration audit metadata applied_by=%q success=%d", appliedBy, success)
+	}
+}
+
+func TestSyncSchemaMetaInsertsDefaultIssuePrefixWhenMissing(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	if err := syncSchemaMeta(ctx, db, 2); err != nil {
+		t.Fatalf("initial syncSchemaMeta: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM schema_meta WHERE key = 'issue_key_prefix'`); err != nil {
+		t.Fatalf("delete issue_key_prefix: %v", err)
+	}
+
+	if err := syncSchemaMeta(ctx, db, 3); err != nil {
+		t.Fatalf("syncSchemaMeta after removing prefix: %v", err)
+	}
+
+	var (
+		prefix        string
+		schemaVersion string
+	)
+	if err := db.QueryRowContext(ctx, `SELECT value FROM schema_meta WHERE key = 'issue_key_prefix'`).Scan(&prefix); err != nil {
+		t.Fatalf("read restored issue_key_prefix: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT value FROM schema_meta WHERE key = 'db_schema_version'`).Scan(&schemaVersion); err != nil {
+		t.Fatalf("read db_schema_version: %v", err)
+	}
+	if prefix != DefaultIssueKeyPrefix {
+		t.Fatalf("expected restored default issue prefix %q, got %q", DefaultIssueKeyPrefix, prefix)
+	}
+	if schemaVersion != "3" {
+		t.Fatalf("expected updated db_schema_version %q, got %q", "3", schemaVersion)
+	}
+}

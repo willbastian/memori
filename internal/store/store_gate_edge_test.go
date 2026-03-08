@@ -82,6 +82,16 @@ func TestGateTemplateAndGateSetEdgeCases(t *testing.T) {
 	}); err == nil || !strings.Contains(err.Error(), "--version must be > 0") {
 		t.Fatalf("expected invalid version error, got %v", err)
 	}
+	if _, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "release-checks",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: ` `,
+		Actor:          "agent-1",
+		CommandID:      "cmd-gate-template-invalid-json-1",
+	}); err == nil || !strings.Contains(err.Error(), "--file must contain JSON") {
+		t.Fatalf("expected invalid definition json error, got %v", err)
+	}
 
 	manualTemplate, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
 		TemplateID:     "manual-close",
@@ -111,6 +121,22 @@ func TestGateTemplateAndGateSetEdgeCases(t *testing.T) {
 		CommandID:  "cmd-gate-template-approve-missing-1",
 	}); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("expected missing template approval error, got %v", err)
+	}
+	if _, _, err := s.ApproveGateTemplate(ctx, ApproveGateTemplateParams{
+		TemplateID: manualTemplate.TemplateID,
+		Version:    0,
+		Actor:      "human:alice",
+		CommandID:  "cmd-gate-template-approve-invalid-version-1",
+	}); err == nil || !strings.Contains(err.Error(), "--version must be > 0") {
+		t.Fatalf("expected invalid approval version error, got %v", err)
+	}
+	if _, _, err := s.ApproveGateTemplate(ctx, ApproveGateTemplateParams{
+		TemplateID: manualTemplate.TemplateID,
+		Version:    manualTemplate.Version,
+		Actor:      "llm:openai:gpt-5",
+		CommandID:  "cmd-gate-template-approve-nonhuman-1",
+	}); err == nil || !strings.Contains(err.Error(), "human-governed actor") {
+		t.Fatalf("expected non-human approval rejection, got %v", err)
 	}
 
 	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
@@ -189,6 +215,21 @@ func TestGateTemplateAndGateSetEdgeCases(t *testing.T) {
 	}); err == nil || !strings.Contains(err.Error(), "gate set already exists") {
 		t.Fatalf("expected conflicting gate set error, got %v", err)
 	}
+	if _, _, err := s.InstantiateGateSet(ctx, InstantiateGateSetParams{
+		IssueID:      "mem-c1d2e3f",
+		TemplateRefs: []string{executableOne.TemplateID + "@1"},
+		Actor:        "agent-1",
+	}); err == nil || !strings.Contains(err.Error(), "--command-id is required") {
+		t.Fatalf("expected missing instantiate command id error, got %v", err)
+	}
+	if _, _, err := s.InstantiateGateSet(ctx, InstantiateGateSetParams{
+		IssueID:      "mem-a9b8c7d",
+		TemplateRefs: []string{executableOne.TemplateID + "@1"},
+		Actor:        "agent-1",
+		CommandID:    "cmd-gate-set-instantiate-missing-issue-1",
+	}); err == nil || !strings.Contains(err.Error(), `issue "mem-a9b8c7d" not found`) {
+		t.Fatalf("expected missing issue instantiate error, got %v", err)
+	}
 
 	zeroCycle := 0
 	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{
@@ -222,6 +263,66 @@ func TestGateTemplateAndGateSetEdgeCases(t *testing.T) {
 	}
 	if lockedNow || lockedAgain.GateSetID != gateSet.GateSetID {
 		t.Fatalf("expected existing locked gate set, got %#v lockedNow=%v", lockedAgain, lockedNow)
+	}
+
+	approvedAgain, idempotent, err := s.ApproveGateTemplate(ctx, ApproveGateTemplateParams{
+		TemplateID: executableOne.TemplateID,
+		Version:    executableOne.Version,
+		Actor:      "human:bob",
+		CommandID:  "cmd-gate-template-approve-already-approved-1",
+	})
+	if err != nil {
+		t.Fatalf("approve already-approved template: %v", err)
+	}
+	if !idempotent || approvedAgain.ApprovedBy != "human:alice" {
+		t.Fatalf("expected already-approved template to return idempotent existing approval, got %#v idempotent=%v", approvedAgain, idempotent)
+	}
+
+	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{
+		IssueID:   "mem-c1d2e3f",
+		Actor:     "agent-1",
+	}); err == nil || !strings.Contains(err.Error(), "--command-id is required") {
+		t.Fatalf("expected missing lock command id error, got %v", err)
+	}
+
+	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{
+		IssueID:   "mem-a9b8c7d",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-set-lock-missing-issue-1",
+	}); err == nil || !strings.Contains(err.Error(), `issue "mem-a9b8c7d" not found`) {
+		t.Fatalf("expected missing issue lock error, got %v", err)
+	}
+
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   "mem-e4f5a6b",
+		Type:      "task",
+		Title:     "Lock validation issue",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-lock-validation-issue-1",
+	}); err != nil {
+		t.Fatalf("create lock validation issue: %v", err)
+	}
+	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{
+		IssueID:   "mem-e4f5a6b",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-set-lock-no-set-1",
+	}); err == nil || !strings.Contains(err.Error(), "no gate set found") {
+		t.Fatalf("expected missing gate set lock error, got %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO gate_sets(
+			gate_set_id, issue_id, cycle_no, template_refs_json, frozen_definition_json,
+			gate_set_hash, locked_at, created_at, created_by
+		) VALUES(?, ?, ?, ?, ?, ?, NULL, ?, ?)
+	`, "gset-empty", "mem-e4f5a6b", 1, `["manual-close@1"]`, `{"templates":["manual-close@1"],"gates":[]}`, "gset-empty-hash", nowUTC(), "agent-1"); err != nil {
+		t.Fatalf("insert empty gate set: %v", err)
+	}
+	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{
+		IssueID:   "mem-e4f5a6b",
+		Actor:     "agent-1",
+		CommandID: "cmd-gate-set-lock-empty-1",
+	}); err == nil || !strings.Contains(err.Error(), "no gate items defined") {
+		t.Fatalf("expected empty gate set lock error, got %v", err)
 	}
 }
 
@@ -801,6 +902,96 @@ func TestProjectionFunctionsRejectMissingOrConflictingState(t *testing.T) {
 		PayloadJSON: string(conflictPayload),
 	}); err == nil || !strings.Contains(err.Error(), "already locked at") {
 		t.Fatalf("expected gate set already locked error, got %v", err)
+	}
+}
+
+func TestReplayProjectionsRebuildsGateTemplatesAndGateSets(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   "mem-a7b8c9d",
+		Type:      "task",
+		Title:     "Replay gate projections",
+		Actor:     "agent-1",
+		CommandID: "cmd-replay-gate-projections-issue-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+
+	template, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "replay-gates",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}}]}`,
+		Actor:          "human:alice",
+		CommandID:      "cmd-replay-gate-projections-template-1",
+	})
+	if err != nil {
+		t.Fatalf("create gate template: %v", err)
+	}
+
+	gateSet, _, err := s.InstantiateGateSet(ctx, InstantiateGateSetParams{
+		IssueID:      "mem-a7b8c9d",
+		TemplateRefs: []string{"replay-gates@1"},
+		Actor:        "agent-1",
+		CommandID:    "cmd-replay-gate-projections-set-1",
+	})
+	if err != nil {
+		t.Fatalf("instantiate gate set: %v", err)
+	}
+	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{
+		IssueID:   "mem-a7b8c9d",
+		Actor:     "agent-1",
+		CommandID: "cmd-replay-gate-projections-lock-1",
+	}); err != nil {
+		t.Fatalf("lock gate set: %v", err)
+	}
+
+	replay, err := s.ReplayProjections(ctx)
+	if err != nil {
+		t.Fatalf("replay projections: %v", err)
+	}
+	if replay.EventsApplied < 4 {
+		t.Fatalf("expected replay to apply gate-related events, got %d", replay.EventsApplied)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback()
+
+	replayedTemplate, found, err := gateTemplateByIDVersionTx(ctx, tx, template.TemplateID, template.Version)
+	if err != nil {
+		t.Fatalf("lookup replayed template: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected replayed template %s@%d", template.TemplateID, template.Version)
+	}
+	if replayedTemplate.ApprovedBy != "human:alice" || !replayedTemplate.Executable {
+		t.Fatalf("expected replayed approved executable template, got %#v", replayedTemplate)
+	}
+
+	replayedGateSet, found, err := gateSetForIssueCycleTx(ctx, tx, "mem-a7b8c9d", 1)
+	if err != nil {
+		t.Fatalf("lookup replayed gate set: %v", err)
+	}
+	if !found {
+		t.Fatal("expected replayed gate set for issue cycle 1")
+	}
+	if replayedGateSet.GateSetID != gateSet.GateSetID || strings.TrimSpace(replayedGateSet.LockedAt) == "" || len(replayedGateSet.Items) != 1 {
+		t.Fatalf("unexpected replayed gate set: %#v", replayedGateSet)
+	}
+
+	var activeGateSetID string
+	if err := tx.QueryRowContext(ctx, `SELECT active_gate_set_id FROM work_items WHERE id = ?`, "mem-a7b8c9d").Scan(&activeGateSetID); err != nil {
+		t.Fatalf("read active_gate_set_id after replay: %v", err)
+	}
+	if activeGateSetID != gateSet.GateSetID {
+		t.Fatalf("expected active_gate_set_id %q after replay, got %q", gateSet.GateSetID, activeGateSetID)
 	}
 }
 

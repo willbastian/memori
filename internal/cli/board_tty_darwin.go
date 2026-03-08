@@ -27,6 +27,8 @@ func boardSupportsInteractive(out io.Writer) bool {
 	return isatty.IsTerminal(file.Fd()) && isatty.IsTerminal(os.Stdin.Fd())
 }
 
+// TODO(mem-5ece68e): extract injectable terminal and termios adapters so raw-mode
+// coverage does not depend on PTY-style Darwin integration tests.
 func boardEnterRawMode() (func(), error) {
 	fd := int(os.Stdin.Fd())
 	state, err := unix.IoctlGetTermios(fd, unix.TIOCGETA)

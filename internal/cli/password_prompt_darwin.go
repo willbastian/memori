@@ -13,6 +13,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// TODO(mem-2f488f2): extract injectable TTY and termios hooks so no-echo
+// password prompting can be covered deterministically without live terminal state.
 func readPasswordNoEcho(prompt string) (string, error) {
 	fd := int(os.Stdin.Fd())
 	if !isatty.IsTerminal(uintptr(fd)) {

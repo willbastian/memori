@@ -165,6 +165,14 @@ func TestDBMigrateRejectsInvalidToVersion(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "must be <= head version") {
 		t.Fatalf("expected invalid --to error, got: %v", err)
 	}
+
+	if _, stderr, err := runMemoriForTest("db", "migrate", "--db", dbPath, "--json"); err != nil {
+		t.Fatalf("run initial db migrate: %v\nstderr: %s", err, stderr)
+	}
+	_, _, err = runMemoriForTest("db", "migrate", "--db", dbPath, "--to", "0")
+	if err == nil || !strings.Contains(err.Error(), "must be >= current version") {
+		t.Fatalf("expected invalid low --to error, got: %v", err)
+	}
 }
 
 func TestDBMigrateToSpecificVersionHumanOutput(t *testing.T) {
@@ -229,6 +237,117 @@ func TestDBBackupRequiresOutPath(t *testing.T) {
 	_, _, err := runMemoriForTest("db", "backup", "--db", dbPath)
 	if err == nil || !strings.Contains(err.Error(), "--out is required") {
 		t.Fatalf("expected missing --out error, got %v", err)
+	}
+}
+
+func TestRunDBRequiresKnownSubcommand(t *testing.T) {
+	t.Parallel()
+
+	if _, _, err := runMemoriForTest("db"); err == nil || !strings.Contains(err.Error(), "db subcommand required") {
+		t.Fatalf("expected missing db subcommand error, got %v", err)
+	}
+	if _, _, err := runMemoriForTest("db", "wat"); err == nil || !strings.Contains(err.Error(), `unknown db subcommand "wat"`) {
+		t.Fatalf("expected unknown db subcommand error, got %v", err)
+	}
+}
+
+func TestDBStatusHumanOutput(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-db-cli-status-human.db")
+
+	stdout, stderr, err := runMemoriForTest("db", "status", "--db", dbPath)
+	if err != nil {
+		t.Fatalf("run db status before migrate: %v\nstderr: %s", err, stderr)
+	}
+	for _, want := range []string{"Current schema version: 0", "Head schema version:", "Pending migrations:"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected db status output to contain %q, got %q", want, stdout)
+		}
+	}
+}
+
+func TestDBVerifyHumanOutputReportsFailure(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-db-cli-verify-human.db")
+	if _, stderr, err := runMemoriForTest("db", "migrate", "--db", dbPath, "--json"); err != nil {
+		t.Fatalf("run db migrate: %v\nstderr: %s", err, stderr)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`DROP TABLE work_items`); err != nil {
+		t.Fatalf("drop work_items table: %v", err)
+	}
+
+	stdout, stderr, err := runMemoriForTest("db", "verify", "--db", dbPath)
+	if err == nil || !strings.Contains(err.Error(), "required table missing: work_items") {
+		t.Fatalf("expected db verify failure, got err=%v stderr=%s stdout=%s", err, stderr, stdout)
+	}
+	if !strings.Contains(stdout, "Database verify: FAILED") {
+		t.Fatalf("expected failed human verify output, got %q", stdout)
+	}
+}
+
+func TestDBVerifyHumanOutputReportsSuccess(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-db-cli-verify-human-ok.db")
+	if _, stderr, err := runMemoriForTest("db", "migrate", "--db", dbPath, "--json"); err != nil {
+		t.Fatalf("run db migrate: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest("db", "verify", "--db", dbPath)
+	if err != nil {
+		t.Fatalf("run human db verify: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "Database verify: OK") {
+		t.Fatalf("expected successful human verify output, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "schema versions are consistent") {
+		t.Fatalf("expected successful verify checks in output, got %q", stdout)
+	}
+}
+
+func TestDBBackupAndReplayHumanOutput(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-db-cli-human-ops.db")
+	if _, stderr, err := runMemoriForTest("db", "migrate", "--db", dbPath, "--json"); err != nil {
+		t.Fatalf("run db migrate: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-d7e8f9a",
+		"--type", "task",
+		"--title", "Human db output coverage",
+		"--command-id", "cmd-db-human-ops-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("create issue before replay: %v\nstderr: %s", err, stderr)
+	}
+
+	backupPath := filepath.Join(t.TempDir(), "memori-db-cli-human-backup.db")
+	stdout, stderr, err := runMemoriForTest("db", "backup", "--db", dbPath, "--out", backupPath)
+	if err != nil {
+		t.Fatalf("run human db backup: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "Backed up ") || !strings.Contains(stdout, backupPath) {
+		t.Fatalf("expected human backup output, got %q", stdout)
+	}
+
+	stdout, stderr, err = runMemoriForTest("db", "replay", "--db", dbPath)
+	if err != nil {
+		t.Fatalf("run human db replay: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "Rebuilt projections from") {
+		t.Fatalf("expected human replay output, got %q", stdout)
 	}
 }
 
