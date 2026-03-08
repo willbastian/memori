@@ -739,6 +739,85 @@ func TestCreateGateTemplateVersioningAndListing(t *testing.T) {
 	}
 }
 
+func TestCreateGateTemplateCanonicalEquivalenceAndApprovalIdempotency(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	created, idempotent, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID: "release-check",
+		Version:    1,
+		AppliesTo:  []string{" Task ", "task"},
+		DefinitionJSON: `{
+			"gates": [
+				{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}}
+			]
+		}`,
+		Actor:     "llm:openai:gpt-5",
+		CommandID: "cmd-template-canonical-create-1",
+	})
+	if err != nil {
+		t.Fatalf("create canonical gate template: %v", err)
+	}
+	if idempotent {
+		t.Fatal("expected first canonical template create to be non-idempotent")
+	}
+	if created.TemplateID != "release-check" || created.Version != 1 {
+		t.Fatalf("unexpected created canonical template: %#v", created)
+	}
+
+	same, idempotent, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     " release-check ",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"required":true,"kind":"check","criteria":{"command":"go test ./..."},"id":"build"}]}`,
+		Actor:          "llm:openai:gpt-5",
+		CommandID:      "cmd-template-canonical-create-2",
+	})
+	if err != nil {
+		t.Fatalf("create equivalent canonical gate template: %v", err)
+	}
+	if !idempotent {
+		t.Fatal("expected equivalent canonical template create to be idempotent")
+	}
+	if same.DefinitionHash != created.DefinitionHash || !equalStringSlices(same.AppliesTo, []string{"Task"}) {
+		t.Fatalf("expected canonical template identity to be preserved, got %#v", same)
+	}
+
+	approved, idempotent, err := s.ApproveGateTemplate(ctx, ApproveGateTemplateParams{
+		TemplateID: "release-check",
+		Version:    1,
+		Actor:      "human:alice",
+		CommandID:  "cmd-template-canonical-approve-1",
+	})
+	if err != nil {
+		t.Fatalf("approve canonical gate template: %v", err)
+	}
+	if idempotent {
+		t.Fatal("expected first template approval to be non-idempotent")
+	}
+	if approved.ApprovedBy != "human:alice" || approved.ApprovedAt == "" {
+		t.Fatalf("expected approval metadata after first approval, got %#v", approved)
+	}
+
+	approvedAgain, idempotent, err := s.ApproveGateTemplate(ctx, ApproveGateTemplateParams{
+		TemplateID: "release-check",
+		Version:    1,
+		Actor:      "human:alice",
+		CommandID:  "cmd-template-canonical-approve-2",
+	})
+	if err != nil {
+		t.Fatalf("approve already-approved canonical gate template: %v", err)
+	}
+	if !idempotent {
+		t.Fatal("expected already-approved template approval to be idempotent")
+	}
+	if approvedAgain.ApprovedBy != approved.ApprovedBy || approvedAgain.ApprovedAt != approved.ApprovedAt {
+		t.Fatalf("expected approval metadata to remain stable, got %#v", approvedAgain)
+	}
+}
+
 func TestInstantiateAndLockGateSetFlow(t *testing.T) {
 	t.Parallel()
 
