@@ -1270,6 +1270,47 @@ func TestUpdateIssueStatusDoneRequiresPassingLockedRequiredGates(t *testing.T) {
 		t.Fatalf("expected pass-unverified rejection, got: %v", err)
 	}
 
+	manualIssueID := "mem-6767676"
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   manualIssueID,
+		Type:      "task",
+		Title:     "Manual validation close test",
+		Actor:     "agent-1",
+		CommandID: "cmd-close-manual-create-1",
+	}); err != nil {
+		t.Fatalf("create manual validation issue: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   manualIssueID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-close-manual-progress-1",
+	}); err != nil {
+		t.Fatalf("move manual validation issue to inprogress: %v", err)
+	}
+	manualGateSetID := "gs_close_manual_1"
+	seedLockedGateSetForTest(t, s, manualIssueID, manualGateSetID)
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO gate_set_items(gate_set_id, gate_id, kind, required, criteria_json)
+		VALUES(?, ?, ?, ?, ?)
+	`, manualGateSetID, "validated", "check", 1, `{"ref":"manual-validation"}`); err != nil {
+		t.Fatalf("insert manual-validation gate_set_item: %v", err)
+	}
+	appendGateEvaluationEventWithEvidenceNoProofForTest(t, s, manualIssueID, manualGateSetID, "validated", "PASS", "agent-1", "cmd-close-manual-pass-1")
+
+	closedManual, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   manualIssueID,
+		Status:    "done",
+		Actor:     "agent-1",
+		CommandID: "cmd-close-manual-done-1",
+	})
+	if err != nil {
+		t.Fatalf("expected manual-validation close to succeed: %v", err)
+	}
+	if closedManual.Status != "Done" {
+		t.Fatalf("expected manual-validation issue status Done, got %s", closedManual.Status)
+	}
+
 	appendGateEvaluationEventForTest(t, s, issueID, gateSetID, "build", "PASS", "agent-1", "cmd-close-gate-eval-pass-1")
 
 	closed, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
@@ -2205,6 +2246,55 @@ func TestInstantiateGateSetRejectsRequiredNonExecutableTemplate(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "required gate(s) lack executable criteria.command") {
 		t.Fatalf("expected required non-executable gate rejection, got: %v", err)
+	}
+}
+
+func TestInstantiateGateSetAllowsRequiredManualValidationTemplate(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-5879797"
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Manual validation instantiate test",
+		Actor:     "human:alice",
+		CommandID: "cmd-gate-manual-validation-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "human:alice",
+		CommandID: "cmd-gate-manual-validation-progress-1",
+	}); err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+	if _, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "manual-validation-required",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"validated","kind":"check","required":true,"criteria":{"ref":"manual-validation"}}]}`,
+		Actor:          "human:alice",
+		CommandID:      "cmd-gate-manual-validation-template-1",
+	}); err != nil {
+		t.Fatalf("create manual-validation gate template: %v", err)
+	}
+
+	gateSet, _, err := s.InstantiateGateSet(ctx, InstantiateGateSetParams{
+		IssueID:      issueID,
+		TemplateRefs: []string{"manual-validation-required@1"},
+		Actor:        "human:alice",
+		CommandID:    "cmd-gate-manual-validation-instantiate-1",
+	})
+	if err != nil {
+		t.Fatalf("expected required manual-validation gate set to instantiate: %v", err)
+	}
+	if gateSet.GateSetID == "" {
+		t.Fatalf("expected gate set id")
 	}
 }
 

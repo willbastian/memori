@@ -4356,7 +4356,7 @@ func validateRequiredGateDefinitionsForCLIClosure(defs []GateSetDefinition) erro
 		if !def.Required {
 			continue
 		}
-		if gateCriteriaCommand(def.Criteria) == "" {
+		if gateCriteriaCommand(def.Criteria) == "" && !gateCriteriaRefMatches(def.Criteria, "manual-validation") {
 			nonExecutableRequired = append(nonExecutableRequired, def.GateID)
 		}
 	}
@@ -4378,6 +4378,22 @@ func gateCriteriaCommand(criteria any) string {
 		return strings.TrimSpace(typed["command"])
 	default:
 		return ""
+	}
+}
+
+func gateCriteriaRefMatches(criteria any, want string) bool {
+	want = strings.TrimSpace(want)
+	if want == "" {
+		return false
+	}
+	switch typed := criteria.(type) {
+	case map[string]any:
+		ref, _ := typed["ref"].(string)
+		return strings.TrimSpace(ref) == want
+	case map[string]string:
+		return strings.TrimSpace(typed["ref"]) == want
+	default:
+		return false
 	}
 }
 
@@ -5655,6 +5671,7 @@ func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID st
 	rows, err := tx.QueryContext(ctx, `
 		SELECT
 			r.gate_id,
+			r.criteria_json,
 			COALESCE((
 				SELECT e.payload_json
 				FROM events e
@@ -5687,11 +5704,16 @@ func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID st
 	}
 	for rows.Next() {
 		var (
-			gateID      string
-			payloadJSON string
+			gateID       string
+			criteriaJSON string
+			payloadJSON  string
 		)
-		if err := rows.Scan(&gateID, &payloadJSON); err != nil {
+		if err := rows.Scan(&gateID, &criteriaJSON, &payloadJSON); err != nil {
 			return nil, fmt.Errorf("close validation scan required gate for issue %q: %w", issueID, err)
+		}
+		var criteria any
+		if err := json.Unmarshal([]byte(criteriaJSON), &criteria); err != nil {
+			return nil, fmt.Errorf("close validation decode required gate criteria %q for issue %q: %w", gateID, issueID, err)
 		}
 		if strings.TrimSpace(payloadJSON) == "" {
 			failures = append(failures, gateID+"=MISSING")
@@ -5708,6 +5730,15 @@ func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID st
 		}
 		if len(payload.EvidenceRefs) == 0 {
 			failures = append(failures, gateID+"=PASS_NO_PROOF")
+			continue
+		}
+		if gateCriteriaRefMatches(criteria, "manual-validation") {
+			closeProof.Gates = append(closeProof.Gates, IssueCloseGateProof{
+				GateID:       payload.GateID,
+				Result:       payload.Result,
+				EvidenceRefs: copyStringSlice(payload.EvidenceRefs),
+				Proof:        payload.Proof,
+			})
 			continue
 		}
 		if payload.Proof == nil ||
