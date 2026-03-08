@@ -95,6 +95,30 @@ go build -o memori ./cmd/memori
 
 Examples below use `go run ./cmd/memori`. Replace that prefix with `memori` if you build the binary.
 
+## Release artifacts
+
+Tagged releases build cross-platform archives for:
+
+- macOS `amd64`
+- macOS `arm64`
+- Linux `amd64`
+- Linux `arm64`
+
+The automation lives in [.github/workflows/release.yml](/Users/will/code/memori/.github/workflows/release.yml) and uses [scripts/build_release_artifacts.sh](/Users/will/code/memori/scripts/build_release_artifacts.sh) so the same build flow can run locally or in GitHub Actions.
+
+To cut a release from a tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+That workflow builds `tar.gz` archives plus `SHA256SUMS.txt` and attaches them to the matching GitHub release. You can also run the same archive build locally:
+
+```bash
+./scripts/build_release_artifacts.sh v0.1.0 dist
+```
+
 ## Quick start
 
 Initialize the database:
