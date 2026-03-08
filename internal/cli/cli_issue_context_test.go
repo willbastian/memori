@@ -95,6 +95,7 @@ func TestIssueUpdateSupportsContextOnlyMutation(t *testing.T) {
 		"issue", "update",
 		"--db", dbPath,
 		"--key", "mem-3333bbb",
+		"--title", "Context update renamed",
 		"--description", "Context-only update",
 		"--acceptance-criteria", "No status required for context edit",
 		"--reference", "https://example.com/context",
@@ -112,6 +113,9 @@ func TestIssueUpdateSupportsContextOnlyMutation(t *testing.T) {
 	if updated.Data.Issue.Status != "Todo" {
 		t.Fatalf("status should remain Todo on context-only update, got %q", updated.Data.Issue.Status)
 	}
+	if updated.Data.Issue.Title != "Context update renamed" {
+		t.Fatalf("unexpected title after update: %q", updated.Data.Issue.Title)
+	}
 	if updated.Data.Issue.Description != "Context-only update" {
 		t.Fatalf("unexpected description after update: %q", updated.Data.Issue.Description)
 	}
@@ -125,7 +129,40 @@ func TestIssueUpdateRequiresAtLeastOneMutationField(t *testing.T) {
 		"--key", "mem-4444ccc",
 		"--command-id", "cmd-cli-rich-update-empty-1",
 	)
-	if err == nil || !strings.Contains(err.Error(), "one of --status, --priority, --label, --description, --acceptance-criteria, or --reference is required") {
+	if err == nil || !strings.Contains(err.Error(), "one of --title, --status, --priority, --label, --description, --acceptance-criteria, or --reference is required") {
 		t.Fatalf("expected mutation field validation error, got: %v", err)
+	}
+}
+
+func TestIssueUpdateRejectsBlankTitle(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-issue-update-blank-title.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-5555ddd",
+		"--type", "task",
+		"--title", "Blank title target",
+		"--actor", "test",
+		"--command-id", "cmd-cli-blank-title-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+
+	_, _, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-5555ddd",
+		"--title", "   ",
+		"--actor", "test",
+		"--command-id", "cmd-cli-blank-title-update-1",
+	)
+	if err == nil || !strings.Contains(err.Error(), "--title is required") {
+		t.Fatalf("expected blank title validation error, got: %v", err)
 	}
 }

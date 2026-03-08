@@ -129,6 +129,7 @@ type UpdateIssueStatusParams struct {
 
 type UpdateIssueParams struct {
 	IssueID            string
+	Title              *string
 	Status             *string
 	Priority           *string
 	Labels             *[]string
@@ -275,6 +276,8 @@ type issueCreatedPayload struct {
 
 type issueUpdatedPayload struct {
 	IssueID                string                   `json:"issue_id"`
+	TitleFrom              *string                  `json:"title_from,omitempty"`
+	TitleTo                *string                  `json:"title_to,omitempty"`
 	StatusFrom             *string                  `json:"status_from,omitempty"`
 	StatusTo               *string                  `json:"status_to,omitempty"`
 	PriorityFrom           *string                  `json:"priority_from,omitempty"`
@@ -943,6 +946,18 @@ func (s *Store) UpdateIssue(ctx context.Context, p UpdateIssueParams) (Issue, Ev
 	targetStatus := ""
 	var closeProof *IssueCloseAuthorization
 
+	if p.Title != nil {
+		titleTo := strings.TrimSpace(*p.Title)
+		if titleTo == "" {
+			return Issue{}, Event{}, false, errors.New("--title is required")
+		}
+		if currentIssue.Title != titleTo {
+			titleFrom := currentIssue.Title
+			payload.TitleFrom = &titleFrom
+			payload.TitleTo = &titleTo
+			changed = true
+		}
+	}
 	if p.Status != nil {
 		statusTo, err := normalizeIssueStatus(*p.Status)
 		if err != nil {
@@ -1012,7 +1027,7 @@ func (s *Store) UpdateIssue(ctx context.Context, p UpdateIssueParams) (Issue, Ev
 	}
 
 	if !changed {
-		return Issue{}, Event{}, false, errors.New("--status, --priority, --label, --description, --acceptance-criteria, or --reference is required")
+		return Issue{}, Event{}, false, errors.New("--title, --status, --priority, --label, --description, --acceptance-criteria, or --reference is required")
 	}
 
 	if targetStatus == "Done" {
@@ -3155,6 +3170,14 @@ func applyIssueUpdatedProjectionTx(ctx context.Context, tx *sql.Tx, event Event)
 	args := make([]any, 0, 10)
 	reopenTransition := false
 
+	if payload.TitleTo != nil {
+		titleTo := strings.TrimSpace(*payload.TitleTo)
+		if titleTo == "" {
+			return fmt.Errorf("decode issue.updated payload for event %s: --title is required", event.EventID)
+		}
+		setClauses = append(setClauses, "title = ?")
+		args = append(args, titleTo)
+	}
 	if payload.StatusTo != nil {
 		issueStatus, err := normalizeIssueStatus(*payload.StatusTo)
 		if err != nil {

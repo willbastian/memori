@@ -1040,11 +1040,13 @@ func TestUpdateIssueAllowsContextOnlyMutation(t *testing.T) {
 		t.Fatalf("create issue: %v", err)
 	}
 
+	title := "Context updates renamed"
 	description := "Track rich context as first-class metadata"
 	acceptance := "Issue show surfaces context fields"
 	references := []string{"https://example.com/rfc", "adr-001.md"}
 	updated, event, idempotent, err := s.UpdateIssue(ctx, UpdateIssueParams{
 		IssueID:            "mem-1f1f1f1",
+		Title:              &title,
 		Description:        &description,
 		AcceptanceCriteria: &acceptance,
 		References:         &references,
@@ -1063,6 +1065,9 @@ func TestUpdateIssueAllowsContextOnlyMutation(t *testing.T) {
 	if updated.Status != "Todo" {
 		t.Fatalf("status should remain Todo when only context changes, got %s", updated.Status)
 	}
+	if updated.Title != title {
+		t.Fatalf("unexpected title: %q", updated.Title)
+	}
 	if updated.Description != description {
 		t.Fatalf("unexpected description: %q", updated.Description)
 	}
@@ -1071,6 +1076,34 @@ func TestUpdateIssueAllowsContextOnlyMutation(t *testing.T) {
 	}
 	if !reflect.DeepEqual(updated.References, references) {
 		t.Fatalf("unexpected references: %#v", updated.References)
+	}
+}
+
+func TestUpdateIssueRejectsBlankTitle(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	_, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   "mem-2f2f2f2",
+		Type:      "task",
+		Title:     "Valid title",
+		Actor:     "agent-1",
+		CommandID: "cmd-blank-title-create-1",
+	})
+	if err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+
+	blank := "   "
+	if _, _, _, err := s.UpdateIssue(ctx, UpdateIssueParams{
+		IssueID:   "mem-2f2f2f2",
+		Title:     &blank,
+		Actor:     "agent-1",
+		CommandID: "cmd-blank-title-update-1",
+	}); err == nil || !strings.Contains(err.Error(), "--title is required") {
+		t.Fatalf("expected blank title validation error, got: %v", err)
 	}
 }
 

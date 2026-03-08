@@ -163,6 +163,12 @@ What happens in this flow:
 - `gate verify` executes the approved verifier command and stores evidence plus proof metadata
 - `issue update --status done` succeeds only if required gates pass and child issues are already closed
 
+Issue metadata can still be revised later with append-only updates, including title changes such as:
+
+```bash
+go run ./cmd/memori issue update --key mem-a111111 --title "Ship public README and onboarding flow"
+```
+
 ### 2. Agent execution against the same ledger
 
 Agents use the same issue model, but mutations carry explicit LLM provenance. In practice, agents should rely on approved gate templates for executable checks.
