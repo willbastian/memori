@@ -51,6 +51,7 @@ var (
 		_, err := io.ReadFull(rand.Reader, buf)
 		return err
 	}
+	currentUser = user.Current
 )
 
 func ResolvePrincipal() (Principal, error) {
@@ -168,7 +169,7 @@ func resolveCommandID(operation, requested string, envLookup func(string) string
 }
 
 func currentUsername() (string, error) {
-	if current, err := user.Current(); err == nil && strings.TrimSpace(current.Username) != "" {
+	if current, err := currentUser(); err == nil && strings.TrimSpace(current.Username) != "" {
 		return current.Username, nil
 	}
 	if fromEnv := strings.TrimSpace(os.Getenv("USER")); fromEnv != "" {

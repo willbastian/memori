@@ -58,6 +58,8 @@ const (
 	eventTypeGateSetLock         = "gate_set.locked"
 )
 
+var currentOSUser = user.Current
+
 type Store struct {
 	db *sql.DB
 }
@@ -7240,7 +7242,7 @@ func nowUTC() string {
 }
 
 func defaultActor() string {
-	if current, err := user.Current(); err == nil {
+	if current, err := currentOSUser(); err == nil {
 		if current.Username != "" {
 			return current.Username
 		}

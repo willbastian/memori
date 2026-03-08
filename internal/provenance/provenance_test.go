@@ -55,8 +55,6 @@ func TestResolveCommandIDGatesManualOverride(t *testing.T) {
 }
 
 func TestResolveCommandIDGeneratedFormat(t *testing.T) {
-	t.Parallel()
-
 	originalNow := nowUTC
 	originalRandomRead := randomRead
 	defer func() {
@@ -86,8 +84,6 @@ func TestResolveCommandIDGeneratedFormat(t *testing.T) {
 }
 
 func TestPasswordCredentialRoundTrip(t *testing.T) {
-	t.Parallel()
-
 	originalRandomRead := randomRead
 	defer func() { randomRead = originalRandomRead }()
 	randomRead = func(buf []byte) error {

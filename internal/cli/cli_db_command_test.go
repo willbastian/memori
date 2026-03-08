@@ -56,6 +56,15 @@ type dbBackupEnvelope struct {
 	} `json:"data"`
 }
 
+type dbReplayEnvelope struct {
+	ResponseSchemaVersion int    `json:"response_schema_version"`
+	DBSchemaVersion       int    `json:"db_schema_version"`
+	Command               string `json:"command"`
+	Data                  struct {
+		EventsApplied int `json:"events_applied"`
+	} `json:"data"`
+}
+
 func TestDBStatusMigrateAndVerifyJSON(t *testing.T) {
 	t.Parallel()
 
@@ -155,6 +164,71 @@ func TestDBMigrateRejectsInvalidToVersion(t *testing.T) {
 	_, _, err := runMemoriForTest("db", "migrate", "--db", dbPath, "--to", "999")
 	if err == nil || !strings.Contains(err.Error(), "must be <= head version") {
 		t.Fatalf("expected invalid --to error, got: %v", err)
+	}
+}
+
+func TestDBMigrateToSpecificVersionHumanOutput(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-db-cli-targeted.db")
+
+	stdout, stderr, err := runMemoriForTest("db", "migrate", "--db", dbPath, "--to", "3")
+	if err != nil {
+		t.Fatalf("run db migrate --to 3: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "Migrated database from version 0 to 3") {
+		t.Fatalf("expected targeted migrate summary, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "Pending migrations:") {
+		t.Fatalf("expected pending migrations summary, got %q", stdout)
+	}
+}
+
+func TestDBReplayJSONReportsAppliedEvents(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-db-cli-replay.db")
+
+	if _, stderr, err := runMemoriForTest("db", "migrate", "--db", dbPath, "--json"); err != nil {
+		t.Fatalf("run db migrate: %v\nstderr: %s", err, stderr)
+	}
+
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-c6d7e8f",
+		"--type", "task",
+		"--title", "Replay after targeted migrate",
+		"--command-id", "cmd-db-replay-issue-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("create issue before replay: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest("db", "replay", "--db", dbPath, "--json")
+	if err != nil {
+		t.Fatalf("run db replay: %v\nstderr: %s", err, stderr)
+	}
+	var replay dbReplayEnvelope
+	if err := json.Unmarshal([]byte(stdout), &replay); err != nil {
+		t.Fatalf("decode db replay json output: %v\nstdout: %s", err, stdout)
+	}
+	assertEnvelopeMetadata(t, replay.ResponseSchemaVersion, replay.DBSchemaVersion)
+	if replay.Command != "db replay" {
+		t.Fatalf("expected db replay command, got %q", replay.Command)
+	}
+	if replay.Data.EventsApplied == 0 {
+		t.Fatalf("expected replay to apply at least one event, got %+v", replay)
+	}
+}
+
+func TestDBBackupRequiresOutPath(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-db-cli-backup-required.db")
+	_, _, err := runMemoriForTest("db", "backup", "--db", dbPath)
+	if err == nil || !strings.Contains(err.Error(), "--out is required") {
+		t.Fatalf("expected missing --out error, got %v", err)
 	}
 }
 

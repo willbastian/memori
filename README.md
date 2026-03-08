@@ -627,6 +627,16 @@ Run the full test suite:
 go test ./...
 ```
 
+Before starting a structural refactor of a large file, run a baseline regression pass first:
+
+```bash
+go test ./... -coverprofile=/tmp/memori-cover.out
+go tool cover -func=/tmp/memori-cover.out | rg 'internal/(store/store.go|cli/cli.go|cli/board_tui.go|dbschema/dbschema.go)'
+go test ./internal/store ./internal/cli ./internal/dbschema
+```
+
+Use that sequence to confirm the current baseline, then add or tighten behavior-level tests before moving code across files when a seam looks weakly protected.
+
 The main implementation lives in:
 
 - `cmd/memori` — CLI entrypoint
