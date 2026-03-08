@@ -144,8 +144,8 @@ func runBoardTUI(ctx context.Context, s *store.Store, agent string, interval tim
 func newBoardTUIModel(snapshot boardSnapshot, width, height int) boardTUIModel {
 	model := boardTUIModel{
 		snapshot:   snapshot,
-		width:      maxInt(width, 60),
-		height:     maxInt(height, 18),
+		width:      maxInt(width, 24),
+		height:     maxInt(height, 10),
 		lane:       boardLaneNext,
 		detailOpen: width >= 100,
 	}
@@ -155,11 +155,8 @@ func newBoardTUIModel(snapshot boardSnapshot, width, height int) boardTUIModel {
 func boardApplySnapshot(model boardTUIModel, snapshot boardSnapshot, width, height int) boardTUIModel {
 	selectedIssue := model.selectedIssue
 	model.snapshot = snapshot
-	model.width = maxInt(width, 60)
-	model.height = maxInt(height, 18)
-	if model.width < 90 {
-		model.detailOpen = false
-	}
+	model.width = maxInt(width, 24)
+	model.height = maxInt(height, 10)
 	model = boardNormalizeModel(model)
 	if selectedIssue == "" {
 		return model
@@ -337,13 +334,13 @@ func renderBoardTUI(model boardTUIModel, colors bool) string {
 		chromeFG:    "30;41;59",
 	}
 
-	width := maxInt(model.width, 60)
-	height := maxInt(model.height, 18)
+	width := maxInt(model.width, 24)
+	height := maxInt(model.height, 10)
 	lines := make([]string, 0, height)
 	lines = append(lines, boardHeaderLine(model, theme, width))
 	lines = append(lines, boardTabsLine(model, theme, width))
 
-	bodyHeight := maxInt(height-4, 10)
+	bodyHeight := maxInt(height-4, 5)
 	if model.helpOpen {
 		lines = append(lines, boardHelpPanel(theme, width, bodyHeight)...)
 	} else if width >= 100 {
@@ -369,6 +366,9 @@ func renderBoardTUI(model boardTUIModel, colors bool) string {
 }
 
 func boardHeaderLine(model boardTUIModel, theme boardTheme, width int) string {
+	if width < 36 {
+		return theme.paintLine(theme.titleFG, theme.titleBG, true, padRight(truncateBoardLine(" BOARD "+formatBoardSummaryCompact(model.snapshot.Summary), width), width))
+	}
 	title := " MEMORI BOARD "
 	meta := fmt.Sprintf(" %s ", formatBoardSummary(model.snapshot.Summary, false))
 	if model.snapshot.Agent != "" {
@@ -383,6 +383,10 @@ func boardHeaderLine(model boardTUIModel, theme boardTheme, width int) string {
 }
 
 func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
+	if width < 44 {
+		line := formatBoardTabsCompact(model)
+		return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(line, width), width))
+	}
 	tabs := make([]string, 0, 4)
 	for _, lane := range []boardLane{boardLaneNext, boardLaneActive, boardLaneBlocked, boardLaneReady} {
 		label := fmt.Sprintf(" %s %d ", strings.ToUpper(boardLaneTitle(lane)), len(model.rowsForLane(lane)))
@@ -420,8 +424,8 @@ func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
 
 func boardListPanel(model boardTUIModel, theme boardTheme, width, height int) []string {
 	lines := make([]string, 0, height)
-	title := fmt.Sprintf(" %s lane ", strings.ToUpper(boardLaneTitle(model.lane)))
-	subtitle := fmt.Sprintf(" %d item(s) ", len(model.rows()))
+	title := fmt.Sprintf(" %s ", strings.ToUpper(boardLaneTitle(model.lane)))
+	subtitle := fmt.Sprintf(" %d ", len(model.rows()))
 	header := theme.paintLine(theme.accentFG, theme.panelBG, true, padRight(title, width))
 	header = replaceSegment(header, maxInt(width-len(subtitle), len(title)), theme.paintLine(theme.mutedFG, theme.panelAltBG, false, subtitle))
 	lines = append(lines, header)
@@ -466,11 +470,17 @@ func boardListPanel(model boardTUIModel, theme boardTheme, width, height int) []
 
 func boardListRow(row boardIssueRow, showScore bool, width int) string {
 	chip := boardStatusCode(row.Issue.Status)
-	base := fmt.Sprintf(" %-3s %-10s %s", chip, row.Issue.ID, row.Issue.Title)
-	if showScore && row.Score > 0 {
-		base = fmt.Sprintf(" %-3s %-10s %s · s%d", chip, row.Issue.ID, row.Issue.Title, row.Score)
+	issueID := boardDisplayIssueID(row.Issue.ID, width)
+	switch {
+	case width < 28:
+		return truncateBoardLine(fmt.Sprintf(" %s %s", chip, row.Issue.Title), width)
+	case width < 40:
+		return truncateBoardLine(fmt.Sprintf(" %s %s %s", chip, issueID, row.Issue.Title), width)
+	case showScore && row.Score > 0 && width >= 52:
+		return truncateBoardLine(fmt.Sprintf(" %-3s %-8s %s · s%d", chip, issueID, row.Issue.Title, row.Score), width)
+	default:
+		return truncateBoardLine(fmt.Sprintf(" %-3s %-8s %s", chip, issueID, row.Issue.Title), width)
 	}
-	return truncateBoardLine(base, width)
 }
 
 func boardDetailPanel(model boardTUIModel, theme boardTheme, width, height int) []string {
@@ -561,6 +571,10 @@ func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
 	if !ok {
 		return theme.paintLine(theme.mutedFG, "", false, padRight("No selectable issues", width))
 	}
+	if width < 40 {
+		footer := fmt.Sprintf(" %s %s ", boardDisplayIssueID(row.Issue.ID, width), truncateBoardLine(row.Issue.Title, maxInt(width-12, 8)))
+		return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
+	}
 	footer := fmt.Sprintf(" Selected %s  |  %s  |  %s ", row.Issue.ID, row.Issue.Status, truncateBoardLine(row.Issue.Title, maxInt(width/2, 20)))
 	return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
 }
@@ -610,6 +624,18 @@ func boardStatusCode(status string) string {
 	}
 }
 
+func boardDisplayIssueID(id string, width int) string {
+	id = strings.TrimSpace(id)
+	if width >= 48 || !strings.HasPrefix(id, "mem-") {
+		return id
+	}
+	short := strings.TrimPrefix(id, "mem-")
+	if width < 32 && len(short) > 6 {
+		return short[:6]
+	}
+	return short
+}
+
 func boardHelpLine(theme boardTheme, key, desc string, width int) string {
 	keyText := theme.paintLine(theme.keyFG, "", true, " "+padRight(key, 7)+" ")
 	descText := theme.paintLine(theme.helpFG, "", false, desc)
@@ -634,6 +660,27 @@ func boardStatusPalette(theme boardTheme, status string) string {
 	default:
 		return theme.nextBG
 	}
+}
+
+func formatBoardSummaryCompact(summary boardSummary) string {
+	parts := []string{
+		fmt.Sprintf("T%d", summary.Total),
+		fmt.Sprintf("I%d", summary.InProgress),
+		fmt.Sprintf("B%d", summary.Blocked),
+		fmt.Sprintf("R%d", summary.Todo),
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatBoardTabsCompact(model boardTUIModel) string {
+	parts := []string{
+		fmt.Sprintf("N%d", len(model.snapshot.LikelyNext)),
+		fmt.Sprintf("A%d", len(model.snapshot.Active)),
+		fmt.Sprintf("B%d", len(model.snapshot.Blocked)),
+		fmt.Sprintf("R%d", len(model.snapshot.Ready)),
+	}
+	line := strings.Join(parts, " ")
+	return boardLaneTitle(model.lane) + " | " + line
 }
 
 func readBoardActions(reader *bufio.Reader, actions chan<- boardAction, errCh chan<- error) {

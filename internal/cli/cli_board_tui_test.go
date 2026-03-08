@@ -43,6 +43,7 @@ func TestBoardTUIReduceNavigationAndDetailToggle(t *testing.T) {
 		t.Fatalf("expected to move to active lane, got %+v", model)
 	}
 
+	model.detailOpen = false
 	model = boardReduce(model, boardActionToggleDetail)
 	if !model.detailOpen {
 		t.Fatalf("expected enter to toggle detail open")
@@ -72,6 +73,22 @@ func TestBoardTUIApplySnapshotPreservesSelectionByIssueID(t *testing.T) {
 
 	if updated.selectedIssue != "mem-b222222" || updated.index != 0 {
 		t.Fatalf("expected selection to follow issue id, got %+v", updated)
+	}
+}
+
+func TestBoardTUIApplySnapshotKeepsDetailOpenOnNarrowRefresh(t *testing.T) {
+	t.Parallel()
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Ready one")},
+		},
+	}, 100, 24)
+	model.detailOpen = true
+
+	updated := boardApplySnapshot(model, model.snapshot, 48, 20)
+	if !updated.detailOpen {
+		t.Fatalf("expected detail pane to stay open after refresh on narrow width")
 	}
 }
 
@@ -123,6 +140,27 @@ func TestRenderBoardTUINarrowShowsSinglePaneAndHelp(t *testing.T) {
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected narrow help render to contain %q, got:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestRenderBoardTUIVeryNarrowStillShowsTickets(t *testing.T) {
+	t.Parallel()
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "A narrow pane should still show tickets")},
+		},
+	}, 28, 14)
+
+	rendered := renderBoardTUI(model, false)
+	for _, want := range []string{
+		"BOARD",
+		"Ready |",
+		"a11111 A narrow pane",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected very narrow render to contain %q, got:\n%s", want, rendered)
 		}
 	}
 }
