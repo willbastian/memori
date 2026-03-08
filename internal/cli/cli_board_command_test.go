@@ -127,6 +127,46 @@ func TestBoardCommandHumanOutputShowsSections(t *testing.T) {
 			t.Fatalf("expected board output to contain %q, got:\n%s", want, stdout)
 		}
 	}
+	if strings.Contains(stdout, "No saved focus, recovery packet, or open-loop continuity is shaping recommendations") {
+		t.Fatalf("did not expect dormant continuity guidance when continuity signals already exist, got:\n%s", stdout)
+	}
+}
+
+func TestBoardCommandHumanOutputShowsContinuityBootstrapWhenAgentHasNoSignals(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-board-dormant.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-e565656",
+		"--type", "task",
+		"--title", "Dormant continuity task",
+		"--command-id", "cmd-board-dormant-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest("board", "--db", dbPath, "--agent", "agent-board-dormant")
+	if err != nil {
+		t.Fatalf("board human output: %v\nstderr: %s", err, stderr)
+	}
+
+	for _, want := range []string{
+		"Continuity:",
+		"No saved focus, recovery packet, or open-loop continuity is shaping recommendations for agent-board-dormant yet.",
+		"memori context packet build --scope issue --id mem-e565656",
+		"memori context loops --issue mem-e565656",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected dormant continuity board output to contain %q, got:\n%s", want, stdout)
+		}
+	}
 }
 
 func TestRunBoardLoopRendersUntilContextCancelled(t *testing.T) {

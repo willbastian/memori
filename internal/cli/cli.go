@@ -815,10 +815,17 @@ func runIssueNext(args []string, out io.Writer) error {
 	for _, reason := range next.Candidate.Reasons {
 		ui.bullet(reason)
 	}
-	ui.nextSteps(
+	steps := []string{
 		fmt.Sprintf("memori issue show --key %s", next.Candidate.Issue.ID),
 		fmt.Sprintf("memori issue update --key %s --status inprogress", next.Candidate.Issue.ID),
-	)
+	}
+	if strings.TrimSpace(*agent) != "" && !continuitySignalsPresent(next.Candidate.Reasons) {
+		ui.blank()
+		ui.section("Continuity")
+		ui.bullet(continuityBootstrapMessage(*agent))
+		steps = append(continuityBootstrapSteps(next.Candidate.Issue.ID), steps...)
+	}
+	ui.nextSteps(steps...)
 	return nil
 }
 

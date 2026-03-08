@@ -75,6 +75,10 @@ func TestIssueNextHumanOutputShowsReasonSection(t *testing.T) {
 
 	mustContain(t, stdout, "Recommended issue")
 	mustContain(t, stdout, "Why This Issue:")
+	mustContain(t, stdout, "Continuity:")
+	mustContain(t, stdout, "No saved focus, recovery packet, or open-loop continuity is shaping recommendations for agent-readable-1 yet.")
+	mustContain(t, stdout, "memori context packet build --scope issue --id mem-f111111")
+	mustContain(t, stdout, "memori context loops --issue mem-f111111")
 	mustContain(t, stdout, "memori issue show --key mem-f111111")
 }
 

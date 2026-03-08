@@ -379,6 +379,14 @@ func renderBoardSnapshot(snapshot boardSnapshot, opts boardRenderOptions) (strin
 	ui.blank()
 
 	renderBoardNext(ui, snapshot.LikelyNext, width)
+	if snapshot.Agent != "" && len(snapshot.LikelyNext) > 0 && !continuitySignalsPresent(snapshot.LikelyNext[0].Reasons) {
+		ui.section("Continuity")
+		ui.bullet(continuityBootstrapMessage(snapshot.Agent))
+		for _, step := range continuityBootstrapSteps(snapshot.LikelyNext[0].Issue.ID) {
+			ui.bullet(step)
+		}
+		ui.blank()
+	}
 	renderBoardSection(ui, "Active", snapshot.Active, boardSectionLimit(width), width)
 	renderBoardSection(ui, "Blocked", snapshot.Blocked, boardSectionLimit(width), width)
 	renderBoardSection(ui, "Ready", snapshot.Ready, boardSectionLimit(width), width)
