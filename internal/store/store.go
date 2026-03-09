@@ -1999,9 +1999,9 @@ func (s *Store) RehydrateSession(ctx context.Context, p RehydrateSessionParams) 
 			packetJSON := newBasePacketJSON("session", sessionID)
 			packetJSON["goal"] = "Review closed session context"
 			state := map[string]any{
-				"session_id":       sessionID,
-				"status":           "closed",
-				"started_at":       session.StartedAt,
+				"session_id": sessionID,
+				"status":     "closed",
+				"started_at": session.StartedAt,
 			}
 			if strings.TrimSpace(session.EndedAt) != "" {
 				state["ended_at"] = session.EndedAt
@@ -2089,6 +2089,62 @@ func (s *Store) RehydrateSession(ctx context.Context, p RehydrateSessionParams) 
 		return SessionRehydrateResult{}, fmt.Errorf("commit tx: %w", err)
 	}
 	return result, nil
+}
+
+func (s *Store) LatestOpenSession(ctx context.Context) (Session, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Session{}, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	session, err := latestOpenSessionTx(ctx, tx)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Session{}, false, nil
+		}
+		return Session{}, false, err
+	}
+	return session, true, nil
+}
+
+func (s *Store) LatestSession(ctx context.Context) (Session, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Session{}, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	session, err := latestSessionTx(ctx, tx)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Session{}, false, nil
+		}
+		return Session{}, false, err
+	}
+	return session, true, nil
+}
+
+func (s *Store) SessionForCommand(ctx context.Context, commandID string) (Session, bool, error) {
+	commandID = strings.TrimSpace(commandID)
+	if commandID == "" {
+		return Session{}, false, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Session{}, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	session, err := sessionForCommandIDTx(ctx, tx, commandID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Session{}, false, nil
+		}
+		return Session{}, false, err
+	}
+	return session, true, nil
 }
 
 func (s *Store) BuildRehydratePacket(ctx context.Context, p BuildPacketParams) (RehydratePacket, error) {
@@ -5376,15 +5432,76 @@ func sessionByIDTx(ctx context.Context, tx *sql.Tx, sessionID string) (Session, 
 	return session, nil
 }
 
+func latestOpenSessionTx(ctx context.Context, tx *sql.Tx) (Session, error) {
+	sessionID, err := sessionIDForQueryTx(ctx, tx, `
+		SELECT s.session_id
+		FROM sessions s
+		JOIN events e
+		  ON e.entity_type = ?
+		 AND e.entity_id = s.session_id
+		WHERE COALESCE(TRIM(s.ended_at), '') = ''
+		GROUP BY s.session_id
+		ORDER BY MAX(e.event_order) DESC, s.session_id DESC
+		LIMIT 1
+	`, entityTypeSession)
+	if err != nil {
+		return Session{}, fmt.Errorf("query latest open session: %w", err)
+	}
+	return sessionByIDTx(ctx, tx, sessionID)
+}
+
+func latestSessionTx(ctx context.Context, tx *sql.Tx) (Session, error) {
+	sessionID, err := sessionIDForQueryTx(ctx, tx, `
+		SELECT s.session_id
+		FROM sessions s
+		JOIN events e
+		  ON e.entity_type = ?
+		 AND e.entity_id = s.session_id
+		GROUP BY s.session_id
+		ORDER BY MAX(e.event_order) DESC, s.session_id DESC
+		LIMIT 1
+	`, entityTypeSession)
+	if err != nil {
+		return Session{}, fmt.Errorf("query latest session: %w", err)
+	}
+	return sessionByIDTx(ctx, tx, sessionID)
+}
+
+func sessionForCommandIDTx(ctx context.Context, tx *sql.Tx, commandID string) (Session, error) {
+	sessionID, err := sessionIDForQueryTx(ctx, tx, `
+		SELECT entity_id
+		FROM events
+		WHERE entity_type = ?
+		  AND command_id = ?
+		ORDER BY event_order DESC, entity_seq DESC
+		LIMIT 1
+	`, entityTypeSession, commandID)
+	if err != nil {
+		return Session{}, fmt.Errorf("query session for command %q: %w", commandID, err)
+	}
+	return sessionByIDTx(ctx, tx, sessionID)
+}
+
+func sessionIDForQueryTx(ctx context.Context, tx *sql.Tx, query string, args ...any) (string, error) {
+	var sessionID string
+	if err := tx.QueryRowContext(ctx, query, args...).Scan(&sessionID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", sql.ErrNoRows
+		}
+		return "", err
+	}
+	return sessionID, nil
+}
+
 func packetByIDTx(ctx context.Context, tx *sql.Tx, packetID string) (RehydratePacket, error) {
 	var (
-		packet      RehydratePacket
-		packetJSON  string
-		builtFrom   sql.NullString
-		scopeID     sql.NullString
-		issueID     sql.NullString
-		sessionID   sql.NullString
-		issueCycle  sql.NullInt64
+		packet     RehydratePacket
+		packetJSON string
+		builtFrom  sql.NullString
+		scopeID    sql.NullString
+		issueID    sql.NullString
+		sessionID  sql.NullString
+		issueCycle sql.NullInt64
 	)
 	err := tx.QueryRowContext(ctx, `
 		SELECT

@@ -306,8 +306,9 @@ For agents:
 
 ```bash
 memori issue next --agent writer-1 --json
-memori context rehydrate --session sess-20260308-01 --json
-memori context summarize --session sess-20260308-01 --json
+memori context checkpoint --json
+memori context rehydrate --json
+memori context summarize --json
 ```
 
 New issues default to generated keys in `{prefix}-{shortSHA}` format when you omit `--key`. Mutation commands also generate command IDs automatically unless you explicitly opt into supplying your own with `MEMORI_ALLOW_MANUAL_COMMAND_ID=1`.
@@ -469,15 +470,13 @@ For split panes, keep one shell running `board --watch` and do mutations in anot
 memori’s context commands are built for “pick the work back up” scenarios.
 
 ```bash
-go run ./cmd/memori context checkpoint --session sess-20260307-01 --trigger manual
+go run ./cmd/memori context checkpoint --trigger manual
 
 go run ./cmd/memori context summarize \
-  --session sess-20260307-01 \
   --note "paused after reproducing the gate failure" \
   --json
 
 go run ./cmd/memori context close \
-  --session sess-20260307-01 \
   --reason "handoff captured for the next worker" \
   --json
 
@@ -493,9 +492,15 @@ go run ./cmd/memori context packet build \
 
 go run ./cmd/memori context packet show --packet <issue-packet-id> --json
 go run ./cmd/memori context packet use --agent writer-1 --packet <issue-packet-id> --json
-go run ./cmd/memori context rehydrate --session sess-20260307-01 --json
+go run ./cmd/memori context rehydrate --json
 go run ./cmd/memori context loops --issue mem-a111111 --json
 ```
+
+When you omit `--session`, memori keeps the continuity flow ergonomic:
+- `context checkpoint` continues the latest open session when one exists, or creates a fresh deterministic session id when one does not.
+- `context summarize` and `context close` target the latest open session.
+- `context rehydrate` prefers the latest open session and falls back to the latest session when everything is already closed.
+- Human output always tells you which session was used so you can copy it into explicit commands when you want tighter control.
 
 Use an issue-scoped packet when you want to set agent focus around a specific work item. Use a session-scoped packet when you want `context rehydrate` to return the latest saved session payload directly.
 Use `context summarize` to persist a structured session summary without ending the working window, and `context close` to mark that working window as finished with `ended_at` and the current `summary_event_id`.

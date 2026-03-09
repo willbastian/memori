@@ -98,10 +98,10 @@ func runHelp(args []string, out io.Writer) error {
 			"memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate verify --issue <prefix-shortSHA> --gate <gate-id> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate status --issue <prefix-shortSHA> [--cycle <n>] [--json]",
-			"memori context checkpoint --session <id> [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]",
-			"memori context summarize --session <id> [--note <text>] [--actor <actor>] [--command-id <id>] [--json]",
-			"memori context close --session <id> [--reason <text>] [--actor <actor>] [--command-id <id>] [--json]",
-			"memori context rehydrate --session <id> [--json]",
+			"memori context checkpoint [--session <id>] [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]",
+			"memori context summarize [--session <id>] [--note <text>] [--actor <actor>] [--command-id <id>] [--json]",
+			"memori context close [--session <id>] [--reason <text>] [--actor <actor>] [--command-id <id>] [--json]",
+			"memori context rehydrate [--session <id>] [--json]",
 			"memori context packet build --scope issue|session --id <id> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori context packet show --packet <id> [--json]",
 			"memori context packet use --agent <id> --packet <id> [--actor <actor>] [--command-id <id>] [--json]",
@@ -950,8 +950,13 @@ func runContextCheckpoint(args []string, out io.Writer) error {
 		return err
 	}
 
+	resolution, err := resolveCheckpointSession(ctx, s, *sessionID, identity.CommandID)
+	if err != nil {
+		return err
+	}
+
 	session, created, err := s.CheckpointSession(ctx, store.CheckpointSessionParams{
-		SessionID: *sessionID,
+		SessionID: resolution.sessionID,
 		Trigger:   *trigger,
 		Actor:     identity.Actor,
 		CommandID: identity.CommandID,
@@ -972,12 +977,21 @@ func runContextCheckpoint(args []string, out io.Writer) error {
 		})
 	}
 
-	if created {
-		_, _ = fmt.Fprintf(out, "Created session checkpoint %s\n", session.SessionID)
-	} else {
-		_, _ = fmt.Fprintf(out, "Updated session checkpoint %s\n", session.SessionID)
+	ui := newTextUI(out)
+	if msg := sessionResolutionMessage("checkpoint", resolution); msg != "" {
+		ui.note(msg)
 	}
-	_, _ = fmt.Fprintf(out, "Trigger: %s\n", session.Trigger)
+	if created {
+		ui.success(fmt.Sprintf("Created session checkpoint %s", session.SessionID))
+	} else {
+		ui.success(fmt.Sprintf("Updated session checkpoint %s", session.SessionID))
+	}
+	ui.field("Trigger", session.Trigger)
+	ui.nextSteps(
+		fmt.Sprintf("memori context rehydrate --session %s", session.SessionID),
+		fmt.Sprintf("memori context summarize --session %s", session.SessionID),
+		fmt.Sprintf("memori context packet build --scope session --id %s", session.SessionID),
+	)
 	return nil
 }
 
@@ -1008,8 +1022,13 @@ func runContextSummarize(args []string, out io.Writer) error {
 		return err
 	}
 
+	resolution, err := resolveOpenSessionForMutation(ctx, s, *sessionID, identity.CommandID)
+	if err != nil {
+		return err
+	}
+
 	session, err := s.SummarizeSession(ctx, store.SummarizeSessionParams{
-		SessionID: *sessionID,
+		SessionID: resolution.sessionID,
 		Note:      *note,
 		Actor:     identity.Actor,
 		CommandID: identity.CommandID,
@@ -1029,10 +1048,17 @@ func runContextSummarize(args []string, out io.Writer) error {
 		})
 	}
 
-	_, _ = fmt.Fprintf(out, "Summarized session %s\n", session.SessionID)
-	if strings.TrimSpace(session.SummaryEventID) != "" {
-		_, _ = fmt.Fprintf(out, "Summary Event: %s\n", session.SummaryEventID)
+	ui := newTextUI(out)
+	if msg := sessionResolutionMessage("summarize", resolution); msg != "" {
+		ui.note(msg)
 	}
+	ui.success(fmt.Sprintf("Summarized session %s", session.SessionID))
+	ui.field("Summary Event", session.SummaryEventID)
+	ui.nextSteps(
+		fmt.Sprintf("memori context rehydrate --session %s", session.SessionID),
+		fmt.Sprintf("memori context packet build --scope session --id %s", session.SessionID),
+		fmt.Sprintf("memori context close --session %s", session.SessionID),
+	)
 	return nil
 }
 
@@ -1063,8 +1089,13 @@ func runContextClose(args []string, out io.Writer) error {
 		return err
 	}
 
+	resolution, err := resolveOpenSessionForMutation(ctx, s, *sessionID, identity.CommandID)
+	if err != nil {
+		return err
+	}
+
 	session, err := s.CloseSession(ctx, store.CloseSessionParams{
-		SessionID: *sessionID,
+		SessionID: resolution.sessionID,
 		Reason:    *reason,
 		Actor:     identity.Actor,
 		CommandID: identity.CommandID,
@@ -1084,10 +1115,17 @@ func runContextClose(args []string, out io.Writer) error {
 		})
 	}
 
-	_, _ = fmt.Fprintf(out, "Closed session %s\n", session.SessionID)
-	if strings.TrimSpace(session.EndedAt) != "" {
-		_, _ = fmt.Fprintf(out, "Ended At: %s\n", session.EndedAt)
+	ui := newTextUI(out)
+	if msg := sessionResolutionMessage("close", resolution); msg != "" {
+		ui.note(msg)
 	}
+	ui.success(fmt.Sprintf("Closed session %s", session.SessionID))
+	ui.field("Ended At", session.EndedAt)
+	ui.nextSteps(
+		fmt.Sprintf("memori context rehydrate --session %s", session.SessionID),
+		fmt.Sprintf("memori context packet build --scope session --id %s", session.SessionID),
+		"memori context checkpoint",
+	)
 	return nil
 }
 
@@ -1110,8 +1148,13 @@ func runContextRehydrate(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
+	resolution, err := resolveSessionForRehydrate(ctx, s, *sessionID)
+	if err != nil {
+		return err
+	}
+
 	result, err := s.RehydrateSession(ctx, store.RehydrateSessionParams{
-		SessionID: *sessionID,
+		SessionID: resolution.sessionID,
 	})
 	if err != nil {
 		return err
@@ -1131,6 +1174,9 @@ func runContextRehydrate(args []string, out io.Writer) error {
 	}
 
 	ui := newTextUI(out)
+	if msg := sessionResolutionMessage("rehydrate", resolution); msg != "" {
+		ui.note(msg)
+	}
 	ui.success(fmt.Sprintf("Rehydrated session %s via %s", result.SessionID, result.Source))
 	if sourceMsg := rehydrateSourceMessage(result.Source); sourceMsg != "" {
 		ui.note(sourceMsg)
@@ -3195,13 +3241,13 @@ func printHelp(out io.Writer) {
 	ui.section("Agent Workflows")
 	ui.bullet("memori issue next [--agent <id>] [--json]")
 	ui.bullet("memori board [--db <path>] [--agent <id>] [--watch] [--interval <duration>] [--json]")
-	ui.bullet("memori context checkpoint --session <id> [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]")
-	ui.bullet("memori context summarize --session <id> [--note <text>] [--actor <actor>] [--command-id <id>] [--json]")
-	ui.bullet("memori context close --session <id> [--reason <text>] [--actor <actor>] [--command-id <id>] [--json]")
+	ui.bullet("memori context checkpoint [--session <id>] [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]")
+	ui.bullet("memori context summarize [--session <id>] [--note <text>] [--actor <actor>] [--command-id <id>] [--json]")
+	ui.bullet("memori context close [--session <id>] [--reason <text>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori context packet build --scope issue|session --id <id> [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori context packet show --packet <id> [--json]")
 	ui.bullet("memori context packet use --agent <id> --packet <id> [--actor <actor>] [--command-id <id>] [--json]")
-	ui.bullet("memori context rehydrate --session <id> [--json]")
+	ui.bullet("memori context rehydrate [--session <id>] [--json]")
 	ui.bullet("memori context loops [--issue <prefix-shortSHA>] [--cycle <n>] [--json]")
 
 	ui.blank()

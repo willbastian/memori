@@ -580,6 +580,204 @@ func TestContextSessionLifecycleCommands(t *testing.T) {
 	}
 }
 
+func TestContextCommandsResolveOmittedSessionLifecycle(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-context-auto-session.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"context", "checkpoint",
+		"--db", dbPath,
+		"--command-id", "cmd-cli-auto-session-checkpoint-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context checkpoint auto session: %v\nstderr: %s", err, stderr)
+	}
+	var checkpoint contextCheckpointEnvelope
+	if err := json.Unmarshal([]byte(stdout), &checkpoint); err != nil {
+		t.Fatalf("decode checkpoint json: %v\nstdout: %s", err, stdout)
+	}
+	sessionID := checkpoint.Data.Session.SessionID
+	if !checkpoint.Data.Created || !strings.HasPrefix(sessionID, "sess_") {
+		t.Fatalf("expected auto-created session id, got %+v", checkpoint)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "checkpoint",
+		"--db", dbPath,
+		"--command-id", "cmd-cli-auto-session-checkpoint-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context checkpoint replay auto session: %v\nstderr: %s", err, stderr)
+	}
+	var replayedCheckpoint contextCheckpointEnvelope
+	if err := json.Unmarshal([]byte(stdout), &replayedCheckpoint); err != nil {
+		t.Fatalf("decode replay checkpoint json: %v\nstdout: %s", err, stdout)
+	}
+	if replayedCheckpoint.Data.Session.SessionID != sessionID {
+		t.Fatalf("expected replayed checkpoint to reuse session %q, got %+v", sessionID, replayedCheckpoint)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "summarize",
+		"--db", dbPath,
+		"--note", "paused for handoff",
+		"--command-id", "cmd-cli-auto-session-summarize-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context summarize auto session: %v\nstderr: %s", err, stderr)
+	}
+	var summarized contextSessionEnvelope
+	if err := json.Unmarshal([]byte(stdout), &summarized); err != nil {
+		t.Fatalf("decode summarize json: %v\nstdout: %s", err, stdout)
+	}
+	if summarized.Data.Session.SessionID != sessionID || summarized.Data.Session.SummaryEventID == "" {
+		t.Fatalf("expected summarize to use session %q, got %+v", sessionID, summarized)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "rehydrate",
+		"--db", dbPath,
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context rehydrate auto session: %v\nstderr: %s", err, stderr)
+	}
+	var activeRehydrate contextRehydrateEnvelope
+	if err := json.Unmarshal([]byte(stdout), &activeRehydrate); err != nil {
+		t.Fatalf("decode active rehydrate json: %v\nstdout: %s", err, stdout)
+	}
+	if activeRehydrate.Data.SessionID != sessionID {
+		t.Fatalf("expected active rehydrate to use session %q, got %+v", sessionID, activeRehydrate)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "close",
+		"--db", dbPath,
+		"--reason", "handoff complete",
+		"--command-id", "cmd-cli-auto-session-close-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context close auto session: %v\nstderr: %s", err, stderr)
+	}
+	var closed contextSessionEnvelope
+	if err := json.Unmarshal([]byte(stdout), &closed); err != nil {
+		t.Fatalf("decode close json: %v\nstdout: %s", err, stdout)
+	}
+	if closed.Data.Session.SessionID != sessionID || closed.Data.Session.EndedAt == "" {
+		t.Fatalf("expected close to use session %q, got %+v", sessionID, closed)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "rehydrate",
+		"--db", dbPath,
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context rehydrate latest session: %v\nstderr: %s", err, stderr)
+	}
+	var closedRehydrate contextRehydrateEnvelope
+	if err := json.Unmarshal([]byte(stdout), &closedRehydrate); err != nil {
+		t.Fatalf("decode closed rehydrate json: %v\nstdout: %s", err, stdout)
+	}
+	if closedRehydrate.Data.SessionID != sessionID || closedRehydrate.Data.Source != "closed-session-summary" {
+		t.Fatalf("expected closed latest-session rehydrate for %q, got %+v", sessionID, closedRehydrate)
+	}
+}
+
+func TestContextCommandsKeepReplaySelectionStableWithoutExplicitSession(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-context-session-replay.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"context", "checkpoint",
+		"--db", dbPath,
+		"--command-id", "cmd-cli-session-replay-checkpoint-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context checkpoint auto session: %v\nstderr: %s", err, stderr)
+	}
+	var autoCheckpoint contextCheckpointEnvelope
+	if err := json.Unmarshal([]byte(stdout), &autoCheckpoint); err != nil {
+		t.Fatalf("decode auto checkpoint json: %v\nstdout: %s", err, stdout)
+	}
+	autoSessionID := autoCheckpoint.Data.Session.SessionID
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "summarize",
+		"--db", dbPath,
+		"--note", "first summary",
+		"--command-id", "cmd-cli-session-replay-summarize-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context summarize auto session: %v\nstderr: %s", err, stderr)
+	}
+	var firstSummary contextSessionEnvelope
+	if err := json.Unmarshal([]byte(stdout), &firstSummary); err != nil {
+		t.Fatalf("decode first summarize json: %v\nstdout: %s", err, stdout)
+	}
+	if firstSummary.Data.Session.SessionID != autoSessionID {
+		t.Fatalf("expected first summary to use %q, got %+v", autoSessionID, firstSummary)
+	}
+
+	if _, stderr, err := runMemoriForTest(
+		"context", "checkpoint",
+		"--db", dbPath,
+		"--session", "sess-manual-later",
+		"--command-id", "cmd-cli-session-replay-checkpoint-2",
+		"--json",
+	); err != nil {
+		t.Fatalf("context checkpoint explicit session: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "summarize",
+		"--db", dbPath,
+		"--note", "first summary",
+		"--command-id", "cmd-cli-session-replay-summarize-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context summarize replay after later session: %v\nstderr: %s", err, stderr)
+	}
+	var replayedSummary contextSessionEnvelope
+	if err := json.Unmarshal([]byte(stdout), &replayedSummary); err != nil {
+		t.Fatalf("decode replayed summarize json: %v\nstdout: %s", err, stdout)
+	}
+	if replayedSummary.Data.Session.SessionID != autoSessionID {
+		t.Fatalf("expected replayed summary to stay on %q, got %+v", autoSessionID, replayedSummary)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "rehydrate",
+		"--db", dbPath,
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context rehydrate latest open session: %v\nstderr: %s", err, stderr)
+	}
+	var latestOpen contextRehydrateEnvelope
+	if err := json.Unmarshal([]byte(stdout), &latestOpen); err != nil {
+		t.Fatalf("decode latest open rehydrate json: %v\nstdout: %s", err, stdout)
+	}
+	if latestOpen.Data.SessionID != "sess-manual-later" {
+		t.Fatalf("expected rehydrate without --session to use latest open session, got %+v", latestOpen)
+	}
+}
+
 func TestContextPacketAndRehydrateHumanOutputGuideResumeFlow(t *testing.T) {
 	t.Parallel()
 
@@ -690,6 +888,49 @@ func TestContextPacketAndRehydrateHumanOutputGuideResumeFlow(t *testing.T) {
 	mustContain(t, stdout, "memori context summarize --session sess-human-1")
 }
 
+func TestContextHumanOutputAutoResolvesSessionWhenOmitted(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-context-human-auto-session.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"context", "checkpoint",
+		"--db", dbPath,
+		"--command-id", "cmd-cli-human-auto-session-checkpoint-1",
+	)
+	if err != nil {
+		t.Fatalf("context checkpoint auto session: %v\nstderr: %s", err, stderr)
+	}
+	sessionID := sessionIDFromHumanOutput(t, stdout)
+	mustContain(t, stdout, "Note No --session supplied; started new session "+sessionID+".")
+	mustContain(t, stdout, "OK Created session checkpoint "+sessionID)
+	mustContain(t, stdout, "memori context rehydrate --session "+sessionID)
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "checkpoint",
+		"--db", dbPath,
+		"--command-id", "cmd-cli-human-auto-session-checkpoint-2",
+	)
+	if err != nil {
+		t.Fatalf("context checkpoint latest open session: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Note No --session supplied; continuing latest open session "+sessionID+". Pass --session to start a parallel session.")
+	mustContain(t, stdout, "OK Updated session checkpoint "+sessionID)
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "rehydrate",
+		"--db", dbPath,
+	)
+	if err != nil {
+		t.Fatalf("context rehydrate latest open session: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Note No --session supplied; rehydrating latest open session "+sessionID+".")
+	mustContain(t, stdout, "OK Rehydrated session "+sessionID+" via relevant-chunks-fallback")
+}
+
 func packetIDFromHumanOutput(t *testing.T, stdout string) string {
 	t.Helper()
 
@@ -704,5 +945,24 @@ func packetIDFromHumanOutput(t *testing.T, stdout string) string {
 		}
 	}
 	t.Fatalf("expected packet id in output, got:\n%s", stdout)
+	return ""
+}
+
+func sessionIDFromHumanOutput(t *testing.T, stdout string) string {
+	t.Helper()
+
+	for _, line := range strings.Split(stdout, "\n") {
+		line = strings.TrimSpace(line)
+		for _, prefix := range []string{"OK Created session checkpoint ", "OK Updated session checkpoint "} {
+			if strings.HasPrefix(line, prefix) {
+				rest := strings.TrimPrefix(line, prefix)
+				if idx := strings.Index(rest, " "); idx > 0 {
+					return rest[:idx]
+				}
+				return rest
+			}
+		}
+	}
+	t.Fatalf("expected session id in output, got:\n%s", stdout)
 	return ""
 }
