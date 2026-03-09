@@ -45,9 +45,101 @@ func TestIssueCreateHumanOutputShowsNextSteps(t *testing.T) {
 	}
 
 	mustContain(t, stdout, "OK Created issue mem-e111111")
+	mustContain(t, stdout, "Continuity:")
+	mustContain(t, stdout, "Capture continuity in-product as soon as work starts or you hand this issue to another worker.")
+	mustContain(t, stdout, "memori context checkpoint")
+	mustContain(t, stdout, "memori context packet build --scope issue --id mem-e111111")
 	mustContain(t, stdout, "Next:")
 	mustContain(t, stdout, "memori issue show --key mem-e111111")
 	mustContain(t, stdout, "memori issue update --key mem-e111111 --status inprogress")
+}
+
+func TestIssueUpdateAndShowHumanOutputSurfaceStateAwareContinuity(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-output-issue-continuity.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-c0ffee1",
+		"--type", "task",
+		"--title", "Continuity-rich task",
+		"--command-id", "cmd-readable-issue-continuity-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-c0ffee1",
+		"--status", "inprogress",
+		"--command-id", "cmd-readable-issue-continuity-update-1",
+	)
+	if err != nil {
+		t.Fatalf("issue update inprogress: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Continuity:")
+	mustContain(t, stdout, "This issue is active work; keep continuity current so pause, resume, and handoff stay lightweight.")
+	mustContain(t, stdout, "memori context checkpoint")
+	mustContain(t, stdout, "memori context summarize")
+	mustContain(t, stdout, "memori context packet build --scope issue --id mem-c0ffee1")
+
+	stdout, stderr, err = runMemoriForTest("issue", "show", "--db", dbPath, "--key", "mem-c0ffee1")
+	if err != nil {
+		t.Fatalf("issue show inprogress: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Continuity:")
+	mustContain(t, stdout, "This issue is active work; keep continuity current so pause, resume, and handoff stay lightweight.")
+	mustContain(t, stdout, "memori context summarize")
+
+	stdout, stderr, err = runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-c0ffee1",
+		"--status", "blocked",
+		"--command-id", "cmd-readable-issue-continuity-update-2",
+	)
+	if err != nil {
+		t.Fatalf("issue update blocked: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "This issue is blocked; preserve the current state before waiting or handing it off.")
+	mustContain(t, stdout, "memori context loops --issue mem-c0ffee1")
+}
+
+func TestIssueShowHumanOutputSkipsContinuityForEpic(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-output-issue-epic.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-e11c001",
+		"--type", "epic",
+		"--title", "Coordination epic",
+		"--command-id", "cmd-readable-issue-epic-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create epic: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest("issue", "show", "--db", dbPath, "--key", "mem-e11c001")
+	if err != nil {
+		t.Fatalf("issue show epic: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "mem-e11c001 [Epic/Todo]")
+	if strings.Contains(stdout, "Continuity:") {
+		t.Fatalf("did not expect continuity guidance for epic show, got:\n%s", stdout)
+	}
 }
 
 func TestIssueNextHumanOutputShowsReasonSection(t *testing.T) {

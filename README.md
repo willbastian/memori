@@ -602,6 +602,8 @@ For day-to-day work, the shortest path is usually:
 - `memori context rehydrate`
 - `memori context loops`
 
+Human-readable `issue create`, `issue update`, `issue show`, and `issue next` now surface continuity guidance when the current work state makes it relevant. In practice that means `todo`, `inprogress`, and `blocked` work will point you toward `context checkpoint`, `context summarize`, `context packet build`, or `context loops` instead of treating continuity as a separate subsystem you have to remember on your own.
+
 ### Database operations
 
 - `memori db migrate`

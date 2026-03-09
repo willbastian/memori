@@ -43,6 +43,42 @@ func continuityBootstrapSteps(issueID string) []string {
 	}
 }
 
+func issueContinuityGuidance(issue store.Issue, command string) (string, []string) {
+	command = strings.TrimSpace(command)
+	issueType := strings.ToLower(strings.TrimSpace(issue.Type))
+	status := strings.ToLower(strings.TrimSpace(issue.Status))
+	issueID := strings.TrimSpace(issue.ID)
+	if issueID == "" || issueType == "epic" {
+		return "", nil
+	}
+
+	switch status {
+	case "todo":
+		message := "Start continuity when execution or handoff begins so this issue can resume cleanly."
+		if command == "create" {
+			message = "Capture continuity in-product as soon as work starts or you hand this issue to another worker."
+		}
+		return message, []string{
+			"memori context checkpoint",
+			fmt.Sprintf("memori context packet build --scope issue --id %s", issueID),
+		}
+	case "inprogress":
+		return "This issue is active work; keep continuity current so pause, resume, and handoff stay lightweight.", []string{
+			"memori context checkpoint",
+			"memori context summarize",
+			fmt.Sprintf("memori context packet build --scope issue --id %s", issueID),
+		}
+	case "blocked":
+		return "This issue is blocked; preserve the current state before waiting or handing it off.", []string{
+			"memori context summarize",
+			fmt.Sprintf("memori context packet build --scope issue --id %s", issueID),
+			fmt.Sprintf("memori context loops --issue %s", issueID),
+		}
+	default:
+		return "", nil
+	}
+}
+
 func packetBuildNextSteps(packetID, scope, issueID, sessionID string) []string {
 	packetID = strings.TrimSpace(packetID)
 	scope = strings.TrimSpace(scope)

@@ -490,6 +490,14 @@ func runIssueCreate(args []string, out io.Writer) error {
 		ui.field("Parent", issue.ParentID)
 	}
 	ui.field("Event", fmt.Sprintf("%s (%s #%d)", event.EventID, event.EventType, event.EventOrder))
+	if message, steps := issueContinuityGuidance(issue, "create"); message != "" {
+		ui.blank()
+		ui.section("Continuity")
+		ui.bullet(message)
+		for _, step := range steps {
+			ui.bullet(step)
+		}
+	}
 	ui.nextSteps(
 		fmt.Sprintf("memori issue show --key %s", issue.ID),
 		fmt.Sprintf("memori issue update --key %s --status inprogress", issue.ID),
@@ -622,6 +630,14 @@ func runIssueUpdate(args []string, out io.Writer) error {
 		}
 	}
 	ui.field("Event", fmt.Sprintf("%s (%s #%d)", event.EventID, event.EventType, event.EventOrder))
+	if message, steps := issueContinuityGuidance(issue, "update"); message != "" {
+		ui.blank()
+		ui.section("Continuity")
+		ui.bullet(message)
+		for _, step := range steps {
+			ui.bullet(step)
+		}
+	}
 	ui.nextSteps(
 		fmt.Sprintf("memori issue show --key %s", issue.ID),
 		fmt.Sprintf("memori event log --entity %s", issue.ID),
@@ -768,6 +784,14 @@ func runIssueShow(args []string, out io.Writer) error {
 	ui.section("Timeline")
 	ui.field("Created", issue.CreatedAt)
 	ui.field("Updated", issue.UpdatedAt)
+	if message, steps := issueContinuityGuidance(issue, "show"); message != "" {
+		ui.blank()
+		ui.section("Continuity")
+		ui.bullet(message)
+		for _, step := range steps {
+			ui.bullet(step)
+		}
+	}
 	return nil
 }
 
