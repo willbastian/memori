@@ -37,6 +37,7 @@ func continuityBootstrapSteps(issueID string) []string {
 		return nil
 	}
 	return []string{
+		"memori context checkpoint",
 		fmt.Sprintf("memori context packet build --scope issue --id %s", issueID),
 		fmt.Sprintf("memori context loops --issue %s", issueID),
 	}

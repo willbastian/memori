@@ -32,6 +32,7 @@ Use the same environment for `go run ./cmd/memori ...` if the binary is not inst
    - `memori issue next --agent <agent_id> --json`
    - `memori board --agent <agent_id> --json`
    - When resuming interrupted work, prefer `issue next` plus `context rehydrate` over relying on prior chat memory alone.
+   - When continuity has not been captured yet, start it in-product with `memori context checkpoint` instead of relying on ad hoc notes.
 3. Create a ticket before doing implementation work only when no existing issue already covers the work.
    - `memori issue create --type task --title "<clear outcome>" --command-id "<unique-id>" --json`
 4. Inspect ticket context before making changes.
@@ -114,7 +115,7 @@ Before closing a task, run this checklist in order:
 
 ## Governance Notes
 - Treat the event ledger as the authoritative write path; prefer commands that append events over manual database changes.
-- Use `issue next --agent <agent_id>`, `context rehydrate`, and context packet commands when resuming interrupted work rather than relying on memory alone.
+- Use `issue next --agent <agent_id>`, `context checkpoint`, `context rehydrate`, and context packet commands when resuming interrupted work rather than relying on memory alone.
 - Use `context summarize` to persist a structured handoff without ending a working window, and `context close` when the session should be treated as concluded before the next worker resumes it.
 - After schema changes, favor `db migrate` followed by `db verify`, and use `db replay` when you need to prove derived projections still rebuild deterministically from the ledger.
 - Agents may draft executable gate templates, but a human must approve the exact template version with `memori gate template approve` before it can be instantiated or used by `gate verify`.

@@ -160,6 +160,7 @@ func TestBoardCommandHumanOutputShowsContinuityBootstrapWhenAgentHasNoSignals(t 
 	for _, want := range []string{
 		"Continuity:",
 		"No saved focus, recovery packet, or open-loop continuity is shaping recommendations for agent-board-dormant yet.",
+		"memori context checkpoint",
 		"memori context packet build --scope issue --id mem-e565656",
 		"memori context loops --issue mem-e565656",
 	} {
