@@ -234,18 +234,24 @@ func boardPopulateSnapshotRows(
 ) {
 	for _, issue := range issues {
 		boardIncrementSummary(&snapshot.Summary, issue.Status)
-
-		row := boardIssueRow{
-			Issue:     issue,
-			Hierarchy: hierarchyByID[issue.ID],
-		}
-		if candidate, ok := scoreByID[issue.ID]; ok {
-			row.Score = candidate.Score
-			row.Reasons = append([]string(nil), candidate.Reasons...)
-		}
-
-		boardAppendSnapshotRow(snapshot, row)
+		boardAppendSnapshotRow(snapshot, boardSnapshotRow(issue, hierarchyByID[issue.ID], scoreByID[issue.ID]))
 	}
+}
+
+func boardSnapshotRow(
+	issue store.Issue,
+	hierarchy boardIssueHierarchy,
+	candidate store.IssueNextCandidate,
+) boardIssueRow {
+	row := boardIssueRow{
+		Issue:     issue,
+		Hierarchy: hierarchy,
+	}
+	if candidate.Issue.ID != "" {
+		row.Score = candidate.Score
+		row.Reasons = append([]string(nil), candidate.Reasons...)
+	}
+	return row
 }
 
 func boardIncrementSummary(summary *boardSummary, status string) {
@@ -280,13 +286,26 @@ func boardPopulateLikelyNext(
 	nextCandidates []store.IssueNextCandidate,
 	hierarchyByID map[string]boardIssueHierarchy,
 ) {
+	snapshot.LikelyNext = boardLikelyNextRows(nextCandidates, hierarchyByID)
+}
+
+func boardLikelyNextRows(
+	nextCandidates []store.IssueNextCandidate,
+	hierarchyByID map[string]boardIssueHierarchy,
+) []boardIssueRow {
+	rows := make([]boardIssueRow, 0, len(nextCandidates))
 	for _, candidate := range nextCandidates {
-		snapshot.LikelyNext = append(snapshot.LikelyNext, boardIssueRow{
-			Issue:     candidate.Issue,
-			Hierarchy: hierarchyByID[candidate.Issue.ID],
-			Score:     candidate.Score,
-			Reasons:   append([]string(nil), candidate.Reasons...),
-		})
+		rows = append(rows, boardLikelyNextRow(candidate, hierarchyByID[candidate.Issue.ID]))
+	}
+	return rows
+}
+
+func boardLikelyNextRow(candidate store.IssueNextCandidate, hierarchy boardIssueHierarchy) boardIssueRow {
+	return boardIssueRow{
+		Issue:     candidate.Issue,
+		Hierarchy: hierarchy,
+		Score:     candidate.Score,
+		Reasons:   append([]string(nil), candidate.Reasons...),
 	}
 }
 
