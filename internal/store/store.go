@@ -4118,7 +4118,14 @@ func applyGateTemplateCreatedProjectionTx(ctx context.Context, tx *sql.Tx, event
 		) VALUES(?, ?, ?, ?, ?, ?, ?)
 	`, payload.TemplateID, payload.Version, string(appliesToJSON), payload.DefinitionJSON, payload.DefinitionHash, payload.CreatedAt, payload.CreatedBy)
 	if err != nil {
-		if !strings.Contains(err.Error(), "UNIQUE constraint failed: gate_templates.template_id, gate_templates.version") {
+		existing, found, lookupErr := gateTemplateByIDVersionTx(ctx, tx, payload.TemplateID, payload.Version)
+		if lookupErr != nil {
+			return lookupErr
+		}
+		if !found ||
+			existing.DefinitionHash != payload.DefinitionHash ||
+			existing.DefinitionJSON != payload.DefinitionJSON ||
+			!equalStringSlices(existing.AppliesTo, payload.AppliesTo) {
 			return fmt.Errorf("insert gate template from event %s: %w", event.EventID, err)
 		}
 	}
@@ -4190,7 +4197,15 @@ func applyGateSetInstantiatedProjectionTx(ctx context.Context, tx *sql.Tx, event
 		) VALUES(?, ?, ?, ?, ?, ?, NULL, ?, ?)
 	`, payload.GateSetID, payload.IssueID, payload.CycleNo, string(templateRefsJSON), frozenJSON, payload.GateSetHash, payload.CreatedAt, payload.CreatedBy)
 	if err != nil {
-		if !strings.Contains(err.Error(), "UNIQUE constraint failed: gate_sets.gate_set_id") {
+		existing, found, lookupErr := gateSetByIDTx(ctx, tx, payload.GateSetID)
+		if lookupErr != nil {
+			return lookupErr
+		}
+		if !found ||
+			existing.IssueID != payload.IssueID ||
+			existing.CycleNo != payload.CycleNo ||
+			existing.GateSetHash != payload.GateSetHash ||
+			!equalStringSlices(existing.TemplateRefs, payload.TemplateRefs) {
 			return fmt.Errorf("insert gate set from event %s: %w", event.EventID, err)
 		}
 	}

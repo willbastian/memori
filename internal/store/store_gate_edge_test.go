@@ -299,8 +299,8 @@ func TestGateTemplateAndGateSetEdgeCases(t *testing.T) {
 	}
 
 	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{
-		IssueID:   "mem-c1d2e3f",
-		Actor:     "agent-1",
+		IssueID: "mem-c1d2e3f",
+		Actor:   "agent-1",
 	}); err == nil || !strings.Contains(err.Error(), "--command-id is required") {
 		t.Fatalf("expected missing lock command id error, got %v", err)
 	}
@@ -1110,6 +1110,232 @@ func TestGateProjectionFunctionsAreReplayIdempotentAndNormalizeState(t *testing.
 	}
 }
 
+func TestGateProjectionFunctionsRemainStableOnDuplicateReplay(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   "mem-b1c2d3e",
+		Type:      "task",
+		Title:     "Projection duplicate replay stability",
+		Actor:     "agent-1",
+		CommandID: "cmd-projection-duplicate-issue-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback()
+
+	definitionJSON, definitionHash, err := canonicalizeGateDefinition(`{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}},{"id":"docs","kind":"check","required":false,"criteria":{"ref":"manual-validation"}}]}`)
+	if err != nil {
+		t.Fatalf("canonicalize gate definition: %v", err)
+	}
+
+	templatePayload, err := json.Marshal(gateTemplateCreatedPayload{
+		TemplateID:     "projection-duplicate-template",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: definitionJSON,
+		DefinitionHash: definitionHash,
+		CreatedAt:      "2026-03-08T00:10:00Z",
+		CreatedBy:      "llm:openai:gpt-5",
+	})
+	if err != nil {
+		t.Fatalf("marshal template payload: %v", err)
+	}
+	templateEvent := Event{
+		EventID:     "evt_projection_duplicate_template_create",
+		EventType:   eventTypeGateTemplateCreate,
+		PayloadJSON: string(templatePayload),
+		CreatedAt:   "2026-03-08T00:10:00Z",
+	}
+
+	if err := applyGateTemplateCreatedProjectionTx(ctx, tx, templateEvent); err != nil {
+		t.Fatalf("apply template projection first time: %v", err)
+	}
+	if err := applyGateTemplateCreatedProjectionTx(ctx, tx, templateEvent); err != nil {
+		t.Fatalf("apply template projection second time: %v", err)
+	}
+
+	var templateRows int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(1) FROM gate_templates
+		WHERE template_id = ? AND version = ?
+	`, "projection-duplicate-template", 1).Scan(&templateRows); err != nil {
+		t.Fatalf("count template rows: %v", err)
+	}
+	if templateRows != 1 {
+		t.Fatalf("expected one template row after duplicate replay, got %d", templateRows)
+	}
+
+	var approvalRows int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(1) FROM gate_template_approvals
+		WHERE template_id = ? AND version = ?
+	`, "projection-duplicate-template", 1).Scan(&approvalRows); err != nil {
+		t.Fatalf("count approval rows before approval event: %v", err)
+	}
+	if approvalRows != 0 {
+		t.Fatalf("expected no auto-approval rows for llm-authored template, got %d", approvalRows)
+	}
+
+	approvalPayload, err := json.Marshal(gateTemplateApprovedPayload{
+		TemplateID:     "projection-duplicate-template",
+		Version:        1,
+		DefinitionHash: definitionHash,
+		ApprovedAt:     "2026-03-08T00:11:00Z",
+		ApprovedBy:     "human:alice",
+	})
+	if err != nil {
+		t.Fatalf("marshal approval payload: %v", err)
+	}
+	approvalEvent := Event{
+		EventID:     "evt_projection_duplicate_template_approve",
+		EventType:   eventTypeGateTemplateApprove,
+		PayloadJSON: string(approvalPayload),
+		CreatedAt:   "2026-03-08T00:11:00Z",
+	}
+
+	if err := applyGateTemplateApprovedProjectionTx(ctx, tx, approvalEvent); err != nil {
+		t.Fatalf("apply approval projection first time: %v", err)
+	}
+	if err := applyGateTemplateApprovedProjectionTx(ctx, tx, approvalEvent); err != nil {
+		t.Fatalf("apply approval projection second time: %v", err)
+	}
+
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(1) FROM gate_template_approvals
+		WHERE template_id = ? AND version = ?
+	`, "projection-duplicate-template", 1).Scan(&approvalRows); err != nil {
+		t.Fatalf("count approval rows after duplicate approval replay: %v", err)
+	}
+	if approvalRows != 1 {
+		t.Fatalf("expected one approval row after duplicate approval replay, got %d", approvalRows)
+	}
+
+	defs, err := buildGateSetDefinitionsTx(ctx, tx, "Task", []gateTemplateRef{{TemplateID: "projection-duplicate-template", Version: 1}})
+	if err != nil {
+		t.Fatalf("build gate set definitions: %v", err)
+	}
+	frozenJSON, frozenObj, err := buildFrozenGateDefinition([]string{"projection-duplicate-template@1"}, defs)
+	if err != nil {
+		t.Fatalf("build frozen gate definition: %v", err)
+	}
+	frozenHash := sha256.Sum256([]byte(frozenJSON))
+
+	gateSetPayload, err := json.Marshal(gateSetInstantiatedPayload{
+		GateSetID:        "gset_projection_duplicate",
+		IssueID:          "mem-b1c2d3e",
+		CycleNo:          1,
+		TemplateRefs:     []string{"projection-duplicate-template@1"},
+		FrozenDefinition: frozenObj,
+		GateSetHash:      hex.EncodeToString(frozenHash[:]),
+		CreatedAt:        "2026-03-08T00:12:00Z",
+		CreatedBy:        "agent-1",
+		Items:            defs,
+	})
+	if err != nil {
+		t.Fatalf("marshal gate set payload: %v", err)
+	}
+	gateSetEvent := Event{
+		EventID:     "evt_projection_duplicate_gate_set_create",
+		EventType:   eventTypeGateSetCreate,
+		PayloadJSON: string(gateSetPayload),
+		CreatedAt:   "2026-03-08T00:12:00Z",
+	}
+
+	if err := applyGateSetInstantiatedProjectionTx(ctx, tx, gateSetEvent); err != nil {
+		t.Fatalf("apply gate set projection first time: %v", err)
+	}
+	if err := applyGateSetInstantiatedProjectionTx(ctx, tx, gateSetEvent); err != nil {
+		t.Fatalf("apply gate set projection second time: %v", err)
+	}
+
+	var gateSetRows int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(1) FROM gate_sets WHERE gate_set_id = ?
+	`, "gset_projection_duplicate").Scan(&gateSetRows); err != nil {
+		t.Fatalf("count gate set rows: %v", err)
+	}
+	if gateSetRows != 1 {
+		t.Fatalf("expected one gate set row after duplicate replay, got %d", gateSetRows)
+	}
+
+	var gateItemRows int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(1) FROM gate_set_items WHERE gate_set_id = ?
+	`, "gset_projection_duplicate").Scan(&gateItemRows); err != nil {
+		t.Fatalf("count gate set item rows: %v", err)
+	}
+	if gateItemRows != 2 {
+		t.Fatalf("expected two gate set items after duplicate replay, got %d", gateItemRows)
+	}
+
+	projectedGateSet, found, err := gateSetByIDTx(ctx, tx, "gset_projection_duplicate")
+	if err != nil {
+		t.Fatalf("lookup projected gate set: %v", err)
+	}
+	if !found {
+		t.Fatal("expected projected gate set after duplicate replay")
+	}
+	if len(projectedGateSet.Items) != 2 {
+		t.Fatalf("expected two projected gate items, got %#v", projectedGateSet.Items)
+	}
+	if projectedGateSet.Items[0].GateID != "build" || !projectedGateSet.Items[0].Required {
+		t.Fatalf("expected required build gate, got %#v", projectedGateSet.Items[0])
+	}
+	if projectedGateSet.Items[1].GateID != "docs" || projectedGateSet.Items[1].Required {
+		t.Fatalf("expected optional docs gate, got %#v", projectedGateSet.Items[1])
+	}
+
+	lockPayload, err := json.Marshal(gateSetLockedPayload{
+		GateSetID: "gset_projection_duplicate",
+		IssueID:   "mem-b1c2d3e",
+		CycleNo:   1,
+		LockedAt:  "2026-03-08T00:13:00Z",
+	})
+	if err != nil {
+		t.Fatalf("marshal lock payload: %v", err)
+	}
+	lockEvent := Event{
+		EventID:     "evt_projection_duplicate_gate_set_lock",
+		EventType:   eventTypeGateSetLock,
+		PayloadJSON: string(lockPayload),
+		CreatedAt:   "2026-03-08T00:13:00Z",
+	}
+
+	if err := applyGateSetLockedProjectionTx(ctx, tx, lockEvent); err != nil {
+		t.Fatalf("apply lock projection first time: %v", err)
+	}
+	if err := applyGateSetLockedProjectionTx(ctx, tx, lockEvent); err != nil {
+		t.Fatalf("apply lock projection second time: %v", err)
+	}
+
+	projectedGateSet, found, err = gateSetByIDTx(ctx, tx, "gset_projection_duplicate")
+	if err != nil {
+		t.Fatalf("lookup locked gate set: %v", err)
+	}
+	if !found || projectedGateSet.LockedAt != "2026-03-08T00:13:00Z" {
+		t.Fatalf("expected stable locked gate set after duplicate lock replay, got %#v found=%v", projectedGateSet, found)
+	}
+
+	var activeGateSetID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT active_gate_set_id FROM work_items WHERE id = ?
+	`, "mem-b1c2d3e").Scan(&activeGateSetID); err != nil {
+		t.Fatalf("read active gate set id: %v", err)
+	}
+	if activeGateSetID != "gset_projection_duplicate" {
+		t.Fatalf("expected active gate set id %q, got %q", "gset_projection_duplicate", activeGateSetID)
+	}
+}
+
 func TestReplayProjectionsRebuildsGateTemplatesAndGateSets(t *testing.T) {
 	t.Parallel()
 
@@ -1336,19 +1562,33 @@ func TestReplayProjectionsClearsStaleGateProjectionRows(t *testing.T) {
 func TestReplayProjectionsSurfacesProjectionCleanupAndEventQueryFailures(t *testing.T) {
 	t.Parallel()
 
-	t.Run("missing gate status projection table", func(t *testing.T) {
-		t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		tableName string
+		want      string
+	}{
+		{name: "missing gate status projection table", tableName: "gate_status_projection", want: "clear gate_status_projection"},
+		{name: "missing gate template approvals table", tableName: "gate_template_approvals", want: "clear gate_template_approvals"},
+		{name: "missing agent focus table", tableName: "agent_focus", want: "clear agent_focus"},
+		{name: "missing issue summaries table", tableName: "issue_summaries", want: "clear issue_summaries"},
+		{name: "missing open loops table", tableName: "open_loops", want: "clear open_loops"},
+		{name: "missing context chunks table", tableName: "context_chunks", want: "clear context_chunks"},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-		s := newTestStore(t)
-		ctx := context.Background()
-		if _, err := s.db.ExecContext(ctx, `DROP TABLE gate_status_projection`); err != nil {
-			t.Fatalf("drop gate_status_projection: %v", err)
-		}
+			s := newTestStore(t)
+			ctx := context.Background()
+			if _, err := s.db.ExecContext(ctx, `DROP TABLE `+tc.tableName); err != nil {
+				t.Fatalf("drop %s: %v", tc.tableName, err)
+			}
 
-		if _, err := s.ReplayProjections(ctx); err == nil || !strings.Contains(err.Error(), "clear gate_status_projection") {
-			t.Fatalf("expected replay cleanup error for gate_status_projection, got %v", err)
-		}
-	})
+			if _, err := s.ReplayProjections(ctx); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected replay cleanup error %q, got %v", tc.want, err)
+			}
+		})
+	}
 
 	t.Run("missing events table", func(t *testing.T) {
 		t.Parallel()
@@ -1883,6 +2123,28 @@ func TestListOpenLoopsFiltersOrderingAndErrors(t *testing.T) {
 func TestReplayProjectionsRejectsCorruptGateLedgerEvents(t *testing.T) {
 	t.Parallel()
 
+	t.Run("template create definition hash mismatch", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := context.Background()
+		s := newTestStore(t)
+
+		payload := `{"template_id":"replay-corrupt-create","version":1,"applies_to":["task"],"definition_json":"{\"gates\":[{\"id\":\"build\",\"kind\":\"check\",\"required\":true,\"criteria\":{\"command\":\"go test ./...\"}}]}","definition_hash":"deadbeef","created_at":"2026-03-08T12:01:00Z","created_by":"human:alice"}`
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO events(
+				event_id, event_order, entity_type, entity_id, entity_seq, event_type,
+				payload_json, actor, command_id, causation_id, correlation_id, created_at,
+				hash, prev_hash, event_payload_version
+			) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?)
+		`, "evt_replay_corrupt_template_create", 1, entityTypeGateTemplate, gateTemplateEntityID("replay-corrupt-create", 1), 1, eventTypeGateTemplateCreate, payload, "human:alice", "cmd-replay-corrupt-template-create-1", gateTemplateCorrelationID("replay-corrupt-create", 1), nowUTC(), "hash_replay_corrupt_template_create", 1); err != nil {
+			t.Fatalf("insert corrupt template create event: %v", err)
+		}
+
+		if _, err := s.ReplayProjections(ctx); err == nil || !strings.Contains(err.Error(), "definition_hash does not match definition_json") {
+			t.Fatalf("expected replay corruption error for template create hash mismatch, got %v", err)
+		}
+	})
+
 	t.Run("approval hash mismatch", func(t *testing.T) {
 		t.Parallel()
 
@@ -1922,6 +2184,137 @@ func TestReplayProjectionsRejectsCorruptGateLedgerEvents(t *testing.T) {
 		}
 	})
 
+	t.Run("approval requires human-governed approver", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := context.Background()
+		s := newTestStore(t)
+
+		definitionJSON, definitionHash, err := canonicalizeGateDefinition(`{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}}]}`)
+		if err != nil {
+			t.Fatalf("canonicalize gate definition: %v", err)
+		}
+		createPayloadBytes, err := json.Marshal(gateTemplateCreatedPayload{
+			TemplateID:     "replay-corrupt-nonhuman-approval",
+			Version:        1,
+			AppliesTo:      []string{"task"},
+			DefinitionJSON: definitionJSON,
+			DefinitionHash: definitionHash,
+			CreatedAt:      "2026-03-08T12:02:30Z",
+			CreatedBy:      "llm:openai:gpt-5",
+		})
+		if err != nil {
+			t.Fatalf("marshal template create payload: %v", err)
+		}
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO events(
+				event_id, event_order, entity_type, entity_id, entity_seq, event_type,
+				payload_json, actor, command_id, causation_id, correlation_id, created_at,
+				hash, prev_hash, event_payload_version
+			) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?)
+		`, "evt_replay_corrupt_nonhuman_approval_create", 1, entityTypeGateTemplate, gateTemplateEntityID("replay-corrupt-nonhuman-approval", 1), 1, eventTypeGateTemplateCreate, string(createPayloadBytes), "llm:openai:gpt-5", "cmd-replay-corrupt-nonhuman-approval-create-1", gateTemplateCorrelationID("replay-corrupt-nonhuman-approval", 1), nowUTC(), "hash_replay_corrupt_nonhuman_approval_create", 1); err != nil {
+			t.Fatalf("insert template create event: %v", err)
+		}
+
+		approvalPayloadBytes, err := json.Marshal(gateTemplateApprovedPayload{
+			TemplateID:     "replay-corrupt-nonhuman-approval",
+			Version:        1,
+			DefinitionHash: definitionHash,
+			ApprovedAt:     "2026-03-08T12:03:00Z",
+			ApprovedBy:     "llm:openai:gpt-5",
+		})
+		if err != nil {
+			t.Fatalf("marshal approval payload: %v", err)
+		}
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO events(
+				event_id, event_order, entity_type, entity_id, entity_seq, event_type,
+				payload_json, actor, command_id, causation_id, correlation_id, created_at,
+				hash, prev_hash, event_payload_version
+			) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
+		`, "evt_replay_corrupt_nonhuman_approval", 2, entityTypeGateTemplate, gateTemplateEntityID("replay-corrupt-nonhuman-approval", 1), 2, eventTypeGateTemplateApprove, string(approvalPayloadBytes), "llm:openai:gpt-5", "cmd-replay-corrupt-nonhuman-approval-1", gateTemplateCorrelationID("replay-corrupt-nonhuman-approval", 1), nowUTC(), "hash_replay_corrupt_nonhuman_approval", "hash_replay_corrupt_nonhuman_approval_create", 1); err != nil {
+			t.Fatalf("insert corrupt approval event: %v", err)
+		}
+
+		if _, err := s.ReplayProjections(ctx); err == nil || !strings.Contains(err.Error(), "approved_by must be human-governed") {
+			t.Fatalf("expected replay corruption error for non-human approval, got %v", err)
+		}
+	})
+
+	t.Run("gate set instantiation hash mismatch", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := context.Background()
+		s := newTestStore(t)
+
+		if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+			IssueID:   "mem-f1a2b3c",
+			Type:      "task",
+			Title:     "Replay corrupt gate set create",
+			Actor:     "agent-1",
+			CommandID: "cmd-replay-corrupt-gate-set-issue-1",
+		}); err != nil {
+			t.Fatalf("create issue: %v", err)
+		}
+
+		var nextOrder int
+		if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(event_order), 0) + 1 FROM events`).Scan(&nextOrder); err != nil {
+			t.Fatalf("read next event order: %v", err)
+		}
+
+		payload := `{"gate_set_id":"gset_corrupt_replay","issue_id":"mem-f1a2b3c","cycle_no":1,"template_refs":["replay-corrupt-template@1"],"frozen_definition":{"templates":["replay-corrupt-template@1"],"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}}]},"gate_set_hash":"deadbeef","created_at":"2026-03-08T12:02:00Z","created_by":"agent-1","items":[{"gate_id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}}]}`
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO events(
+				event_id, event_order, entity_type, entity_id, entity_seq, event_type,
+				payload_json, actor, command_id, causation_id, correlation_id, created_at,
+				hash, prev_hash, event_payload_version
+			) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?)
+		`, "evt_replay_corrupt_gate_set_create", nextOrder, entityTypeGateSet, "gset_corrupt_replay", 1, eventTypeGateSetCreate, payload, "agent-1", "cmd-replay-corrupt-gate-set-create-1", gateCycleCorrelationID("mem-f1a2b3c", 1), nowUTC(), "hash_replay_corrupt_gate_set_create", 1); err != nil {
+			t.Fatalf("insert corrupt gate set create event: %v", err)
+		}
+
+		if _, err := s.ReplayProjections(ctx); err == nil || !strings.Contains(err.Error(), "gate_set_hash does not match frozen definition") {
+			t.Fatalf("expected replay corruption error for gate set hash mismatch, got %v", err)
+		}
+	})
+
+	t.Run("lock payload requires locked timestamp", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := context.Background()
+		s := newTestStore(t)
+
+		if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+			IssueID:   "mem-a1b2c3d",
+			Type:      "task",
+			Title:     "Replay corrupt empty lock timestamp",
+			Actor:     "agent-1",
+			CommandID: "cmd-replay-corrupt-empty-lock-issue-1",
+		}); err != nil {
+			t.Fatalf("create issue: %v", err)
+		}
+
+		var nextOrder int
+		if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(event_order), 0) + 1 FROM events`).Scan(&nextOrder); err != nil {
+			t.Fatalf("read next event order: %v", err)
+		}
+
+		payload := `{"gate_set_id":"gset_corrupt_empty_lock","issue_id":"mem-a1b2c3d","cycle_no":1,"locked_at":" "}`
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO events(
+				event_id, event_order, entity_type, entity_id, entity_seq, event_type,
+				payload_json, actor, command_id, causation_id, correlation_id, created_at,
+				hash, prev_hash, event_payload_version
+			) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?)
+		`, "evt_replay_corrupt_empty_lock", nextOrder, entityTypeGateSet, "gset_corrupt_empty_lock", 1, eventTypeGateSetLock, payload, "agent-1", "cmd-replay-corrupt-empty-lock-1", gateCycleCorrelationID("mem-a1b2c3d", 1), nowUTC(), "hash_replay_corrupt_empty_lock", 1); err != nil {
+			t.Fatalf("insert corrupt empty lock event: %v", err)
+		}
+
+		if _, err := s.ReplayProjections(ctx); err == nil || !strings.Contains(err.Error(), "locked_at is required") {
+			t.Fatalf("expected replay corruption error for missing lock timestamp, got %v", err)
+		}
+	})
+
 	t.Run("lock without gate set", func(t *testing.T) {
 		t.Parallel()
 
@@ -1956,6 +2349,119 @@ func TestReplayProjectionsRejectsCorruptGateLedgerEvents(t *testing.T) {
 
 		if _, err := s.ReplayProjections(ctx); err == nil || !strings.Contains(err.Error(), `gate set "gset_missing_replay" not found`) {
 			t.Fatalf("expected replay corruption error for missing gate set, got %v", err)
+		}
+	})
+}
+
+func TestGateCommandsRejectCorruptExistingEventsOnRetry(t *testing.T) {
+	t.Parallel()
+
+	t.Run("create gate template", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := context.Background()
+		s := newTestStore(t)
+
+		payload := `{"template_id":"retry-corrupt-create","version":1,"applies_to":["task"],"definition_json":"{\"gates\":[]}","definition_hash":"deadbeef","created_at":"2026-03-08T12:05:00Z","created_by":"agent-1"}`
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO events(
+				event_id, event_order, entity_type, entity_id, entity_seq, event_type,
+				payload_json, actor, command_id, causation_id, correlation_id, created_at,
+				hash, prev_hash, event_payload_version
+			) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?)
+		`, "evt_retry_corrupt_create", 1, entityTypeGateTemplate, gateTemplateEntityID("retry-corrupt-create", 1), 1, eventTypeGateTemplateCreate, payload, "agent-1", "cmd-retry-corrupt-create-1", gateTemplateCorrelationID("retry-corrupt-create", 1), nowUTC(), "hash_retry_corrupt_create", 1); err != nil {
+			t.Fatalf("insert corrupt create event: %v", err)
+		}
+
+		if _, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+			TemplateID:     "retry-corrupt-create",
+			Version:        1,
+			AppliesTo:      []string{"task"},
+			DefinitionJSON: `{"gates":[]}`,
+			Actor:          "agent-1",
+			CommandID:      "cmd-retry-corrupt-create-1",
+		}); err == nil || !strings.Contains(err.Error(), "definition_hash does not match definition_json") {
+			t.Fatalf("expected corrupt existing create event error, got %v", err)
+		}
+	})
+
+	t.Run("approve gate template", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := context.Background()
+		s := newTestStore(t)
+
+		payload := `{"template_id":"retry-corrupt-approve","version":1,"definition_hash":"abc123","approved_at":"2026-03-08T12:06:00Z","approved_by":"llm:openai:gpt-5"}`
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO events(
+				event_id, event_order, entity_type, entity_id, entity_seq, event_type,
+				payload_json, actor, command_id, causation_id, correlation_id, created_at,
+				hash, prev_hash, event_payload_version
+			) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?)
+		`, "evt_retry_corrupt_approve", 1, entityTypeGateTemplate, gateTemplateEntityID("retry-corrupt-approve", 1), 1, eventTypeGateTemplateApprove, payload, "human:alice", "cmd-retry-corrupt-approve-1", gateTemplateCorrelationID("retry-corrupt-approve", 1), nowUTC(), "hash_retry_corrupt_approve", 1); err != nil {
+			t.Fatalf("insert corrupt approval event: %v", err)
+		}
+
+		if _, _, err := s.ApproveGateTemplate(ctx, ApproveGateTemplateParams{
+			TemplateID: "retry-corrupt-approve",
+			Version:    1,
+			Actor:      "human:alice",
+			CommandID:  "cmd-retry-corrupt-approve-1",
+		}); err == nil || !strings.Contains(err.Error(), "approved_by must be human-governed") {
+			t.Fatalf("expected corrupt existing approval event error, got %v", err)
+		}
+	})
+
+	t.Run("instantiate gate set", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := context.Background()
+		s := newTestStore(t)
+
+		payload := `{"gate_set_id":"gset_retry_corrupt","issue_id":"mem-a1b2c3d","cycle_no":1,"template_refs":["retry-corrupt-template@1"],"frozen_definition":{"templates":["retry-corrupt-template@1"],"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}}]},"gate_set_hash":"deadbeef","created_at":"2026-03-08T12:07:00Z","created_by":"agent-1","items":[{"gate_id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}}]}`
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO events(
+				event_id, event_order, entity_type, entity_id, entity_seq, event_type,
+				payload_json, actor, command_id, causation_id, correlation_id, created_at,
+				hash, prev_hash, event_payload_version
+			) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?)
+		`, "evt_retry_corrupt_instantiate", 1, entityTypeGateSet, "gset_retry_corrupt", 1, eventTypeGateSetCreate, payload, "agent-1", "cmd-retry-corrupt-instantiate-1", gateCycleCorrelationID("mem-a1b2c3d", 1), nowUTC(), "hash_retry_corrupt_instantiate", 1); err != nil {
+			t.Fatalf("insert corrupt instantiate event: %v", err)
+		}
+
+		if _, _, err := s.InstantiateGateSet(ctx, InstantiateGateSetParams{
+			IssueID:      "mem-a1b2c3d",
+			TemplateRefs: []string{"retry-corrupt-template@1"},
+			Actor:        "agent-1",
+			CommandID:    "cmd-retry-corrupt-instantiate-1",
+		}); err == nil || !strings.Contains(err.Error(), "gate_set_hash does not match frozen definition") {
+			t.Fatalf("expected corrupt existing instantiate event error, got %v", err)
+		}
+	})
+
+	t.Run("lock gate set", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := context.Background()
+		s := newTestStore(t)
+
+		payload := `{"gate_set_id":"gset_retry_corrupt_lock","issue_id":"mem-a1b2c3d","cycle_no":1,"locked_at":" "}`
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO events(
+				event_id, event_order, entity_type, entity_id, entity_seq, event_type,
+				payload_json, actor, command_id, causation_id, correlation_id, created_at,
+				hash, prev_hash, event_payload_version
+			) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?)
+		`, "evt_retry_corrupt_lock", 1, entityTypeGateSet, "gset_retry_corrupt_lock", 1, eventTypeGateSetLock, payload, "agent-1", "cmd-retry-corrupt-lock-1", gateCycleCorrelationID("mem-a1b2c3d", 1), nowUTC(), "hash_retry_corrupt_lock", 1); err != nil {
+			t.Fatalf("insert corrupt lock event: %v", err)
+		}
+
+		if _, _, err := s.LockGateSet(ctx, LockGateSetParams{
+			IssueID:   "mem-a1b2c3d",
+			Actor:     "agent-1",
+			CommandID: "cmd-retry-corrupt-lock-1",
+		}); err == nil || !strings.Contains(err.Error(), "locked_at is required") {
+			t.Fatalf("expected corrupt existing lock event error, got %v", err)
 		}
 	})
 }
