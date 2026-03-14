@@ -1,10 +1,8 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"io"
-	"sort"
 	"strings"
 	"time"
 
@@ -84,10 +82,7 @@ var (
 	boardTUIEnterRawMode  = boardEnterRawMode
 	boardTUITerminalSize  = boardTerminalSize
 	boardTUIBuildSnapshot = buildBoardSnapshot
-	boardTUIReadInputs    = func(keyCh chan<- boardKeyInput, errCh chan<- error) {
-		go readBoardInputs(bufio.NewReader(boardInput()), keyCh, errCh)
-	}
-	boardTUINow = func() time.Time {
+	boardTUINow           = func() time.Time {
 		return time.Now().UTC()
 	}
 	boardTUINewTicker = func(interval time.Duration) boardTUITicker {
@@ -490,175 +485,8 @@ func (model boardTUIModel) selectedRow() (boardIssueRow, bool) {
 	return rows[model.index], true
 }
 
-type boardSearchMatch struct {
-	lane boardLane
-	row  boardIssueRow
-}
-
-func boardSearchResults(model boardTUIModel) []boardSearchMatch {
-	query := strings.ToLower(strings.TrimSpace(model.searchQuery))
-	preference := boardLanePreference(model.lane)
-	laneRank := make(map[boardLane]int, len(preference))
-	for idx, lane := range preference {
-		laneRank[lane] = idx
-	}
-	seen := make(map[string]struct{})
-	results := make([]boardSearchMatch, 0)
-	for _, lane := range preference {
-		for _, row := range model.rawRowsForLane(lane) {
-			if _, ok := seen[row.Issue.ID]; ok {
-				continue
-			}
-			if !boardSearchMatches(row.Issue.ID, query) {
-				continue
-			}
-			seen[row.Issue.ID] = struct{}{}
-			results = append(results, boardSearchMatch{lane: lane, row: row})
-		}
-	}
-	sort.SliceStable(results, func(i, j int) bool {
-		leftScore := boardSearchScore(results[i].row.Issue.ID, query)
-		rightScore := boardSearchScore(results[j].row.Issue.ID, query)
-		if leftScore != rightScore {
-			return leftScore < rightScore
-		}
-		if results[i].lane != results[j].lane {
-			return laneRank[results[i].lane] < laneRank[results[j].lane]
-		}
-		return results[i].row.Issue.ID < results[j].row.Issue.ID
-	})
-	return results
-}
-
-func boardSearchMatches(issueID, query string) bool {
-	if query == "" {
-		return true
-	}
-	id := strings.ToLower(strings.TrimSpace(issueID))
-	shortID := strings.TrimPrefix(id, "mem-")
-	return strings.HasPrefix(id, query) || strings.HasPrefix(shortID, query) || strings.Contains(id, query) || strings.Contains(shortID, query)
-}
-
-func boardSearchScore(issueID, query string) int {
-	if query == "" {
-		return 3
-	}
-	id := strings.ToLower(strings.TrimSpace(issueID))
-	shortID := strings.TrimPrefix(id, "mem-")
-	switch {
-	case id == query || shortID == query:
-		return 0
-	case strings.HasPrefix(id, query) || strings.HasPrefix(shortID, query):
-		return 1
-	default:
-		return 2
-	}
-}
-
-func boardLanePreference(preferred boardLane) []boardLane {
-	if preferred == boardLaneNext {
-		return []boardLane{boardLaneReady, boardLaneActive, boardLaneBlocked, boardLaneNext}
-	}
-	order := []boardLane{preferred, boardLaneActive, boardLaneBlocked, boardLaneReady, boardLaneNext}
-	seen := make(map[boardLane]struct{}, len(order))
-	out := make([]boardLane, 0, len(order))
-	for _, lane := range order {
-		if _, ok := seen[lane]; ok {
-			continue
-		}
-		seen[lane] = struct{}{}
-		out = append(out, lane)
-	}
-	return out
-}
-
 func boardLaneSupportsHierarchy(lane boardLane) bool {
 	return lane != boardLaneNext
-}
-
-func readBoardInputs(reader *bufio.Reader, actions chan<- boardKeyInput, errCh chan<- error) {
-	for {
-		input, err := readBoardInput(reader)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		if input.action == boardActionNone && input.text == "" && !input.backspace {
-			continue
-		}
-		actions <- input
-	}
-}
-
-func readBoardInput(reader *bufio.Reader) (boardKeyInput, error) {
-	b, err := reader.ReadByte()
-	if err != nil {
-		return boardKeyInput{}, err
-	}
-	switch b {
-	case '/':
-		return boardKeyInput{action: boardActionSearchOpen}, nil
-	case 'q':
-		return boardKeyInput{action: boardActionQuit}, nil
-	case 'j':
-		return boardKeyInput{action: boardActionDown}, nil
-	case 'k':
-		return boardKeyInput{action: boardActionUp}, nil
-	case 'h':
-		return boardKeyInput{action: boardActionPrevLane}, nil
-	case 'l':
-		return boardKeyInput{action: boardActionNextLane}, nil
-	case 'g':
-		return boardKeyInput{action: boardActionTop}, nil
-	case 'G':
-		return boardKeyInput{action: boardActionBottom}, nil
-	case '?':
-		return boardKeyInput{action: boardActionToggleHelp}, nil
-	case '[':
-		return boardKeyInput{action: boardActionParent}, nil
-	case ']':
-		return boardKeyInput{action: boardActionChild}, nil
-	case '{':
-		return boardKeyInput{action: boardActionCollapse}, nil
-	case '}':
-		return boardKeyInput{action: boardActionExpand}, nil
-	case 8, 127:
-		return boardKeyInput{backspace: true}, nil
-	case '\r', '\n', ' ':
-		return boardKeyInput{action: boardActionToggleDetail}, nil
-	case 27:
-		if reader.Buffered() == 0 {
-			return boardKeyInput{action: boardActionQuit}, nil
-		}
-		next, err := reader.ReadByte()
-		if err != nil {
-			return boardKeyInput{action: boardActionQuit}, nil
-		}
-		if next != '[' {
-			return boardKeyInput{action: boardActionQuit}, nil
-		}
-		arrow, err := reader.ReadByte()
-		if err != nil {
-			return boardKeyInput{}, err
-		}
-		switch arrow {
-		case 'A':
-			return boardKeyInput{action: boardActionUp}, nil
-		case 'B':
-			return boardKeyInput{action: boardActionDown}, nil
-		case 'C':
-			return boardKeyInput{action: boardActionNextLane}, nil
-		case 'D':
-			return boardKeyInput{action: boardActionPrevLane}, nil
-		default:
-			return boardKeyInput{}, nil
-		}
-	default:
-		if b >= 32 && b <= 126 {
-			return boardKeyInput{text: string(b)}, nil
-		}
-		return boardKeyInput{}, nil
-	}
 }
 
 func boardVisibleRows(rows []boardIssueRow, expanded map[string]bool) []boardIssueRow {
@@ -808,8 +636,4 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
-}
-
-func init() {
-	sort.Ints([]int{})
 }
