@@ -12,18 +12,29 @@ Use `memori` for issue tracking in this repository.
 - You may override with `MEMORI_DB_PATH` when needed.
 - Run `memori init` before first use in a fresh clone/worktree.
 - If `memori` is not on `PATH`, use `go run ./cmd/memori` from the repo root for the same commands.
+- In sandboxed agent sessions, set `GOCACHE` to a writable temp or workspace path before `go run ./cmd/memori` so Go's build cache does not fail on restricted default cache locations. Prefer `GOCACHE=/tmp/memori-gocache`.
 
 ## Non-Interactive Agent Setup
-When mutating state from an agent or automation context, export the LLM principal explicitly:
+When mutating state from an agent or automation context, export the LLM principal explicitly. If you are using `go run ./cmd/memori` inside the sandbox, export a writable `GOCACHE` too:
 
 ```bash
+export GOCACHE=/tmp/memori-gocache
 export MEMORI_PRINCIPAL=llm
 export MEMORI_LLM_PROVIDER=openai
 export MEMORI_LLM_MODEL=gpt-5
 export MEMORI_ALLOW_MANUAL_COMMAND_ID=1
 ```
 
-Use the same environment for `go run ./cmd/memori ...` if the binary is not installed locally.
+Use the same environment for `go run ./cmd/memori ...` if the binary is not installed locally. Example:
+
+```bash
+env GOCACHE=/tmp/memori-gocache \
+  MEMORI_PRINCIPAL=llm \
+  MEMORI_LLM_PROVIDER=openai \
+  MEMORI_LLM_MODEL=gpt-5 \
+  MEMORI_ALLOW_MANUAL_COMMAND_ID=1 \
+  go run ./cmd/memori board --json
+```
 
 ## Required Agent Workflow
 1. Confirm DB is initialized.
