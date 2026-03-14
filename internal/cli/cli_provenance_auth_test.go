@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"path/filepath"
@@ -12,6 +13,15 @@ import (
 	"github.com/willbastian/memori/internal/provenance"
 	"github.com/willbastian/memori/internal/store"
 )
+
+type authSetPasswordEnvelope struct {
+	Command string `json:"command"`
+	Data    struct {
+		Configured bool   `json:"configured"`
+		Rotated    bool   `json:"rotated"`
+		Actor      string `json:"actor"`
+	} `json:"data"`
+}
 
 func TestResolveMutationIdentityRequiresConfiguredHumanAuth(t *testing.T) {
 	t.Parallel()
@@ -137,6 +147,122 @@ func TestRunAuthSetPasswordAllowsInteractiveThinkTime(t *testing.T) {
 	}
 	if credential.HashHex == "" {
 		t.Fatal("expected stored password hash")
+	}
+}
+
+func TestRunAuthSetPasswordRejectsNonHumanPrincipal(t *testing.T) {
+	s, dbPath := newCLIAuthTestStore(t)
+	s.Close()
+
+	t.Setenv(provenance.EnvPrincipal, provenance.PrincipalLLM)
+	t.Setenv(provenance.EnvLLMProvider, "openai")
+	t.Setenv(provenance.EnvLLMModel, "gpt-5")
+
+	err := runAuthSetPassword([]string{"--db", dbPath}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "requires a human principal") {
+		t.Fatalf("expected non-human principal rejection, got %v", err)
+	}
+}
+
+func TestRunAuthSetPasswordRejectsMismatchedConfirmation(t *testing.T) {
+	s, dbPath := newCLIAuthTestStore(t)
+	s.Close()
+	t.Setenv(provenance.EnvPrincipal, provenance.PrincipalHuman)
+
+	originalPrompter := passwordPrompter
+	t.Cleanup(func() {
+		passwordPrompter = originalPrompter
+	})
+
+	answers := []string{"correct horse battery", "not the same"}
+	passwordPrompter = func(string) (string, error) {
+		answer := answers[0]
+		answers = answers[1:]
+		return answer, nil
+	}
+
+	err := runAuthSetPassword([]string{"--db", dbPath}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "password confirmation does not match") {
+		t.Fatalf("expected mismatched confirmation error, got %v", err)
+	}
+}
+
+func TestRunAuthSetPasswordRejectsWrongCurrentPassword(t *testing.T) {
+	s, dbPath := newCLIAuthTestStore(t)
+	seedCLIHumanCredential(t, s, "correct horse battery")
+	if err := s.Close(); err != nil {
+		t.Fatalf("close auth test store: %v", err)
+	}
+	t.Setenv(provenance.EnvPrincipal, provenance.PrincipalHuman)
+
+	originalPrompter := passwordPrompter
+	t.Cleanup(func() {
+		passwordPrompter = originalPrompter
+	})
+
+	promptCount := 0
+	passwordPrompter = func(string) (string, error) {
+		promptCount++
+		return "wrong password", nil
+	}
+
+	err := runAuthSetPassword([]string{"--db", dbPath}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "current password verification failed") {
+		t.Fatalf("expected current password verification error, got %v", err)
+	}
+	if promptCount != 1 {
+		t.Fatalf("expected only current password prompt before failure, got %d prompts", promptCount)
+	}
+}
+
+func TestRunAuthSetPasswordTextAndJSONOutputsCoverConfigureAndRotate(t *testing.T) {
+	s, dbPath := newCLIAuthTestStore(t)
+	s.Close()
+	t.Setenv(provenance.EnvPrincipal, provenance.PrincipalHuman)
+
+	originalPrompter := passwordPrompter
+	t.Cleanup(func() {
+		passwordPrompter = originalPrompter
+	})
+
+	answers := []string{
+		"correct horse battery", "correct horse battery",
+		"correct horse battery", "new horse battery", "new horse battery",
+	}
+	passwordPrompter = func(string) (string, error) {
+		answer := answers[0]
+		answers = answers[1:]
+		return answer, nil
+	}
+
+	var out strings.Builder
+	if err := runAuthSetPassword([]string{"--db", dbPath}, &out); err != nil {
+		t.Fatalf("configure auth password text output: %v", err)
+	}
+	for _, want := range []string{
+		"Configured human auth password",
+		"Actor: human:",
+		"Updated: ",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("expected configure text output to contain %q, got:\n%s", want, out.String())
+		}
+	}
+
+	out.Reset()
+	if err := runAuthSetPassword([]string{"--db", dbPath, "--json"}, &out); err != nil {
+		t.Fatalf("rotate auth password json output: %v", err)
+	}
+
+	var resp authSetPasswordEnvelope
+	if err := json.Unmarshal([]byte(out.String()), &resp); err != nil {
+		t.Fatalf("decode auth set-password json: %v\nstdout: %s", err, out.String())
+	}
+	if resp.Command != "auth set-password" {
+		t.Fatalf("expected auth set-password command, got %q", resp.Command)
+	}
+	if !resp.Data.Configured || !resp.Data.Rotated || !strings.HasPrefix(resp.Data.Actor, "human:") {
+		t.Fatalf("unexpected auth set-password json payload: %+v", resp.Data)
 	}
 }
 

@@ -316,6 +316,31 @@ func TestGateVerifyRejectsExecutableCommandFromNonHumanTemplate(t *testing.T) {
 	}
 }
 
+func TestGateVerifyHumanOutputReportsFailingVerifierExitCode(t *testing.T) {
+	t.Parallel()
+
+	dbPath := seedGateVerifyCommandTestDBWithCommand(t, "echo verifier-failed && exit 7")
+
+	stdout, stderr, err := runMemoriForTest(
+		"gate", "verify",
+		"--db", dbPath,
+		"--issue", "mem-c111111",
+		"--gate", "build",
+		"--command-id", "cmd-cli-gate-verify-fail-text-1",
+	)
+	if err != nil {
+		t.Fatalf("run failing gate verify command: %v\nstderr: %s", err, stderr)
+	}
+	for _, want := range []string{
+		"Verified gate build for issue mem-c111111 -> FAIL (exit=7)",
+		"Output SHA256:",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected failing gate verify output to contain %q, got:\n%s", want, stdout)
+		}
+	}
+}
+
 func TestGateStatusSupportsCycleFlag(t *testing.T) {
 	t.Parallel()
 

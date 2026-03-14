@@ -721,6 +721,186 @@ func TestGateSetInstantiateAutoSelectsLatestEligibleTemplateVersion(t *testing.T
 	}
 }
 
+func TestGateSetInstantiateAndLockHumanOutputCoversTextBranches(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-gate-template-set-text.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-a919191",
+		"--type", "task",
+		"--title", "Gate set text flow issue",
+		"--command-id", "cmd-cli-gset-text-issue-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("create issue: %v\nstderr: %s", err, stderr)
+	}
+
+	defPath := filepath.Join(t.TempDir(), "quality-text.json")
+	definition := `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"echo build"}}]}`
+	if err := os.WriteFile(defPath, []byte(definition), 0o644); err != nil {
+		t.Fatalf("write template definition file: %v", err)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"gate", "template", "create",
+		"--db", dbPath,
+		"--id", "quality-text",
+		"--version", "1",
+		"--applies-to", "task",
+		"--file", defPath,
+		"--command-id", "cmd-cli-gset-text-template-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("gate template create: %v\nstderr: %s", err, stderr)
+	}
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+	if _, _, err := s.ApproveGateTemplate(context.Background(), store.ApproveGateTemplateParams{
+		TemplateID: "quality-text",
+		Version:    1,
+		Actor:      "human:will",
+		CommandID:  "cmd-cli-gset-text-approve-1",
+	}); err != nil {
+		t.Fatalf("approve gate template via store: %v", err)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"gate", "set", "instantiate",
+		"--db", dbPath,
+		"--issue", "mem-a919191",
+		"--template", "quality-text@1",
+		"--command-id", "cmd-cli-gset-text-instantiate-1",
+	)
+	if err != nil {
+		t.Fatalf("gate set instantiate text: %v\nstderr: %s", err, stderr)
+	}
+	for _, want := range []string{
+		"Instantiated gate set ",
+		"Templates: quality-text@1",
+		"Gate Set Hash:",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected instantiate text output to contain %q, got:\n%s", want, stdout)
+		}
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"gate", "set", "lock",
+		"--db", dbPath,
+		"--issue", "mem-a919191",
+		"--command-id", "cmd-cli-gset-text-lock-1",
+	)
+	if err != nil {
+		t.Fatalf("gate set lock text: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "Locked gate set ") {
+		t.Fatalf("expected lock text output, got:\n%s", stdout)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"gate", "set", "lock",
+		"--db", dbPath,
+		"--issue", "mem-a919191",
+		"--command-id", "cmd-cli-gset-text-lock-1",
+	)
+	if err != nil {
+		t.Fatalf("gate set relock text: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "is already locked at") {
+		t.Fatalf("expected already-locked text output, got:\n%s", stdout)
+	}
+}
+
+func TestGateSetInstantiateAutoSelectedHumanOutputShowsSelectedTemplate(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-gset-autoselect-text.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-a818181",
+		"--type", "story",
+		"--title", "Auto-select close template text issue",
+		"--command-id", "cmd-cli-gset-autoselect-text-issue-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("create issue: %v\nstderr: %s", err, stderr)
+	}
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	if _, _, err := s.CreateGateTemplate(ctx, store.CreateGateTemplateParams{
+		TemplateID:     "close-story-text",
+		Version:        1,
+		AppliesTo:      []string{"story"},
+		DefinitionJSON: `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"echo v1"}}]}`,
+		Actor:          "human:will",
+		CommandID:      "cmd-cli-gset-autoselect-text-template-v1",
+	}); err != nil {
+		t.Fatalf("create gate template v1 via store: %v", err)
+	}
+	if _, _, err := s.ApproveGateTemplate(ctx, store.ApproveGateTemplateParams{
+		TemplateID: "close-story-text",
+		Version:    1,
+		Actor:      "human:will",
+		CommandID:  "cmd-cli-gset-autoselect-text-approve-v1",
+	}); err != nil {
+		t.Fatalf("approve gate template v1 via store: %v", err)
+	}
+	if _, _, err := s.CreateGateTemplate(ctx, store.CreateGateTemplateParams{
+		TemplateID:     "close-story-text",
+		Version:        2,
+		AppliesTo:      []string{"story"},
+		DefinitionJSON: `{"gates":[{"id":"verify","kind":"check","required":true,"criteria":{"command":"echo v2"}}]}`,
+		Actor:          "human:will",
+		CommandID:      "cmd-cli-gset-autoselect-text-template-v2",
+	}); err != nil {
+		t.Fatalf("create gate template v2 via store: %v", err)
+	}
+	if _, _, err := s.ApproveGateTemplate(ctx, store.ApproveGateTemplateParams{
+		TemplateID: "close-story-text",
+		Version:    2,
+		Actor:      "human:will",
+		CommandID:  "cmd-cli-gset-autoselect-text-approve-v2",
+	}); err != nil {
+		t.Fatalf("approve gate template v2 via store: %v", err)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"gate", "set", "instantiate",
+		"--db", dbPath,
+		"--issue", "mem-a818181",
+		"--command-id", "cmd-cli-gset-autoselect-text-instantiate-1",
+	)
+	if err != nil {
+		t.Fatalf("gate set instantiate auto-selected text: %v\nstderr: %s", err, stderr)
+	}
+	for _, want := range []string{
+		"Auto-selected templates: close-story-text@2",
+		"Instantiated gate set ",
+		"Templates: close-story-text@2",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected auto-selected instantiate text output to contain %q, got:\n%s", want, stdout)
+		}
+	}
+}
+
 func TestGateSetInstantiateWithoutTemplateRejectsAmbiguousEligibleTemplates(t *testing.T) {
 	t.Parallel()
 

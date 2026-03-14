@@ -931,6 +931,62 @@ func TestContextHumanOutputAutoResolvesSessionWhenOmitted(t *testing.T) {
 	mustContain(t, stdout, "OK Rehydrated session "+sessionID+" via relevant-chunks-fallback")
 }
 
+func TestContextSummarizeAndCloseHumanOutputShowLifecycleGuidance(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-context-human-lifecycle.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+
+	if _, stderr, err := runMemoriForTest(
+		"context", "checkpoint",
+		"--db", dbPath,
+		"--session", "sess-human-life-1",
+		"--command-id", "cmd-cli-human-life-checkpoint-1",
+	); err != nil {
+		t.Fatalf("context checkpoint: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"context", "summarize",
+		"--db", dbPath,
+		"--session", "sess-human-life-1",
+		"--note", "paused after review",
+		"--command-id", "cmd-cli-human-life-summarize-1",
+	)
+	if err != nil {
+		t.Fatalf("context summarize text: %v\nstderr: %s", err, stderr)
+	}
+	for _, want := range []string{
+		"OK Summarized session sess-human-life-1",
+		"Summary Event:",
+		"memori context rehydrate --session sess-human-life-1",
+		"memori context close --session sess-human-life-1",
+	} {
+		mustContain(t, stdout, want)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "close",
+		"--db", dbPath,
+		"--session", "sess-human-life-1",
+		"--reason", "handoff complete",
+		"--command-id", "cmd-cli-human-life-close-1",
+	)
+	if err != nil {
+		t.Fatalf("context close text: %v\nstderr: %s", err, stderr)
+	}
+	for _, want := range []string{
+		"OK Closed session sess-human-life-1",
+		"Ended At:",
+		"memori context rehydrate --session sess-human-life-1",
+		"memori context checkpoint",
+	} {
+		mustContain(t, stdout, want)
+	}
+}
+
 func packetIDFromHumanOutput(t *testing.T, stdout string) string {
 	t.Helper()
 
