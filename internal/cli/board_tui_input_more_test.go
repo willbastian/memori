@@ -114,3 +114,39 @@ func TestReadBoardInputsSkipsEmptyEventsAndStopsOnEOF(t *testing.T) {
 	default:
 	}
 }
+
+func TestReadBoardInputParsesSearchKeysAndEscape(t *testing.T) {
+	t.Parallel()
+
+	searchOpen, err := readBoardInput(bufio.NewReader(strings.NewReader("/")))
+	if err != nil {
+		t.Fatalf("read search open: %v", err)
+	}
+	if searchOpen.action != boardActionSearchOpen {
+		t.Fatalf("expected / to open search, got %+v", searchOpen)
+	}
+
+	text, err := readBoardInput(bufio.NewReader(strings.NewReader("a")))
+	if err != nil {
+		t.Fatalf("read text: %v", err)
+	}
+	if text.text != "a" {
+		t.Fatalf("expected printable key to become search text, got %+v", text)
+	}
+
+	backspace, err := readBoardInput(bufio.NewReader(strings.NewReader("\x7f")))
+	if err != nil {
+		t.Fatalf("read backspace: %v", err)
+	}
+	if !backspace.backspace {
+		t.Fatalf("expected delete to map to backspace, got %+v", backspace)
+	}
+
+	escape, err := readBoardInput(bufio.NewReader(strings.NewReader("\x1b")))
+	if err != nil {
+		t.Fatalf("read escape: %v", err)
+	}
+	if escape.action != boardActionQuit {
+		t.Fatalf("expected bare escape to map to quit/cancel, got %+v", escape)
+	}
+}
