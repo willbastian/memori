@@ -34,7 +34,7 @@ func normalizeGateResult(raw string) (string, error) {
 
 func decodeGateEvaluatedPayload(payloadJSON string) (gateEvaluatedPayload, error) {
 	var payload gateEvaluatedPayload
-	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+	if err := decodeGatePayload(payloadJSON, &payload); err != nil {
 		return gateEvaluatedPayload{}, err
 	}
 
@@ -65,15 +65,47 @@ func decodeGateEvaluatedPayload(payloadJSON string) (gateEvaluatedPayload, error
 
 func decodeGateTemplateCreatedPayload(payloadJSON string) (gateTemplateCreatedPayload, error) {
 	var payload gateTemplateCreatedPayload
-	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+	if err := decodeGatePayload(payloadJSON, &payload); err != nil {
 		return gateTemplateCreatedPayload{}, err
 	}
+	return normalizeGateTemplateCreatedPayload(payload)
+}
+
+func decodeGateTemplateApprovedPayload(payloadJSON string) (gateTemplateApprovedPayload, error) {
+	var payload gateTemplateApprovedPayload
+	if err := decodeGatePayload(payloadJSON, &payload); err != nil {
+		return gateTemplateApprovedPayload{}, err
+	}
+	return normalizeGateTemplateApprovedPayload(payload)
+}
+
+func decodeGateSetInstantiatedPayload(payloadJSON string) (gateSetInstantiatedPayload, error) {
+	var payload gateSetInstantiatedPayload
+	if err := decodeGatePayload(payloadJSON, &payload); err != nil {
+		return gateSetInstantiatedPayload{}, err
+	}
+	return normalizeGateSetInstantiatedPayload(payload)
+}
+
+func decodeGateSetLockedPayload(payloadJSON string) (gateSetLockedPayload, error) {
+	var payload gateSetLockedPayload
+	if err := decodeGatePayload(payloadJSON, &payload); err != nil {
+		return gateSetLockedPayload{}, err
+	}
+	return normalizeGateSetLockedPayload(payload)
+}
+
+func decodeGatePayload(payloadJSON string, dst any) error {
+	return json.Unmarshal([]byte(payloadJSON), dst)
+}
+
+func normalizeGateTemplateCreatedPayload(payload gateTemplateCreatedPayload) (gateTemplateCreatedPayload, error) {
 	templateID, err := normalizeGateTemplateID(payload.TemplateID)
 	if err != nil {
 		return gateTemplateCreatedPayload{}, fmt.Errorf("invalid template_id: %w", err)
 	}
-	if payload.Version <= 0 {
-		return gateTemplateCreatedPayload{}, errors.New("version must be > 0")
+	if err := validateGateTemplateVersion(payload.Version); err != nil {
+		return gateTemplateCreatedPayload{}, err
 	}
 	appliesTo, err := normalizeGateAppliesTo(payload.AppliesTo)
 	if err != nil {
@@ -91,51 +123,43 @@ func decodeGateTemplateCreatedPayload(payloadJSON string) (gateTemplateCreatedPa
 	payload.AppliesTo = appliesTo
 	payload.DefinitionJSON = definitionJSON
 	payload.DefinitionHash = definitionHash
-	payload.CreatedAt = strings.TrimSpace(payload.CreatedAt)
-	payload.CreatedBy = strings.TrimSpace(payload.CreatedBy)
-	if payload.CreatedAt == "" {
-		return gateTemplateCreatedPayload{}, errors.New("created_at is required")
+	payload.CreatedAt, err = requireGatePayloadField(payload.CreatedAt, "created_at")
+	if err != nil {
+		return gateTemplateCreatedPayload{}, err
 	}
-	if payload.CreatedBy == "" {
-		return gateTemplateCreatedPayload{}, errors.New("created_by is required")
+	payload.CreatedBy, err = requireGatePayloadField(payload.CreatedBy, "created_by")
+	if err != nil {
+		return gateTemplateCreatedPayload{}, err
 	}
 	return payload, nil
 }
 
-func decodeGateTemplateApprovedPayload(payloadJSON string) (gateTemplateApprovedPayload, error) {
-	var payload gateTemplateApprovedPayload
-	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
-		return gateTemplateApprovedPayload{}, err
-	}
+func normalizeGateTemplateApprovedPayload(payload gateTemplateApprovedPayload) (gateTemplateApprovedPayload, error) {
 	templateID, err := normalizeGateTemplateID(payload.TemplateID)
 	if err != nil {
 		return gateTemplateApprovedPayload{}, fmt.Errorf("invalid template_id: %w", err)
 	}
-	if payload.Version <= 0 {
-		return gateTemplateApprovedPayload{}, errors.New("version must be > 0")
+	if err := validateGateTemplateVersion(payload.Version); err != nil {
+		return gateTemplateApprovedPayload{}, err
 	}
 
 	payload.TemplateID = templateID
-	payload.DefinitionHash = strings.TrimSpace(payload.DefinitionHash)
-	payload.ApprovedAt = strings.TrimSpace(payload.ApprovedAt)
+	payload.DefinitionHash, err = requireGatePayloadField(payload.DefinitionHash, "definition_hash")
+	if err != nil {
+		return gateTemplateApprovedPayload{}, err
+	}
+	payload.ApprovedAt, err = requireGatePayloadField(payload.ApprovedAt, "approved_at")
+	if err != nil {
+		return gateTemplateApprovedPayload{}, err
+	}
 	payload.ApprovedBy = strings.TrimSpace(payload.ApprovedBy)
-	if payload.DefinitionHash == "" {
-		return gateTemplateApprovedPayload{}, errors.New("definition_hash is required")
-	}
-	if payload.ApprovedAt == "" {
-		return gateTemplateApprovedPayload{}, errors.New("approved_at is required")
-	}
 	if !actorIsHumanGoverned(payload.ApprovedBy) {
 		return gateTemplateApprovedPayload{}, errors.New("approved_by must be human-governed")
 	}
 	return payload, nil
 }
 
-func decodeGateSetInstantiatedPayload(payloadJSON string) (gateSetInstantiatedPayload, error) {
-	var payload gateSetInstantiatedPayload
-	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
-		return gateSetInstantiatedPayload{}, err
-	}
+func normalizeGateSetInstantiatedPayload(payload gateSetInstantiatedPayload) (gateSetInstantiatedPayload, error) {
 	issueID, err := normalizeIssueKey(payload.IssueID)
 	if err != nil {
 		return gateSetInstantiatedPayload{}, fmt.Errorf("invalid issue_id: %w", err)
@@ -147,18 +171,23 @@ func decodeGateSetInstantiatedPayload(payloadJSON string) (gateSetInstantiatedPa
 	if err != nil {
 		return gateSetInstantiatedPayload{}, err
 	}
-	if strings.TrimSpace(payload.GateSetID) == "" {
-		return gateSetInstantiatedPayload{}, errors.New("gate_set_id is required")
+	payload.GateSetID, err = requireGatePayloadField(payload.GateSetID, "gate_set_id")
+	if err != nil {
+		return gateSetInstantiatedPayload{}, err
 	}
-	if strings.TrimSpace(payload.GateSetHash) == "" {
-		return gateSetInstantiatedPayload{}, errors.New("gate_set_hash is required")
+	payload.GateSetHash, err = requireGatePayloadField(payload.GateSetHash, "gate_set_hash")
+	if err != nil {
+		return gateSetInstantiatedPayload{}, err
 	}
-	if strings.TrimSpace(payload.CreatedAt) == "" {
-		return gateSetInstantiatedPayload{}, errors.New("created_at is required")
+	payload.CreatedAt, err = requireGatePayloadField(payload.CreatedAt, "created_at")
+	if err != nil {
+		return gateSetInstantiatedPayload{}, err
 	}
-	if strings.TrimSpace(payload.CreatedBy) == "" {
-		return gateSetInstantiatedPayload{}, errors.New("created_by is required")
+	payload.CreatedBy, err = requireGatePayloadField(payload.CreatedBy, "created_by")
+	if err != nil {
+		return gateSetInstantiatedPayload{}, err
 	}
+
 	frozenJSON, frozenObj, err := buildFrozenGateDefinition(templateRefs, payload.Items)
 	if err != nil {
 		return gateSetInstantiatedPayload{}, err
@@ -174,27 +203,39 @@ func decodeGateSetInstantiatedPayload(payloadJSON string) (gateSetInstantiatedPa
 	return payload, nil
 }
 
-func decodeGateSetLockedPayload(payloadJSON string) (gateSetLockedPayload, error) {
-	var payload gateSetLockedPayload
-	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
-		return gateSetLockedPayload{}, err
-	}
+func normalizeGateSetLockedPayload(payload gateSetLockedPayload) (gateSetLockedPayload, error) {
 	issueID, err := normalizeIssueKey(payload.IssueID)
 	if err != nil {
 		return gateSetLockedPayload{}, fmt.Errorf("invalid issue_id: %w", err)
 	}
-	if strings.TrimSpace(payload.GateSetID) == "" {
-		return gateSetLockedPayload{}, errors.New("gate_set_id is required")
+	payload.GateSetID, err = requireGatePayloadField(payload.GateSetID, "gate_set_id")
+	if err != nil {
+		return gateSetLockedPayload{}, err
 	}
 	if payload.CycleNo <= 0 {
 		return gateSetLockedPayload{}, errors.New("cycle_no must be > 0")
 	}
 	payload.IssueID = issueID
-	payload.LockedAt = strings.TrimSpace(payload.LockedAt)
-	if payload.LockedAt == "" {
-		return gateSetLockedPayload{}, errors.New("locked_at is required")
+	payload.LockedAt, err = requireGatePayloadField(payload.LockedAt, "locked_at")
+	if err != nil {
+		return gateSetLockedPayload{}, err
 	}
 	return payload, nil
+}
+
+func requireGatePayloadField(value, field string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("%s is required", field)
+	}
+	return value, nil
+}
+
+func validateGateTemplateVersion(version int) error {
+	if version <= 0 {
+		return errors.New("version must be > 0")
+	}
+	return nil
 }
 
 func gateTemplateEntityID(templateID string, version int) string {

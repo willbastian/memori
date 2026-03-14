@@ -1,0 +1,296 @@
+package cli
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"io"
+	"strings"
+	"time"
+
+	"github.com/willbastian/memori/internal/store"
+)
+
+func runContextCheckpoint(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("context checkpoint", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	sessionID := fs.String("session", "", "session id")
+	trigger := fs.String("trigger", "manual", "checkpoint trigger reason")
+	actor := fs.String("actor", "", "actor id")
+	commandID := fs.String("command-id", "", "idempotency command id")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "context-checkpoint", *actor, *commandID, defaultMutationAuthDeps())
+	if err != nil {
+		return err
+	}
+
+	resolution, err := resolveCheckpointSession(ctx, s, *sessionID, identity.CommandID)
+	if err != nil {
+		return err
+	}
+
+	session, created, err := s.CheckpointSession(ctx, store.CheckpointSessionParams{
+		SessionID: resolution.sessionID,
+		Trigger:   *trigger,
+		Actor:     identity.Actor,
+		CommandID: identity.CommandID,
+	})
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "context checkpoint",
+			Data: contextCheckpointData{
+				Session: session,
+				Created: created,
+			},
+		})
+	}
+
+	ui := newTextUI(out)
+	if msg := sessionResolutionMessage("checkpoint", resolution); msg != "" {
+		ui.note(msg)
+	}
+	if created {
+		ui.success(fmt.Sprintf("Created session checkpoint %s", session.SessionID))
+	} else {
+		ui.success(fmt.Sprintf("Updated session checkpoint %s", session.SessionID))
+	}
+	ui.field("Trigger", session.Trigger)
+	ui.nextSteps(
+		fmt.Sprintf("memori context rehydrate --session %s", session.SessionID),
+		fmt.Sprintf("memori context summarize --session %s", session.SessionID),
+		fmt.Sprintf("memori context packet build --scope session --id %s", session.SessionID),
+	)
+	return nil
+}
+
+func runContextSummarize(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("context summarize", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	sessionID := fs.String("session", "", "session id")
+	note := fs.String("note", "", "summary note")
+	actor := fs.String("actor", "", "actor id")
+	commandID := fs.String("command-id", "", "idempotency command id")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "context-summarize", *actor, *commandID, defaultMutationAuthDeps())
+	if err != nil {
+		return err
+	}
+
+	resolution, err := resolveOpenSessionForMutation(ctx, s, *sessionID, identity.CommandID)
+	if err != nil {
+		return err
+	}
+
+	session, err := s.SummarizeSession(ctx, store.SummarizeSessionParams{
+		SessionID: resolution.sessionID,
+		Note:      *note,
+		Actor:     identity.Actor,
+		CommandID: identity.CommandID,
+	})
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "context summarize",
+			Data: contextSessionData{
+				Session: session,
+			},
+		})
+	}
+
+	ui := newTextUI(out)
+	if msg := sessionResolutionMessage("summarize", resolution); msg != "" {
+		ui.note(msg)
+	}
+	ui.success(fmt.Sprintf("Summarized session %s", session.SessionID))
+	ui.field("Summary Event", session.SummaryEventID)
+	ui.nextSteps(
+		fmt.Sprintf("memori context rehydrate --session %s", session.SessionID),
+		fmt.Sprintf("memori context packet build --scope session --id %s", session.SessionID),
+		fmt.Sprintf("memori context close --session %s", session.SessionID),
+	)
+	return nil
+}
+
+func runContextClose(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("context close", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	sessionID := fs.String("session", "", "session id")
+	reason := fs.String("reason", "", "close reason")
+	actor := fs.String("actor", "", "actor id")
+	commandID := fs.String("command-id", "", "idempotency command id")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	identity, err := resolveMutationIdentity(ctx, s, *dbPath, "context-close", *actor, *commandID, defaultMutationAuthDeps())
+	if err != nil {
+		return err
+	}
+
+	resolution, err := resolveOpenSessionForMutation(ctx, s, *sessionID, identity.CommandID)
+	if err != nil {
+		return err
+	}
+
+	session, err := s.CloseSession(ctx, store.CloseSessionParams{
+		SessionID: resolution.sessionID,
+		Reason:    *reason,
+		Actor:     identity.Actor,
+		CommandID: identity.CommandID,
+	})
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "context close",
+			Data: contextSessionData{
+				Session: session,
+			},
+		})
+	}
+
+	ui := newTextUI(out)
+	if msg := sessionResolutionMessage("close", resolution); msg != "" {
+		ui.note(msg)
+	}
+	ui.success(fmt.Sprintf("Closed session %s", session.SessionID))
+	ui.field("Ended At", session.EndedAt)
+	ui.nextSteps(
+		fmt.Sprintf("memori context rehydrate --session %s", session.SessionID),
+		fmt.Sprintf("memori context packet build --scope session --id %s", session.SessionID),
+		"memori context checkpoint",
+	)
+	return nil
+}
+
+func runContextRehydrate(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("context rehydrate", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	sessionID := fs.String("session", "", "session id")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	resolution, err := resolveSessionForRehydrate(ctx, s, *sessionID)
+	if err != nil {
+		return err
+	}
+
+	result, err := s.RehydrateSession(ctx, store.RehydrateSessionParams{
+		SessionID: resolution.sessionID,
+	})
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "context rehydrate",
+			Data: contextRehydrateData{
+				SessionID: result.SessionID,
+				Source:    result.Source,
+				Packet:    result.Packet,
+			},
+		})
+	}
+
+	ui := newTextUI(out)
+	if msg := sessionResolutionMessage("rehydrate", resolution); msg != "" {
+		ui.note(msg)
+	}
+	ui.success(fmt.Sprintf("Rehydrated session %s via %s", result.SessionID, result.Source))
+	if sourceMsg := rehydrateSourceMessage(result.Source); sourceMsg != "" {
+		ui.note(sourceMsg)
+	}
+	ui.field("Packet Scope", result.Packet.Scope)
+	if strings.TrimSpace(result.Packet.PacketID) != "" {
+		ui.field("Packet ID", result.Packet.PacketID)
+	}
+	if issueID := packetIssueIDForCLI(result.Packet); issueID != "" {
+		ui.field("Issue", issueID)
+	}
+	ui.nextSteps(rehydrateNextSteps(result.SessionID, result.Source, result.Packet.PacketID, packetIssueIDForCLI(result.Packet))...)
+	return nil
+}
+
+type contextCheckpointData struct {
+	Session store.Session `json:"session"`
+	Created bool          `json:"created"`
+}
+
+type contextSessionData struct {
+	Session store.Session `json:"session"`
+}
+
+type contextRehydrateData struct {
+	SessionID string                `json:"session_id"`
+	Source    string                `json:"source"`
+	Packet    store.RehydratePacket `json:"packet"`
+}
