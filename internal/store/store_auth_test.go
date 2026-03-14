@@ -182,7 +182,7 @@ func TestHumanAuthCredentialValidationAndClosedDBErrors(t *testing.T) {
 		{
 			name: "non-positive iterations",
 			p: UpsertHumanAuthCredentialParams{
-				Algorithm: "pbkdf2-sha256",
+				Algorithm:  "pbkdf2-sha256",
 				Iterations: 0,
 				SaltHex:    "aa",
 				HashHex:    "bb",
@@ -192,7 +192,7 @@ func TestHumanAuthCredentialValidationAndClosedDBErrors(t *testing.T) {
 		{
 			name: "missing salt",
 			p: UpsertHumanAuthCredentialParams{
-				Algorithm: "pbkdf2-sha256",
+				Algorithm:  "pbkdf2-sha256",
 				Iterations: 1,
 				HashHex:    "bb",
 			},
@@ -201,7 +201,7 @@ func TestHumanAuthCredentialValidationAndClosedDBErrors(t *testing.T) {
 		{
 			name: "missing hash",
 			p: UpsertHumanAuthCredentialParams{
-				Algorithm: "pbkdf2-sha256",
+				Algorithm:  "pbkdf2-sha256",
 				Iterations: 1,
 				SaltHex:    "aa",
 			},
