@@ -77,6 +77,33 @@ type boardRenderOptions struct {
 	Width    int
 }
 
+type boardReasonRule struct {
+	contains string
+	weight   int
+	tag      string
+}
+
+var boardReasonRules = []boardReasonRule{
+	{contains: "matches the agent's active focus", weight: 100, tag: "focus"},
+	{contains: "agent already holds the latest recovery packet", weight: 95, tag: "packet"},
+	{contains: "open loop", weight: 90, tag: "loop"},
+	{contains: "required gate(s) are failing", weight: 85, tag: "fail"},
+	{contains: "required gate(s) are blocked", weight: 85, tag: "blocked"},
+	{contains: "required gate(s) still need evaluation", weight: 85, tag: "gates"},
+	{contains: "issue packet", weight: 80},
+	{contains: "packet is stale", weight: 75, tag: "stale"},
+	{contains: "issue packet is ready", tag: "fresh"},
+	{contains: "fresh issue packet", tag: "fresh"},
+	{contains: "priority P0", weight: 50, tag: "p0"},
+	{contains: "priority P1", weight: 50, tag: "p1"},
+	{contains: "priority P2", weight: 50, tag: "p2"},
+	{contains: "in-progress work", weight: 40, tag: "active"},
+	{contains: "todo work", weight: 35, tag: "todo"},
+	{contains: "implementation-ready", weight: 30, tag: "task"},
+	{contains: "operational value", weight: 25, tag: "bug"},
+	{contains: "can start immediately", weight: 20, tag: "standalone"},
+}
+
 func runBoard(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("board", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -164,41 +191,53 @@ func buildBoardSnapshot(ctx context.Context, s *store.Store, agent string, now t
 	hierarchyByID := buildBoardHierarchy(issues)
 
 	agent = strings.TrimSpace(agent)
-	nextCandidates := make([]store.IssueNextCandidate, 0)
+	nextCandidates, err := boardNextCandidates(ctx, s, agent)
+	if err != nil {
+		return boardSnapshot{}, err
+	}
+	scoreByID, rankByID := boardCandidateMaps(nextCandidates)
+
+	snapshot := boardSnapshot{
+		GeneratedAt: now.Format(time.RFC3339),
+		Agent:       agent,
+	}
+	boardPopulateSnapshotRows(&snapshot, issues, hierarchyByID, scoreByID)
+	boardPopulateLikelyNext(&snapshot, nextCandidates, hierarchyByID)
+	boardSortSnapshot(&snapshot, rankByID)
+
+	return snapshot, nil
+}
+
+func boardNextCandidates(ctx context.Context, s *store.Store, agent string) ([]store.IssueNextCandidate, error) {
 	next, err := s.NextIssue(ctx, agent)
 	switch {
 	case err == nil:
-		nextCandidates = next.Candidates
+		return next.Candidates, nil
 	case strings.Contains(err.Error(), "no actionable issues found"):
+		return nil, nil
 	default:
-		return boardSnapshot{}, err
+		return nil, err
 	}
+}
 
+func boardCandidateMaps(nextCandidates []store.IssueNextCandidate) (map[string]store.IssueNextCandidate, map[string]int) {
 	scoreByID := make(map[string]store.IssueNextCandidate, len(nextCandidates))
 	rankByID := make(map[string]int, len(nextCandidates))
 	for idx, candidate := range nextCandidates {
 		scoreByID[candidate.Issue.ID] = candidate
 		rankByID[candidate.Issue.ID] = idx
 	}
+	return scoreByID, rankByID
+}
 
-	snapshot := boardSnapshot{
-		GeneratedAt: now.Format(time.RFC3339),
-		Agent:       agent,
-	}
+func boardPopulateSnapshotRows(
+	snapshot *boardSnapshot,
+	issues []store.Issue,
+	hierarchyByID map[string]boardIssueHierarchy,
+	scoreByID map[string]store.IssueNextCandidate,
+) {
 	for _, issue := range issues {
-		snapshot.Summary.Total++
-		switch issue.Status {
-		case "Todo":
-			snapshot.Summary.Todo++
-		case "InProgress":
-			snapshot.Summary.InProgress++
-		case "Blocked":
-			snapshot.Summary.Blocked++
-		case "Done":
-			snapshot.Summary.Done++
-		case "WontDo":
-			snapshot.Summary.WontDo++
-		}
+		boardIncrementSummary(&snapshot.Summary, issue.Status)
 
 		row := boardIssueRow{
 			Issue:     issue,
@@ -209,16 +248,42 @@ func buildBoardSnapshot(ctx context.Context, s *store.Store, agent string, now t
 			row.Reasons = append([]string(nil), candidate.Reasons...)
 		}
 
-		switch issue.Status {
-		case "InProgress":
-			snapshot.Active = append(snapshot.Active, row)
-		case "Blocked":
-			snapshot.Blocked = append(snapshot.Blocked, row)
-		case "Todo":
-			snapshot.Ready = append(snapshot.Ready, row)
-		}
+		boardAppendSnapshotRow(snapshot, row)
 	}
+}
 
+func boardIncrementSummary(summary *boardSummary, status string) {
+	summary.Total++
+	switch status {
+	case "Todo":
+		summary.Todo++
+	case "InProgress":
+		summary.InProgress++
+	case "Blocked":
+		summary.Blocked++
+	case "Done":
+		summary.Done++
+	case "WontDo":
+		summary.WontDo++
+	}
+}
+
+func boardAppendSnapshotRow(snapshot *boardSnapshot, row boardIssueRow) {
+	switch row.Issue.Status {
+	case "InProgress":
+		snapshot.Active = append(snapshot.Active, row)
+	case "Blocked":
+		snapshot.Blocked = append(snapshot.Blocked, row)
+	case "Todo":
+		snapshot.Ready = append(snapshot.Ready, row)
+	}
+}
+
+func boardPopulateLikelyNext(
+	snapshot *boardSnapshot,
+	nextCandidates []store.IssueNextCandidate,
+	hierarchyByID map[string]boardIssueHierarchy,
+) {
 	for _, candidate := range nextCandidates {
 		snapshot.LikelyNext = append(snapshot.LikelyNext, boardIssueRow{
 			Issue:     candidate.Issue,
@@ -227,12 +292,12 @@ func buildBoardSnapshot(ctx context.Context, s *store.Store, agent string, now t
 			Reasons:   append([]string(nil), candidate.Reasons...),
 		})
 	}
+}
 
+func boardSortSnapshot(snapshot *boardSnapshot, rankByID map[string]int) {
 	sortBoardRows(snapshot.Active, rankByID)
 	sortBoardRows(snapshot.Ready, rankByID)
 	sortBoardRows(snapshot.Blocked, rankByID)
-
-	return snapshot, nil
 }
 
 func buildBoardHierarchy(issues []store.Issue) map[string]boardIssueHierarchy {
@@ -473,34 +538,15 @@ func orderBoardReasons(reasons []string) []string {
 }
 
 func boardReasonWeight(reason string) int {
-	switch {
-	case strings.Contains(reason, "matches the agent's active focus"):
-		return 100
-	case strings.Contains(reason, "agent already holds the latest recovery packet"):
-		return 95
-	case strings.Contains(reason, "open loop"):
-		return 90
-	case strings.Contains(reason, "required gate"):
-		return 85
-	case strings.Contains(reason, "issue packet"):
-		return 80
-	case strings.Contains(reason, "packet is stale"):
-		return 75
-	case strings.Contains(reason, "priority P"):
-		return 50
-	case strings.Contains(reason, "in-progress work"):
-		return 40
-	case strings.Contains(reason, "todo work"):
-		return 35
-	case strings.Contains(reason, "implementation-ready"):
-		return 30
-	case strings.Contains(reason, "operational value"):
-		return 25
-	case strings.Contains(reason, "can start immediately"):
-		return 20
-	default:
-		return 10
+	for _, rule := range boardReasonRules {
+		if rule.weight == 0 {
+			continue
+		}
+		if strings.Contains(reason, rule.contains) {
+			return rule.weight
+		}
 	}
+	return 10
 }
 
 func boardReasonTags(reasons []string) []string {
@@ -522,42 +568,15 @@ func boardReasonTags(reasons []string) []string {
 }
 
 func boardReasonTag(reason string) string {
-	switch {
-	case strings.Contains(reason, "matches the agent's active focus"):
-		return "focus"
-	case strings.Contains(reason, "agent already holds the latest recovery packet"):
-		return "packet"
-	case strings.Contains(reason, "open loop"):
-		return "loop"
-	case strings.Contains(reason, "required gate(s) are failing"):
-		return "fail"
-	case strings.Contains(reason, "required gate(s) are blocked"):
-		return "blocked"
-	case strings.Contains(reason, "required gate(s) still need evaluation"):
-		return "gates"
-	case strings.Contains(reason, "issue packet is ready") || strings.Contains(reason, "fresh issue packet"):
-		return "fresh"
-	case strings.Contains(reason, "packet is stale"):
-		return "stale"
-	case strings.Contains(reason, "priority P0"):
-		return "p0"
-	case strings.Contains(reason, "priority P1"):
-		return "p1"
-	case strings.Contains(reason, "priority P2"):
-		return "p2"
-	case strings.Contains(reason, "in-progress work"):
-		return "active"
-	case strings.Contains(reason, "todo work"):
-		return "todo"
-	case strings.Contains(reason, "implementation-ready"):
-		return "task"
-	case strings.Contains(reason, "operational value"):
-		return "bug"
-	case strings.Contains(reason, "can start immediately"):
-		return "standalone"
-	default:
-		return ""
+	for _, rule := range boardReasonRules {
+		if rule.tag == "" {
+			continue
+		}
+		if strings.Contains(reason, rule.contains) {
+			return rule.tag
+		}
 	}
+	return ""
 }
 
 func newBoardData(snapshot boardSnapshot) boardData {
