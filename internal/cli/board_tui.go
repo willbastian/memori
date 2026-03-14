@@ -92,11 +92,43 @@ type boardTheme struct {
 	chromeFG    string
 }
 
+type boardTUITicker interface {
+	channel() <-chan time.Time
+	stop()
+}
+
+type boardTimeTicker struct {
+	*time.Ticker
+}
+
+func (ticker boardTimeTicker) channel() <-chan time.Time {
+	return ticker.C
+}
+
+func (ticker boardTimeTicker) stop() {
+	ticker.Ticker.Stop()
+}
+
+var (
+	boardTUIEnterRawMode  = boardEnterRawMode
+	boardTUITerminalSize  = boardTerminalSize
+	boardTUIBuildSnapshot = buildBoardSnapshot
+	boardTUIReadInputs    = func(keyCh chan<- boardKeyInput, errCh chan<- error) {
+		go readBoardInputs(bufio.NewReader(boardInput()), keyCh, errCh)
+	}
+	boardTUINow = func() time.Time {
+		return time.Now().UTC()
+	}
+	boardTUINewTicker = func(interval time.Duration) boardTUITicker {
+		return boardTimeTicker{Ticker: time.NewTicker(interval)}
+	}
+)
+
 // TODO(mem-5ece68e): split terminal control, input wiring, and render-loop setup
 // behind injectable adapters so the Darwin interactive loop can be covered
 // without PTY-driven tests before board_tui.go is decomposed.
 func runBoardTUI(ctx context.Context, s *store.Store, agent string, interval time.Duration, out io.Writer) error {
-	restore, err := boardEnterRawMode()
+	restore, err := boardTUIEnterRawMode()
 	if err != nil {
 		return err
 	}
@@ -107,8 +139,8 @@ func runBoardTUI(ctx context.Context, s *store.Store, agent string, interval tim
 		_, _ = io.WriteString(out, "\x1b[?25h\x1b[?1049l")
 	}()
 
-	width, height := boardTerminalSize(out)
-	snapshot, err := buildBoardSnapshot(ctx, s, agent, time.Now().UTC())
+	width, height := boardTUITerminalSize(out)
+	snapshot, err := boardTUIBuildSnapshot(ctx, s, agent, boardTUINow())
 	if err != nil {
 		return err
 	}
@@ -125,10 +157,10 @@ func runBoardTUI(ctx context.Context, s *store.Store, agent string, interval tim
 
 	keyCh := make(chan boardKeyInput, 8)
 	errCh := make(chan error, 1)
-	go readBoardInputs(bufio.NewReader(boardInput()), keyCh, errCh)
+	boardTUIReadInputs(keyCh, errCh)
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	ticker := boardTUINewTicker(interval)
+	defer ticker.stop()
 
 	for {
 		select {
@@ -148,9 +180,9 @@ func runBoardTUI(ctx context.Context, s *store.Store, agent string, interval tim
 			if err := renderFrame(); err != nil {
 				return err
 			}
-		case <-ticker.C:
-			width, height = boardTerminalSize(out)
-			snapshot, err = buildBoardSnapshot(ctx, s, agent, time.Now().UTC())
+		case <-ticker.channel():
+			width, height = boardTUITerminalSize(out)
+			snapshot, err = boardTUIBuildSnapshot(ctx, s, agent, boardTUINow())
 			if err != nil {
 				return err
 			}
