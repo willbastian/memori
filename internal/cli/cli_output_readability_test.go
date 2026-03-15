@@ -117,11 +117,15 @@ func TestIssueUpdateAndShowHumanOutputSurfaceStateAwareContinuity(t *testing.T) 
 		"--db", dbPath,
 		"--key", "mem-c0ffee1",
 		"--status", "blocked",
+		"--note", "waiting on review",
 		"--command-id", "cmd-readable-issue-continuity-update-2",
 	)
 	if err != nil {
 		t.Fatalf("issue update blocked: %v\nstderr: %s", err, stderr)
 	}
+	mustContain(t, stdout, "Continuity Saved:")
+	mustContain(t, stdout, "Summarized session ")
+	mustContain(t, stdout, "Saved session packet ")
 	mustContain(t, stdout, "This issue is blocked; preserve the current state before waiting or handing it off.")
 	mustContain(t, stdout, "memori context loops --issue mem-c0ffee1")
 }

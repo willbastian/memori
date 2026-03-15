@@ -199,61 +199,24 @@ func runContextSave(args []string, out io.Writer) error {
 		return err
 	}
 
-	summarizeCommandID := derivedCompositeCommandID(identity.CommandID, "summarize")
-	closeCommandID := derivedCompositeCommandID(identity.CommandID, "close")
-	packetCommandID := derivedCompositeCommandID(identity.CommandID, "packet")
-
-	resolution, err := resolveOpenSessionForMutation(ctx, s, *sessionID, summarizeCommandID)
+	result, err := saveIssueContinuity(ctx, s, *sessionID, *note, *closeSession, *reason, identity.Actor, identity.CommandID)
 	if err != nil {
 		return err
 	}
-	session, err := s.SummarizeSession(ctx, store.SummarizeSessionParams{
-		SessionID: resolution.sessionID,
-		Note:      *note,
-		Actor:     identity.Actor,
-		CommandID: summarizeCommandID,
-	})
-	if err != nil {
-		return err
-	}
-
-	if *closeSession {
-		session, err = s.CloseSession(ctx, store.CloseSessionParams{
-			SessionID: resolution.sessionID,
-			Reason:    *reason,
-			Actor:     identity.Actor,
-			CommandID: closeCommandID,
-		})
-		if err != nil {
-			return err
-		}
-	}
-
-	packet, err := s.BuildRehydratePacket(ctx, store.BuildPacketParams{
-		Scope:     "session",
-		ScopeID:   resolution.sessionID,
-		Actor:     identity.Actor,
-		CommandID: packetCommandID,
-	})
-	if err != nil {
-		return err
-	}
+	session := result.Data.Session
+	packet := result.Data.Packet
 
 	if *jsonOut {
 		return printJSON(out, jsonEnvelope{
 			ResponseSchemaVersion: responseSchemaVersion,
 			DBSchemaVersion:       dbVersion,
 			Command:               "context save",
-			Data: contextSaveData{
-				Session: session,
-				Packet:  packet,
-				Closed:  *closeSession,
-			},
+			Data:                  result.Data,
 		})
 	}
 
 	ui := newTextUI(out)
-	if msg := sessionResolutionMessage("summarize", resolution); msg != "" {
+	if msg := sessionResolutionMessage("summarize", result.Resolution); msg != "" {
 		ui.note(msg)
 	}
 	if *closeSession {
@@ -276,6 +239,71 @@ func runContextSave(args []string, out io.Writer) error {
 	}
 	ui.nextSteps(steps...)
 	return nil
+}
+
+type saveIssueContinuityResult struct {
+	Resolution sessionResolution
+	Data       contextSaveData
+}
+
+func saveIssueContinuity(
+	ctx context.Context,
+	s *store.Store,
+	sessionID string,
+	note string,
+	closeSession bool,
+	reason string,
+	actor string,
+	baseCommandID string,
+) (saveIssueContinuityResult, error) {
+	summarizeCommandID := derivedCompositeCommandID(baseCommandID, "summarize")
+	closeCommandID := derivedCompositeCommandID(baseCommandID, "close")
+	packetCommandID := derivedCompositeCommandID(baseCommandID, "packet")
+
+	resolution, err := resolveOpenSessionForMutation(ctx, s, sessionID, summarizeCommandID)
+	if err != nil {
+		return saveIssueContinuityResult{}, err
+	}
+	session, err := s.SummarizeSession(ctx, store.SummarizeSessionParams{
+		SessionID: resolution.sessionID,
+		Note:      note,
+		Actor:     actor,
+		CommandID: summarizeCommandID,
+	})
+	if err != nil {
+		return saveIssueContinuityResult{}, err
+	}
+
+	if closeSession {
+		session, err = s.CloseSession(ctx, store.CloseSessionParams{
+			SessionID: resolution.sessionID,
+			Reason:    reason,
+			Actor:     actor,
+			CommandID: closeCommandID,
+		})
+		if err != nil {
+			return saveIssueContinuityResult{}, err
+		}
+	}
+
+	packet, err := s.BuildRehydratePacket(ctx, store.BuildPacketParams{
+		Scope:     "session",
+		ScopeID:   resolution.sessionID,
+		Actor:     actor,
+		CommandID: packetCommandID,
+	})
+	if err != nil {
+		return saveIssueContinuityResult{}, err
+	}
+
+	return saveIssueContinuityResult{
+		Resolution: resolution,
+		Data: contextSaveData{
+			Session: session,
+			Packet:  packet,
+			Closed:  closeSession,
+		},
+	}, nil
 }
 
 func derivedCompositeCommandID(base, suffix string) string {

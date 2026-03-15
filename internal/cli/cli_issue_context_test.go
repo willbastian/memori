@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -267,4 +268,285 @@ func TestIssueUpdateInProgressStartsContinuityAndFocusForAgent(t *testing.T) {
 	mustContain(t, stdout, "Latest open session "+rehydrated.Data.SessionID+" has no saved summary and no saved session packet yet.")
 	mustContain(t, stdout, "Latest issue packet ")
 	mustContain(t, stdout, "is fresh for mem-6666eee cycle 1.")
+}
+
+func TestIssueUpdateBlockedSavesContinuityByDefault(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-issue-update-blocked-continuity.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-7777fff",
+		"--type", "task",
+		"--title", "Auto-save continuity",
+		"--actor", "test",
+		"--command-id", "cmd-cli-blocked-continuity-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-7777fff",
+		"--status", "inprogress",
+		"--actor", "test",
+		"--command-id", "cmd-cli-blocked-continuity-progress-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue update inprogress: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-7777fff",
+		"--status", "blocked",
+		"--note", "waiting on review",
+		"--actor", "test",
+		"--command-id", "cmd-cli-blocked-continuity-blocked-1",
+	)
+	if err != nil {
+		t.Fatalf("issue update blocked: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Continuity Saved:")
+	mustContain(t, stdout, "Used open session ")
+	mustContain(t, stdout, "Summarized session ")
+	mustContain(t, stdout, "Saved session packet ")
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "rehydrate",
+		"--db", dbPath,
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context rehydrate after blocked: %v\nstderr: %s", err, stderr)
+	}
+	var rehydrated contextRehydrateEnvelope
+	if err := json.Unmarshal([]byte(stdout), &rehydrated); err != nil {
+		t.Fatalf("decode blocked rehydrate json: %v\nstdout: %s", err, stdout)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"event", "log",
+		"--db", dbPath,
+		"--entity", "session:"+rehydrated.Data.SessionID,
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("event log blocked session: %v\nstderr: %s", err, stderr)
+	}
+	var sessionEvents eventLogEnvelope
+	if err := json.Unmarshal([]byte(stdout), &sessionEvents); err != nil {
+		t.Fatalf("decode blocked session event log: %v\nstdout: %s", err, stdout)
+	}
+	if len(sessionEvents.Data.Events) < 2 {
+		t.Fatalf("expected checkpoint and summary events, got %+v", sessionEvents.Data.Events)
+	}
+	if sessionEvents.Data.Events[1].EventType != "session.summarized" {
+		t.Fatalf("expected session.summarized event, got %+v", sessionEvents.Data.Events[1])
+	}
+	if sessionEvents.Data.Events[1].CommandID != "cmd-cli-blocked-continuity-blocked-1-summarize" {
+		t.Fatalf("expected summarize command id, got %+v", sessionEvents.Data.Events[1])
+	}
+}
+
+func TestIssueUpdateBlockedRequiresOpenSessionUnlessSkipped(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-issue-update-blocked-requires-session.db")
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	if err := s.Initialize(ctx, store.InitializeParams{IssueKeyPrefix: "mem"}); err != nil {
+		t.Fatalf("initialize store: %v", err)
+	}
+	if _, _, _, err := s.CreateIssue(ctx, store.CreateIssueParams{
+		IssueID:   "mem-8888aaa",
+		Type:      "task",
+		Title:     "Missing continuity session",
+		Actor:     "test",
+		CommandID: "cmd-cli-blocked-requires-session-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, store.UpdateIssueStatusParams{
+		IssueID:   "mem-8888aaa",
+		Status:    "inprogress",
+		Actor:     "test",
+		CommandID: "cmd-cli-blocked-requires-session-progress-1",
+	}); err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+
+	_, _, err = runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-8888aaa",
+		"--status", "blocked",
+		"--actor", "test",
+		"--command-id", "cmd-cli-blocked-requires-session-blocked-1",
+	)
+	if err == nil || !strings.Contains(err.Error(), "automatic continuity capture for blocked needs an open session") {
+		t.Fatalf("expected blocked continuity session error, got %v", err)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-8888aaa",
+		"--status", "blocked",
+		"--skip-continuity",
+		"--actor", "test",
+		"--command-id", "cmd-cli-blocked-requires-session-blocked-2",
+	)
+	if err != nil {
+		t.Fatalf("issue update blocked with skip: %v\nstderr: %s", err, stderr)
+	}
+	if strings.Contains(stdout, "Continuity Saved:") {
+		t.Fatalf("did not expect continuity save section when skip flag is set, got:\n%s", stdout)
+	}
+}
+
+func TestIssueUpdateDoneSavesAndClosesContinuityByDefault(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-issue-update-done-continuity.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-c111111",
+		"--type", "task",
+		"--title", "Auto-close continuity",
+		"--actor", "test",
+		"--command-id", "cmd-cli-done-continuity-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-c111111",
+		"--status", "inprogress",
+		"--actor", "test",
+		"--command-id", "cmd-cli-done-continuity-progress-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue update inprogress: %v\nstderr: %s", err, stderr)
+	}
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store for gate setup: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	createGateTemplateForTest(
+		t,
+		s,
+		ctx,
+		"tmpl-close",
+		1,
+		[]string{"task"},
+		`{"gates":[{"id":"build","criteria":{"ref":"manual-validation"}}]}`,
+		"human:alice",
+		"cmd-cli-done-continuity-template-1",
+		"create close template",
+	)
+	insertGateSetForTest(
+		t,
+		s,
+		ctx,
+		"gs_cli_done_1",
+		1,
+		`["tmpl-close@1"]`,
+		`{"gates":[{"id":"build"}]}`,
+		"gs_cli_done_hash_1",
+		"2026-03-15T00:00:00Z",
+		"2026-03-15T00:00:00Z",
+		"test",
+	)
+	insertGateSetItemForTest(t, s, ctx, "gs_cli_done_1", "build", "check", 1, `{"ref":"manual-validation"}`, "insert done gate item")
+	if _, _, _, err := s.EvaluateGate(ctx, store.EvaluateGateParams{
+		IssueID: "mem-c111111",
+		GateID:  "build",
+		Result:  "PASS",
+		EvidenceRefs: []string{
+			"test://done-continuity",
+		},
+		Actor:     "test",
+		CommandID: "cmd-cli-done-continuity-gate-1",
+	}); err != nil {
+		t.Fatalf("evaluate done gate: %v", err)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-c111111",
+		"--status", "done",
+		"--note", "completed implementation",
+		"--reason", "ready for handoff",
+		"--actor", "test",
+		"--command-id", "cmd-cli-done-continuity-done-1",
+	)
+	if err != nil {
+		t.Fatalf("issue update done: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Continuity Saved:")
+	mustContain(t, stdout, "Summarized session ")
+	mustContain(t, stdout, "Closed session ")
+	mustContain(t, stdout, "Saved session packet ")
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "rehydrate",
+		"--db", dbPath,
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context rehydrate after done: %v\nstderr: %s", err, stderr)
+	}
+	var rehydrated contextRehydrateEnvelope
+	if err := json.Unmarshal([]byte(stdout), &rehydrated); err != nil {
+		t.Fatalf("decode done rehydrate json: %v\nstdout: %s", err, stdout)
+	}
+	if rehydrated.Data.Source != "packet" {
+		t.Fatalf("expected packet-first rehydrate after done continuity save, got %+v", rehydrated)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"event", "log",
+		"--db", dbPath,
+		"--entity", "session:"+rehydrated.Data.SessionID,
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("event log done session: %v\nstderr: %s", err, stderr)
+	}
+	var sessionEvents eventLogEnvelope
+	if err := json.Unmarshal([]byte(stdout), &sessionEvents); err != nil {
+		t.Fatalf("decode done session event log: %v\nstdout: %s", err, stdout)
+	}
+	if len(sessionEvents.Data.Events) < 3 {
+		t.Fatalf("expected checkpoint, summary, and close events, got %+v", sessionEvents.Data.Events)
+	}
+	if sessionEvents.Data.Events[1].EventType != "session.summarized" || sessionEvents.Data.Events[2].EventType != "session.closed" {
+		t.Fatalf("expected summarized and closed events, got %+v", sessionEvents.Data.Events)
+	}
+	if sessionEvents.Data.Events[2].CommandID != "cmd-cli-done-continuity-done-1-close" {
+		t.Fatalf("expected close command id, got %+v", sessionEvents.Data.Events[2])
+	}
 }

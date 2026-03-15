@@ -252,7 +252,7 @@ flowchart LR
 
 Humans and agents operate against the same ledger. The usual loop is: pick tracked work, move it into progress, do the implementation, capture continuity as you go, freeze the close contract with a gate set, verify the required proof, and only then mark the issue `done`.
 
-Moving work into progress is also now a continuity entrypoint. `issue update --status inprogress` automatically starts or continues a session, refreshes the issue packet, and, when you pass `--agent`, updates that agent's saved focus as part of the same start-work step.
+Issue status transitions now bundle continuity into the normal work loop. `issue update --status inprogress` automatically starts or continues a session, refreshes the issue packet, and, when you pass `--agent`, updates that agent's saved focus as part of the same start-work step. `issue update --status blocked` automatically summarizes the active session and saves a fresh session packet, while `issue update --status done` does the same and closes the session as part of the handoff trail.
 
 ### 1. Initialize project state
 
@@ -624,7 +624,7 @@ For day-to-day work, the shortest path is usually:
 - `memori context loops`
 
 Human-readable `issue create`, `issue update`, `issue show`, and `issue next` now surface continuity guidance when the current work state makes it relevant. In practice that means `todo`, `inprogress`, and `blocked` work will point you toward `context checkpoint`, `context summarize`, `context packet build`, or `context loops` instead of treating continuity as a separate subsystem you have to remember on your own.
-When you move an issue into progress, `issue update --status inprogress` also starts or continues continuity automatically, and `--agent <id>` folds the focus update into that same command so start-work and resume context stay aligned.
+When you move an issue into progress, `issue update --status inprogress` also starts or continues continuity automatically, and `--agent <id>` folds the focus update into that same command so start-work and resume context stay aligned. When you pause or finish work, `issue update --status blocked|done` saves continuity automatically from the latest open session; use `--note` to capture handoff detail, `--reason` to explain a done-path close, and `--skip-continuity` only when you need to bypass the default save behavior deliberately.
 Human-readable `issue show`, `issue next`, and `board` also surface continuity state at the point where work starts or resumes, including whether a saved issue packet is fresh or stale, whether an open session already exists, and whether an agent already has saved focus on the work.
 
 ### Database operations

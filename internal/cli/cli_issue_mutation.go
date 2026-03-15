@@ -122,6 +122,9 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	var references stringSliceFlag
 	fs.Var(&references, "reference", "reference link/evidence (repeatable)")
 	agentID := fs.String("agent", "", "optional agent id to focus when moving work into progress")
+	note := fs.String("note", "", "optional continuity note when pausing or closing work")
+	reason := fs.String("reason", "", "optional continuity close reason when marking work done")
+	skipContinuity := fs.Bool("skip-continuity", false, "skip automatic continuity capture for blocked/done transitions")
 	actor := fs.String("actor", "", "actor id")
 	commandID := fs.String("command-id", "", "idempotency command id")
 	jsonOut := fs.Bool("json", false, "machine-readable output")
@@ -192,6 +195,15 @@ func runIssueUpdate(args []string, out io.Writer) error {
 		return err
 	}
 
+	autoStartedContinuity := statusProvided && strings.EqualFold(strings.TrimSpace(*status), "inprogress")
+	autoSavedContinuity := statusProvided && (strings.EqualFold(strings.TrimSpace(*status), "blocked") || strings.EqualFold(strings.TrimSpace(*status), "done")) && !*skipContinuity
+	closeContinuitySession := statusProvided && strings.EqualFold(strings.TrimSpace(*status), "done")
+	if autoSavedContinuity {
+		if _, err := resolveOpenSessionForMutation(ctx, s, "", derivedCompositeCommandID(identity.CommandID, "summarize")); err != nil {
+			return fmt.Errorf("automatic continuity capture for %s needs an open session; start work first with `memori issue update --status inprogress` or bypass intentionally with --skip-continuity: %w", strings.ToLower(strings.TrimSpace(*status)), err)
+		}
+	}
+
 	issue, event, idempotent, err := s.UpdateIssue(ctx, store.UpdateIssueParams{
 		IssueID:            issueKey,
 		Title:              titlePtr,
@@ -209,7 +221,6 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	}
 
 	var continuityResult startIssueContinuityResult
-	autoStartedContinuity := statusProvided && strings.EqualFold(strings.TrimSpace(*status), "inprogress")
 	if autoStartedContinuity {
 		continuityResult, err = startIssueContinuity(
 			ctx,
@@ -223,6 +234,23 @@ func runIssueUpdate(args []string, out io.Writer) error {
 		)
 		if err != nil {
 			return fmt.Errorf("issue %s is now %s, but automatic continuity start failed: %w", issue.ID, issue.Status, err)
+		}
+	}
+
+	var savedContinuityResult saveIssueContinuityResult
+	if autoSavedContinuity {
+		savedContinuityResult, err = saveIssueContinuity(
+			ctx,
+			s,
+			"",
+			*note,
+			closeContinuitySession,
+			*reason,
+			identity.Actor,
+			identity.CommandID,
+		)
+		if err != nil {
+			return fmt.Errorf("issue %s is now %s, but automatic continuity capture failed: %w", issue.ID, issue.Status, err)
 		}
 	}
 
@@ -253,9 +281,7 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	if autoStartedContinuity {
 		ui.blank()
 		ui.section("Continuity Started")
-		if msg := sessionResolutionMessage("checkpoint", continuityResult.Resolution); msg != "" {
-			ui.bullet(msg)
-		}
+		ui.bullet(issueLifecycleContinuityMessage("checkpoint", continuityResult.Resolution))
 		ui.bullet(fmt.Sprintf("Captured session %s for active work.", continuityResult.Data.Session.SessionID))
 		ui.bullet(fmt.Sprintf("Refreshed issue packet %s for %s.", continuityResult.Data.Packet.PacketID, issue.ID))
 		if continuityResult.Data.FocusUsed {
@@ -265,6 +291,16 @@ func runIssueUpdate(args []string, out io.Writer) error {
 				ui.bullet(fmt.Sprintf("Updated agent %s focus to %s via packet %s.", continuityResult.Data.Focus.AgentID, continuityResult.Data.Focus.ActiveIssueID, continuityResult.Data.Packet.PacketID))
 			}
 		}
+	}
+	if autoSavedContinuity {
+		ui.blank()
+		ui.section("Continuity Saved")
+		ui.bullet(issueLifecycleContinuityMessage("summarize", savedContinuityResult.Resolution))
+		ui.bullet(fmt.Sprintf("Summarized session %s.", savedContinuityResult.Data.Session.SessionID))
+		if savedContinuityResult.Data.Closed {
+			ui.bullet(fmt.Sprintf("Closed session %s.", savedContinuityResult.Data.Session.SessionID))
+		}
+		ui.bullet(fmt.Sprintf("Saved session packet %s for %s.", savedContinuityResult.Data.Packet.PacketID, issue.ID))
 	}
 	if message, steps := issueContinuityGuidance(issue, "update"); message != "" {
 		ui.blank()
@@ -279,6 +315,25 @@ func runIssueUpdate(args []string, out io.Writer) error {
 		fmt.Sprintf("memori event log --entity %s", issue.ID),
 	)
 	return nil
+}
+
+func issueLifecycleContinuityMessage(action string, resolution sessionResolution) string {
+	switch resolution.source {
+	case "command-replay":
+		return fmt.Sprintf("Command replay reused continuity session %s.", resolution.sessionID)
+	case "latest-open":
+		switch strings.TrimSpace(action) {
+		case "checkpoint":
+			return fmt.Sprintf("Continued open session %s.", resolution.sessionID)
+		case "summarize":
+			return fmt.Sprintf("Used open session %s for continuity capture.", resolution.sessionID)
+		}
+	case "generated-new":
+		return fmt.Sprintf("Started new continuity session %s.", resolution.sessionID)
+	case "explicit":
+		return fmt.Sprintf("Used session %s for continuity.", resolution.sessionID)
+	}
+	return fmt.Sprintf("Used session %s for continuity.", resolution.sessionID)
 }
 
 func runIssueLink(args []string, out io.Writer) error {
