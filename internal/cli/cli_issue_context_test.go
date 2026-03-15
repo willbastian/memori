@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -447,6 +448,81 @@ func TestIssueUpdateBlockedRejectsDifferentIssueOpenSession(t *testing.T) {
 	if len(sessionEvents.Data.Events) != 1 || sessionEvents.Data.Events[0].EventType != "session.checkpointed" {
 		t.Fatalf("expected the other issue session to stay untouched, got %+v", sessionEvents.Data.Events)
 	}
+}
+
+func TestIssueUpdateBlockedUsesLegacyIssueSessionWithoutCheckpointIssueID(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-issue-update-blocked-legacy-issue-session.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-7777ffc",
+		"--type", "task",
+		"--title", "Legacy continuity issue",
+		"--actor", "test",
+		"--command-id", "cmd-cli-legacy-blocked-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-7777ffc",
+		"--status", "inprogress",
+		"--actor", "test",
+		"--command-id", "cmd-cli-legacy-blocked-progress-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue update inprogress: %v\nstderr: %s", err, stderr)
+	}
+
+	ctx := context.Background()
+	s, _, err := openInitializedStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open initialized store: %v", err)
+	}
+	legacySession, found, err := s.LatestOpenSessionForIssue(ctx, "mem-7777ffc")
+	s.Close()
+	if err != nil {
+		t.Fatalf("latest open issue session before legacy simulation: %v", err)
+	}
+	if !found {
+		t.Fatal("expected open issue session before legacy simulation")
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `
+		UPDATE sessions
+		SET checkpoint_json = json_remove(checkpoint_json, '$.issue_id')
+		WHERE session_id = ?
+	`, legacySession.SessionID); err != nil {
+		t.Fatalf("strip checkpoint issue id for legacy simulation: %v", err)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-7777ffc",
+		"--status", "blocked",
+		"--note", "legacy upgrade path",
+		"--actor", "test",
+		"--command-id", "cmd-cli-legacy-blocked-blocked-1",
+	)
+	if err != nil {
+		t.Fatalf("issue update blocked with legacy issue session: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Continuity Saved:")
+	mustContain(t, stdout, "Used the open session already tracking this issue ("+legacySession.SessionID+")")
+	mustContain(t, stdout, "Summarized session "+legacySession.SessionID+".")
 }
 
 func TestIssueUpdateBlockedRequiresOpenSessionUnlessSkipped(t *testing.T) {

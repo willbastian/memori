@@ -49,6 +49,22 @@ func (s *Store) CheckpointSession(ctx context.Context, p CheckpointSessionParams
 	if sessionExists && strings.TrimSpace(existingSession.EndedAt) != "" {
 		return Session{}, false, fmt.Errorf("session %q is closed; start a new session id to checkpoint more work", sessionID)
 	}
+	existingIssueID := ""
+	if sessionExists {
+		existingIssueID = strings.TrimSpace(anyToString(existingSession.Checkpoint["issue_id"]))
+		if existingIssueID == "" {
+			existingIssueID, err = latestCheckpointIssueIDForSessionTx(ctx, tx, sessionID)
+			if err != nil {
+				return Session{}, false, fmt.Errorf("resolve existing issue binding for session %q: %w", sessionID, err)
+			}
+		}
+	}
+	if sessionExists && issueID == "" && existingIssueID != "" {
+		issueID = existingIssueID
+	}
+	if sessionExists && issueID != "" && existingIssueID != "" && issueID != existingIssueID {
+		return Session{}, false, fmt.Errorf("session %q already tracks issue %q; start a new session to work on %q", sessionID, existingIssueID, issueID)
+	}
 
 	now := nowUTC()
 	latestEventID, err := latestEventIDTx(ctx, tx)
@@ -59,11 +75,6 @@ func (s *Store) CheckpointSession(ctx context.Context, p CheckpointSessionParams
 		"session_id":  sessionID,
 		"trigger":     trigger,
 		"captured_at": now,
-	}
-	if sessionExists && issueID == "" {
-		if existingIssueID := strings.TrimSpace(anyToString(existingSession.Checkpoint["issue_id"])); existingIssueID != "" {
-			issueID = existingIssueID
-		}
 	}
 	if issueID != "" {
 		checkpoint["issue_id"] = issueID

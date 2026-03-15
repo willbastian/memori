@@ -650,3 +650,143 @@ func TestSessionLifecycleSummariesAndClosedRehydrateFlow(t *testing.T) {
 		t.Fatalf("expected replayed lifecycle markers, got %#v", replayedSession)
 	}
 }
+
+func TestCheckpointSessionRejectsRebindingIssue(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	for _, issueID := range []string{"mem-8181818", "mem-9191919"} {
+		if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+			IssueID:   issueID,
+			Type:      "task",
+			Title:     "Session ownership guard",
+			Actor:     "agent-1",
+			CommandID: "cmd-session-rebind-create-" + issueID,
+		}); err != nil {
+			t.Fatalf("create issue %s: %v", issueID, err)
+		}
+	}
+
+	session, created, err := s.CheckpointSession(ctx, CheckpointSessionParams{
+		SessionID: "sess-rebind-guard-1",
+		IssueID:   "mem-8181818",
+		Trigger:   "manual",
+		Actor:     "agent-1",
+		CommandID: "cmd-session-rebind-checkpoint-1",
+	})
+	if err != nil {
+		t.Fatalf("checkpoint initial issue session: %v", err)
+	}
+	if !created {
+		t.Fatal("expected initial checkpoint to create a session")
+	}
+
+	if _, _, err := s.CheckpointSession(ctx, CheckpointSessionParams{
+		SessionID: "sess-rebind-guard-1",
+		IssueID:   "mem-9191919",
+		Trigger:   "manual",
+		Actor:     "agent-1",
+		CommandID: "cmd-session-rebind-checkpoint-2",
+	}); err == nil || !strings.Contains(err.Error(), `already tracks issue "mem-8181818"`) {
+		t.Fatalf("expected cross-issue rebind rejection, got %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE sessions
+		SET checkpoint_json = json_remove(checkpoint_json, '$.issue_id')
+		WHERE session_id = ?
+	`, session.SessionID); err != nil {
+		t.Fatalf("strip checkpoint issue id before legacy rebind attempt: %v", err)
+	}
+	if _, _, err := s.CheckpointSession(ctx, CheckpointSessionParams{
+		SessionID: "sess-rebind-guard-1",
+		IssueID:   "mem-9191919",
+		Trigger:   "manual",
+		Actor:     "agent-1",
+		CommandID: "cmd-session-rebind-checkpoint-3",
+	}); err == nil || !strings.Contains(err.Error(), `already tracks issue "mem-8181818"`) {
+		t.Fatalf("expected legacy cross-issue rebind rejection, got %v", err)
+	}
+
+	issueOneOpen, found, err := s.LatestOpenSessionForIssue(ctx, "mem-8181818")
+	if err != nil {
+		t.Fatalf("latest open session for original issue after rebind attempts: %v", err)
+	}
+	if !found || issueOneOpen.SessionID != session.SessionID {
+		t.Fatalf("expected session to remain bound to mem-8181818, got found=%v session=%+v", found, issueOneOpen)
+	}
+	if _, found, err := s.LatestOpenSessionForIssue(ctx, "mem-9191919"); err != nil {
+		t.Fatalf("latest open session for competing issue after rebind attempts: %v", err)
+	} else if found {
+		t.Fatal("expected competing issue to have no bound open session after rebind attempts")
+	}
+}
+
+func TestLegacyIssueSessionLookupFallsBackToCheckpointChunkMetadata(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-a181818"
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Legacy session lookup",
+		Actor:     "agent-1",
+		CommandID: "cmd-session-legacy-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+
+	session, created, err := s.CheckpointSession(ctx, CheckpointSessionParams{
+		SessionID: "sess-legacy-issue-1",
+		IssueID:   issueID,
+		Trigger:   "manual",
+		Actor:     "agent-1",
+		CommandID: "cmd-session-legacy-checkpoint-1",
+	})
+	if err != nil {
+		t.Fatalf("checkpoint legacy issue session: %v", err)
+	}
+	if !created {
+		t.Fatal("expected legacy issue checkpoint to create a session")
+	}
+
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE sessions
+		SET checkpoint_json = json_remove(checkpoint_json, '$.issue_id')
+		WHERE session_id = ?
+	`, session.SessionID); err != nil {
+		t.Fatalf("strip checkpoint issue id for legacy simulation: %v", err)
+	}
+
+	legacyOpen, found, err := s.LatestOpenSessionForIssue(ctx, issueID)
+	if err != nil {
+		t.Fatalf("latest open legacy session for issue: %v", err)
+	}
+	if !found || legacyOpen.SessionID != session.SessionID {
+		t.Fatalf("expected legacy open session %q, got found=%v session=%+v", session.SessionID, found, legacyOpen)
+	}
+
+	if _, err := s.CloseSession(ctx, CloseSessionParams{
+		SessionID: session.SessionID,
+		Reason:    "legacy-close",
+		Actor:     "agent-1",
+		CommandID: "cmd-session-legacy-close-1",
+	}); err != nil {
+		t.Fatalf("close legacy issue session: %v", err)
+	}
+
+	snapshot, err := s.ContinuitySnapshot(ctx, ContinuitySnapshotParams{IssueID: issueID})
+	if err != nil {
+		t.Fatalf("continuity snapshot for legacy session: %v", err)
+	}
+	if !snapshot.Session.HasSession || snapshot.Session.Session.SessionID != session.SessionID {
+		t.Fatalf("expected legacy historical session in continuity snapshot, got %+v", snapshot.Session)
+	}
+	if snapshot.Session.Source != "latest-session-issue" {
+		t.Fatalf("expected legacy latest-session-issue source, got %+v", snapshot.Session)
+	}
+}
