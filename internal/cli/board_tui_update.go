@@ -47,6 +47,8 @@ func boardReduce(model boardTUIModel, action boardAction) boardTUIModel {
 		if row, ok := model.selectedRow(); ok && boardLaneSupportsHierarchy(model.lane) && row.Hierarchy.HasChildren {
 			model.expanded[row.Issue.ID] = true
 		}
+	case boardActionToggleHistory:
+		model.showHistory = !model.showHistory
 	case boardActionQuit:
 		return model
 	}
@@ -78,7 +80,7 @@ func boardHandleSearchInput(model boardTUIModel, input boardKeyInput) (boardTUIM
 		model.searchQuery = ""
 		model.searchIndex = 0
 		if model.searchOrigin != "" {
-			model = boardFocusIssuePreferred(model, model.searchOrigin, boardLanePreference(model.searchLane))
+			model = boardFocusIssuePreferred(model, model.searchOrigin, boardLanePreference(model.searchLane, model.navigationLanes()))
 		}
 		return model, false
 	case input.action == boardActionToggleDetail:
@@ -89,7 +91,11 @@ func boardHandleSearchInput(model boardTUIModel, input boardKeyInput) (boardTUIM
 		model.searchOpen = false
 		model.searchQuery = ""
 		selected := results[minInt(model.searchIndex, len(results)-1)]
-		model = boardFocusIssuePreferred(model, selected.row.Issue.ID, boardLanePreference(selected.lane))
+		model = boardFocusIssuePreferred(model, selected.row.Issue.ID, boardLanePreference(selected.lane, model.navigationLanes()))
+		return model, false
+	case input.action == boardActionToggleHistory:
+		model.showHistory = !model.showHistory
+		model = boardNormalizeModel(model)
 		return model, false
 	case input.backspace:
 		if len(model.searchQuery) > 0 {

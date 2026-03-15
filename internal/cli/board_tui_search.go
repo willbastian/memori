@@ -12,7 +12,7 @@ type boardSearchMatch struct {
 
 func boardSearchResults(model boardTUIModel) []boardSearchMatch {
 	query := strings.ToLower(strings.TrimSpace(model.searchQuery))
-	preference := boardLanePreference(model.lane)
+	preference := boardLanePreference(model.lane, model.navigationLanes())
 	laneRank := make(map[boardLane]int, len(preference))
 	for idx, lane := range preference {
 		laneRank[lane] = idx
@@ -70,19 +70,34 @@ func boardSearchScore(issueID, query string) int {
 	}
 }
 
-func boardLanePreference(preferred boardLane) []boardLane {
-	if preferred == boardLaneNext {
-		return []boardLane{boardLaneReady, boardLaneActive, boardLaneBlocked, boardLaneNext}
+func boardLanePreference(preferred boardLane, lanes []boardLane) []boardLane {
+	allowed := make(map[boardLane]struct{}, len(lanes))
+	for _, lane := range lanes {
+		allowed[lane] = struct{}{}
 	}
-	order := []boardLane{preferred, boardLaneActive, boardLaneBlocked, boardLaneReady, boardLaneNext}
+	appendLane := func(out []boardLane, seen map[boardLane]struct{}, lane boardLane) []boardLane {
+		if _, ok := allowed[lane]; !ok {
+			return out
+		}
+		if _, ok := seen[lane]; ok {
+			return out
+		}
+		seen[lane] = struct{}{}
+		return append(out, lane)
+	}
+	if preferred == boardLaneNext {
+		out := make([]boardLane, 0, len(lanes))
+		seen := make(map[boardLane]struct{}, len(lanes))
+		for _, lane := range []boardLane{boardLaneReady, boardLaneActive, boardLaneBlocked, boardLaneDone, boardLaneWontDo, boardLaneNext} {
+			out = appendLane(out, seen, lane)
+		}
+		return out
+	}
+	order := []boardLane{preferred, boardLaneActive, boardLaneBlocked, boardLaneReady, boardLaneDone, boardLaneWontDo, boardLaneNext}
 	seen := make(map[boardLane]struct{}, len(order))
 	out := make([]boardLane, 0, len(order))
 	for _, lane := range order {
-		if _, ok := seen[lane]; ok {
-			continue
-		}
-		seen[lane] = struct{}{}
-		out = append(out, lane)
+		out = appendLane(out, seen, lane)
 	}
 	return out
 }

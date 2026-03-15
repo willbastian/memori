@@ -76,6 +76,65 @@ func TestBoardTUIApplySnapshotPreservesSelectionByIssueID(t *testing.T) {
 	}
 }
 
+func TestBoardTUIApplySnapshotKeepsNextLaneStickyAcrossRefresh(t *testing.T) {
+	t.Parallel()
+
+	model := newBoardTUIModel(boardSnapshot{
+		LikelyNext: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Next issue")},
+		},
+		Ready: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Next issue")},
+			{Issue: boardTestIssue("mem-b222222", "Task", "Todo", "Ready issue")},
+		},
+	}, 100, 24)
+	model.lane = boardLaneNext
+	model.index = 0
+	model.selectedIssue = "mem-a111111"
+	model = boardNormalizeModel(model)
+
+	updated := boardApplySnapshot(model, boardSnapshot{
+		LikelyNext: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Next issue refreshed")},
+		},
+		Ready: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Next issue refreshed")},
+			{Issue: boardTestIssue("mem-b222222", "Task", "Todo", "Ready issue")},
+		},
+	}, 100, 24)
+
+	if updated.lane != boardLaneNext || updated.selectedIssue != "mem-a111111" {
+		t.Fatalf("expected refresh to keep next lane focus, got %+v", updated)
+	}
+}
+
+func TestBoardTUIApplySnapshotFallsBackWhenNextLaneDisappears(t *testing.T) {
+	t.Parallel()
+
+	model := newBoardTUIModel(boardSnapshot{
+		LikelyNext: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Next issue")},
+		},
+		Ready: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Next issue")},
+		},
+	}, 100, 24)
+	model.lane = boardLaneNext
+	model.index = 0
+	model.selectedIssue = "mem-a111111"
+	model = boardNormalizeModel(model)
+
+	updated := boardApplySnapshot(model, boardSnapshot{
+		Ready: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Ready-only issue")},
+		},
+	}, 100, 24)
+
+	if updated.lane != boardLaneReady || updated.selectedIssue != "mem-a111111" {
+		t.Fatalf("expected refresh to fall back to ready when next disappears, got %+v", updated)
+	}
+}
+
 func TestBoardTUIApplySnapshotKeepsDetailOpenOnNarrowRefresh(t *testing.T) {
 	t.Parallel()
 
@@ -374,6 +433,80 @@ func TestBoardTUIApplySnapshotKeepsSearchStateAcrossRefresh(t *testing.T) {
 	results := boardSearchResults(updated)
 	if len(results) != 1 || results[0].row.Issue.ID != "mem-b222222" {
 		t.Fatalf("expected refreshed search results to stay focused on the blocked match, got %+v", results)
+	}
+}
+
+func TestBoardTUIToggleHistoryRevealsDoneAndWontDoLanes(t *testing.T) {
+	t.Parallel()
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Ready one")},
+		},
+		Done: []boardIssueRow{
+			{Issue: boardTestIssue("mem-b222222", "Task", "Done", "Done one")},
+		},
+		WontDo: []boardIssueRow{
+			{Issue: boardTestIssue("mem-c333333", "Bug", "WontDo", "Declined one")},
+		},
+	}, 120, 28)
+
+	if got := model.availableLanes(); len(got) != 1 || got[0] != boardLaneReady {
+		t.Fatalf("expected default view to stay actionable-only, got %+v", got)
+	}
+
+	model = boardReduce(model, boardActionToggleHistory)
+	if !model.showHistory {
+		t.Fatalf("expected history toggle to enable all-work view")
+	}
+	if got := model.availableLanes(); len(got) != 3 {
+		t.Fatalf("expected done and wontdo lanes to become navigable, got %+v", got)
+	}
+
+	model = boardReduce(model, boardActionNextLane)
+	if model.lane != boardLaneDone {
+		t.Fatalf("expected next lane step to enter done lane, got %+v", model)
+	}
+	model = boardReduce(model, boardActionNextLane)
+	if model.lane != boardLaneWontDo {
+		t.Fatalf("expected second lane step to enter wontdo lane, got %+v", model)
+	}
+}
+
+func TestBoardTUISearchIncludesHistoryOnlyWhenVisible(t *testing.T) {
+	t.Parallel()
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Ready one")},
+		},
+		Done: []boardIssueRow{
+			{Issue: boardTestIssue("mem-d444444", "Task", "Done", "Done match")},
+		},
+	}, 120, 28)
+	model.lane = boardLaneReady
+	model = boardNormalizeModel(model)
+
+	var quit bool
+	model, quit = boardHandleInput(model, boardKeyInput{action: boardActionSearchOpen})
+	if quit {
+		t.Fatal("did not expect search open to quit")
+	}
+	model, quit = boardHandleInput(model, boardKeyInput{text: "d444"})
+	if quit {
+		t.Fatal("did not expect search text entry to quit")
+	}
+	if got := boardSearchResults(model); len(got) != 0 {
+		t.Fatalf("expected done lane to stay hidden from default search, got %+v", got)
+	}
+
+	model, quit = boardHandleInput(model, boardKeyInput{action: boardActionToggleHistory})
+	if quit {
+		t.Fatal("did not expect history toggle to quit")
+	}
+	results := boardSearchResults(model)
+	if len(results) != 1 || results[0].lane != boardLaneDone || results[0].row.Issue.ID != "mem-d444444" {
+		t.Fatalf("expected history search to reveal done match, got %+v", results)
 	}
 }
 

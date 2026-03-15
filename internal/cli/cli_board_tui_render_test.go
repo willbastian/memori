@@ -380,3 +380,32 @@ func TestRenderBoardTUINarrowDetailPrefersFullIssueContent(t *testing.T) {
 		t.Fatalf("expected reasons to come after acceptance details in narrow mode, got:\n%s", rendered)
 	}
 }
+
+func TestRenderBoardTUIHistoryModeShowsDoneAndWontDoTabs(t *testing.T) {
+	t.Parallel()
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Ready one")},
+		},
+		Done: []boardIssueRow{
+			{Issue: boardTestIssue("mem-b222222", "Task", "Done", "Done one")},
+		},
+		WontDo: []boardIssueRow{
+			{Issue: boardTestIssue("mem-c333333", "Bug", "WontDo", "Declined one")},
+		},
+	}, 132, 24)
+	model = boardReduce(model, boardActionToggleHistory)
+
+	rendered := renderBoardTUI(model, false)
+	for _, want := range []string{
+		"ALL WORK",
+		"DONE 1",
+		"WONTDO 1",
+		"f history",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected history render to contain %q, got:\n%s", want, rendered)
+		}
+	}
+}

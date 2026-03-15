@@ -41,6 +41,12 @@ func renderBoardSnapshot(snapshot boardSnapshot, opts boardRenderOptions) (strin
 	renderBoardSection(ui, "Active", snapshot.Active, boardSectionLimit(width), width)
 	renderBoardSection(ui, "Blocked", snapshot.Blocked, boardSectionLimit(width), width)
 	renderBoardSection(ui, "Ready", snapshot.Ready, boardSectionLimit(width), width)
+	if len(snapshot.Done) > 0 {
+		renderBoardSection(ui, "Done", snapshot.Done, boardSectionLimit(width), width)
+	}
+	if len(snapshot.WontDo) > 0 {
+		renderBoardSection(ui, "WontDo", snapshot.WontDo, boardSectionLimit(width), width)
+	}
 
 	if !opts.Watch {
 		nextCommand := "memori issue next"

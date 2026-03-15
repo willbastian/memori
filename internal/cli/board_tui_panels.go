@@ -92,10 +92,12 @@ func boardHelpPanel(theme boardTheme, width, height int) []string {
 		theme.paintLine(theme.helpFG, theme.helpBG, true, padRight(" KEYBOARD ", width)),
 		boardHelpLine(theme, "j / k", "move selection", width),
 		boardHelpLine(theme, "h / l", "switch lanes", width),
+		boardHelpLine(theme, "f", "toggle actionable/all work", width),
 		boardHelpLine(theme, "[ / ]", "jump parent / child", width),
 		boardHelpLine(theme, "{ / }", "collapse / expand subtree", width),
 		boardHelpLine(theme, "g / G", "jump top / bottom", width),
-		boardHelpLine(theme, "enter", "toggle issue detail", width),
+		boardHelpLine(theme, "/", "search visible issue ids", width),
+		boardHelpLine(theme, "enter", "toggle issue detail / confirm search", width),
 		boardHelpLine(theme, "?", "toggle help", width),
 		boardHelpLine(theme, "q", "quit", width),
 	}
@@ -175,9 +177,9 @@ func boardStatusPalette(theme boardTheme, status string) string {
 	case "Blocked":
 		return theme.blockedBG
 	case "Done":
-		return theme.readyBG
+		return theme.doneBG
 	case "WontDo":
-		return theme.panelAltBG
+		return theme.wontDoBG
 	default:
 		return theme.nextBG
 	}

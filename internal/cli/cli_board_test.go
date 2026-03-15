@@ -78,6 +78,45 @@ func TestBoardCommandHumanOutputCapsLongSectionsInNarrowWidth(t *testing.T) {
 	}
 }
 
+func TestRenderBoardSnapshotShowsHistoricalSectionsWhenPresent(t *testing.T) {
+	t.Parallel()
+
+	snapshot := boardSnapshot{
+		GeneratedAt: "2026-03-15T12:00:00Z",
+		Summary: boardSummary{
+			Total:  3,
+			Todo:   1,
+			Done:   1,
+			WontDo: 1,
+		},
+		Ready: []boardIssueRow{
+			{Issue: store.Issue{ID: "mem-a111111", Title: "Ready item"}},
+		},
+		Done: []boardIssueRow{
+			{Issue: store.Issue{ID: "mem-b222222", Title: "Done item"}},
+		},
+		WontDo: []boardIssueRow{
+			{Issue: store.Issue{ID: "mem-c333333", Title: "Declined item"}},
+		},
+	}
+
+	stdout, err := renderBoardSnapshot(snapshot, boardRenderOptions{Width: 80})
+	if err != nil {
+		t.Fatalf("render board snapshot: %v", err)
+	}
+
+	for _, want := range []string{
+		"Done (1):",
+		"mem-b222222 Done item",
+		"WontDo (1):",
+		"mem-c333333 Declined item",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected history output to contain %q, got:\n%s", want, stdout)
+		}
+	}
+}
+
 func TestBoardCommandJSONIncludesCountsAndContinuityDrivenLikelyNext(t *testing.T) {
 	t.Parallel()
 
@@ -115,6 +154,105 @@ func TestBoardCommandJSONIncludesCountsAndContinuityDrivenLikelyNext(t *testing.
 		if !strings.Contains(reasons, want) {
 			t.Fatalf("expected likely next reasons to contain %q, got:\n%s", want, reasons)
 		}
+	}
+}
+
+func TestBoardCommandJSONIncludesHistoricalLanes(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-board-history.json.db")
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	if err := s.Initialize(ctx, store.InitializeParams{IssueKeyPrefix: "mem"}); err != nil {
+		t.Fatalf("initialize store: %v", err)
+	}
+
+	create := func(id, issueType, title, actor, commandID string) {
+		t.Helper()
+		if _, _, _, err := s.CreateIssue(ctx, store.CreateIssueParams{
+			IssueID:   id,
+			Type:      issueType,
+			Title:     title,
+			Actor:     actor,
+			CommandID: commandID,
+		}); err != nil {
+			t.Fatalf("create issue %s: %v", id, err)
+		}
+	}
+	update := func(id, status, actor, commandID string) {
+		t.Helper()
+		if _, _, _, err := s.UpdateIssueStatus(ctx, store.UpdateIssueStatusParams{
+			IssueID:   id,
+			Status:    status,
+			Actor:     actor,
+			CommandID: commandID,
+		}); err != nil {
+			t.Fatalf("update issue %s to %s: %v", id, status, err)
+		}
+	}
+
+	create("mem-a111111", "task", "Ready item", "test", "cmd-board-history-create-1")
+	create("mem-b222222", "task", "Done item", "test", "cmd-board-history-create-2")
+	create("mem-c333333", "bug", "Declined item", "test", "cmd-board-history-create-3")
+	update("mem-b222222", "inprogress", "test", "cmd-board-history-progress-1")
+
+	if _, _, err := s.CreateGateTemplate(ctx, store.CreateGateTemplateParams{
+		TemplateID:     "board-history-close",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"ship","kind":"check","required":true,"criteria":{"ref":"manual-validation"}}]}`,
+		Actor:          "human:alice",
+		CommandID:      "cmd-board-history-template-1",
+	}); err != nil {
+		t.Fatalf("create gate template: %v", err)
+	}
+	if _, _, err := s.InstantiateGateSet(ctx, store.InstantiateGateSetParams{
+		IssueID:      "mem-b222222",
+		TemplateRefs: []string{"board-history-close@1"},
+		Actor:        "test",
+		CommandID:    "cmd-board-history-gset-1",
+	}); err != nil {
+		t.Fatalf("instantiate gate set: %v", err)
+	}
+	if _, _, err := s.LockGateSet(ctx, store.LockGateSetParams{
+		IssueID:   "mem-b222222",
+		Actor:     "test",
+		CommandID: "cmd-board-history-lock-1",
+	}); err != nil {
+		t.Fatalf("lock gate set: %v", err)
+	}
+	if _, _, _, err := s.EvaluateGate(ctx, store.EvaluateGateParams{
+		IssueID:      "mem-b222222",
+		GateID:       "ship",
+		Result:       "PASS",
+		EvidenceRefs: []string{"test:board-history"},
+		Actor:        "test",
+		CommandID:    "cmd-board-history-gate-1",
+	}); err != nil {
+		t.Fatalf("evaluate gate: %v", err)
+	}
+	update("mem-b222222", "done", "test", "cmd-board-history-done-1")
+	update("mem-c333333", "wontdo", "human:alice", "cmd-board-history-wontdo-1")
+
+	stdout, stderr, err := runMemoriForTest("board", "--db", dbPath, "--json")
+	if err != nil {
+		t.Fatalf("board json command: %v\nstderr: %s", err, stderr)
+	}
+
+	var resp boardEnvelope
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("decode board json: %v\nstdout: %s", err, stdout)
+	}
+	if len(resp.Data.Done) != 1 || resp.Data.Done[0].Issue.ID != "mem-b222222" {
+		t.Fatalf("expected done lane in json output, got %+v", resp.Data.Done)
+	}
+	if len(resp.Data.WontDo) != 1 || resp.Data.WontDo[0].Issue.ID != "mem-c333333" {
+		t.Fatalf("expected wontdo lane in json output, got %+v", resp.Data.WontDo)
 	}
 }
 
@@ -197,7 +335,7 @@ func TestBuildBoardSnapshotIncludesHierarchyMetadata(t *testing.T) {
 	}
 }
 
-func TestBuildBoardSnapshotCountsWontDoWithoutSurfacingActionableWork(t *testing.T) {
+func TestBuildBoardSnapshotSurfacesHistoricalStatusesOutsideActionableLanes(t *testing.T) {
 	t.Parallel()
 
 	dbPath := filepath.Join(t.TempDir(), "memori-cli-board-wontdo.db")
@@ -240,6 +378,9 @@ func TestBuildBoardSnapshotCountsWontDoWithoutSurfacingActionableWork(t *testing
 	}
 	if len(snapshot.Active) != 0 || len(snapshot.Blocked) != 0 || len(snapshot.Ready) != 0 {
 		t.Fatalf("expected WontDo issue to stay out of actionable lanes, got active=%+v blocked=%+v ready=%+v", snapshot.Active, snapshot.Blocked, snapshot.Ready)
+	}
+	if len(snapshot.WontDo) != 1 || snapshot.WontDo[0].Issue.ID != "mem-a111111" {
+		t.Fatalf("expected WontDo issue to stay inspectable in history lane, got %+v", snapshot.WontDo)
 	}
 }
 

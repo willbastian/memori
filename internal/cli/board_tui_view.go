@@ -26,6 +26,10 @@ type boardTheme struct {
 	blockedBG   string
 	readyFG     string
 	readyBG     string
+	doneFG      string
+	doneBG      string
+	wontDoFG    string
+	wontDoBG    string
 	nextFG      string
 	nextBG      string
 	metaFG      string
@@ -61,6 +65,10 @@ func renderBoardTUI(model boardTUIModel, colors bool) string {
 		blockedBG:   "225;29;72",
 		readyFG:     "8;47;73",
 		readyBG:     "45;212;191",
+		doneFG:      "6;78;59",
+		doneBG:      "134;239;172",
+		wontDoFG:    "249;250;251",
+		wontDoBG:    "71;85;105",
 		nextFG:      "30;27;75",
 		nextBG:      "196;181;253",
 		metaFG:      "125;211;252",
@@ -121,9 +129,15 @@ func boardHeaderLine(model boardTUIModel, theme boardTheme, width int) string {
 		return theme.paintLine(theme.titleFG, theme.titleBG, true, padRight(truncateBoardLine(" BOARD "+formatBoardSummaryCompact(model.snapshot.Summary), width), width))
 	}
 	title := " MEMORI BOARD "
-	meta := fmt.Sprintf(" %s ", formatBoardSummary(model.snapshot.Summary, false))
+	scope := " ACTIONABLE "
+	if model.showHistory {
+		scope = " ALL WORK "
+	}
+	meta := fmt.Sprintf(" %s%s", formatBoardSummary(model.snapshot.Summary, false), scope)
 	if model.snapshot.Agent != "" {
 		meta += fmt.Sprintf(" AGENT %s ", strings.ToUpper(model.snapshot.Agent))
+	} else {
+		meta += " "
 	}
 	if len(meta) > width/2 {
 		meta = truncateBoardLine(meta, width/2)
@@ -134,12 +148,12 @@ func boardHeaderLine(model boardTUIModel, theme boardTheme, width int) string {
 }
 
 func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
-	if width < 44 {
+	if width < 56 {
 		line := formatBoardTabsCompact(model)
 		return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(line, width), width))
 	}
-	tabs := make([]string, 0, 4)
-	for _, lane := range []boardLane{boardLaneNext, boardLaneActive, boardLaneBlocked, boardLaneReady} {
+	tabs := make([]string, 0, len(model.availableLanes()))
+	for _, lane := range model.availableLanes() {
 		label := fmt.Sprintf(" %s %d ", strings.ToUpper(boardLaneTitle(lane)), model.issueCountForLane(lane))
 		fg, bg := theme.mutedFG, theme.panelAltBG
 		bold := false
@@ -156,6 +170,12 @@ func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
 		case boardLaneReady:
 			bg = theme.readyBG
 			fg = theme.readyFG
+		case boardLaneDone:
+			bg = theme.doneBG
+			fg = theme.doneFG
+		case boardLaneWontDo:
+			bg = theme.wontDoBG
+			fg = theme.wontDoFG
 		}
 		if lane == model.lane {
 			bold = true
@@ -165,7 +185,7 @@ func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
 		}
 		tabs = append(tabs, theme.paintLine(fg, bg, bold, label))
 	}
-	help := theme.paintLine(theme.mutedFG, "", false, " h/l lanes  j/k move  [] tree  {} fold  enter detail  ? help  q quit ")
+	help := theme.paintLine(theme.mutedFG, "", false, " h/l lanes  j/k move  f history  / search  [] tree  {} fold  enter detail  ? help  q quit ")
 	line := strings.Join(tabs, " ")
 	if len(stripANSI(line))+len(stripANSI(help))+1 <= width {
 		line += padRight("", width-len(stripANSI(line))-len(stripANSI(help))) + help
@@ -175,7 +195,11 @@ func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
 
 func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
 	if model.searchOpen {
-		footer := fmt.Sprintf(" Search /%s  |  enter jump  j/k results  backspace edit  esc cancel ", model.searchQuery)
+		scope := "actionable"
+		if model.showHistory {
+			scope = "all"
+		}
+		footer := fmt.Sprintf(" Search /%s  |  enter jump  j/k results  backspace edit  f scope:%s  esc cancel ", model.searchQuery, scope)
 		return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
 	}
 	row, ok := model.selectedRow()
@@ -186,7 +210,11 @@ func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
 		footer := fmt.Sprintf(" %s %s ", boardDisplayIssueID(row.Issue.ID, width), truncateBoardLine(row.Issue.Title, maxInt(width-12, 8)))
 		return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
 	}
-	footer := fmt.Sprintf(" Selected %s  |  %s  |  %s ", row.Issue.ID, row.Issue.Status, truncateBoardLine(row.Issue.Title, maxInt(width/2, 20)))
+	scope := "ACTIONABLE"
+	if model.showHistory {
+		scope = "ALL WORK"
+	}
+	footer := fmt.Sprintf(" Selected %s  |  %s  |  %s  |  f:%s ", row.Issue.ID, row.Issue.Status, truncateBoardLine(row.Issue.Title, maxInt(width/2, 20)), scope)
 	return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
 }
 
@@ -217,6 +245,10 @@ func boardLaneTitle(lane boardLane) string {
 		return "Blocked"
 	case boardLaneReady:
 		return "Ready"
+	case boardLaneDone:
+		return "Done"
+	case boardLaneWontDo:
+		return "WontDo"
 	default:
 		return "Lane"
 	}
@@ -267,8 +299,18 @@ func formatBoardTabsCompact(model boardTUIModel) string {
 		fmt.Sprintf("B%d", model.issueCountForLane(boardLaneBlocked)),
 		fmt.Sprintf("R%d", model.issueCountForLane(boardLaneReady)),
 	}
+	if model.showHistory {
+		parts = append(parts,
+			fmt.Sprintf("D%d", model.issueCountForLane(boardLaneDone)),
+			fmt.Sprintf("W%d", model.issueCountForLane(boardLaneWontDo)),
+		)
+	}
 	line := strings.Join(parts, " ")
-	return boardLaneTitle(model.lane) + " | " + line
+	scope := "act"
+	if model.showHistory {
+		scope = "all"
+	}
+	return boardLaneTitle(model.lane) + " | " + scope + " | " + line
 }
 
 func boardHierarchyToggleToken(expanded bool) string {

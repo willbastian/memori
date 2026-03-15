@@ -39,8 +39,9 @@ func TestBoardStatusHelpersMapStatusesToCodesAndPalette(t *testing.T) {
 		activeBG:   "1;2;3",
 		blockedBG:  "4;5;6",
 		readyBG:    "7;8;9",
-		panelAltBG: "10;11;12",
-		nextBG:     "13;14;15",
+		doneBG:     "10;11;12",
+		wontDoBG:   "13;14;15",
+		nextBG:     "16;17;18",
 	}
 
 	cases := []struct {
@@ -50,8 +51,8 @@ func TestBoardStatusHelpersMapStatusesToCodesAndPalette(t *testing.T) {
 	}{
 		{status: "InProgress", code: ">>", bg: theme.activeBG},
 		{status: "Blocked", code: "!!", bg: theme.blockedBG},
-		{status: "Done", code: "OK", bg: theme.readyBG},
-		{status: "WontDo", code: "NO", bg: theme.panelAltBG},
+		{status: "Done", code: "OK", bg: theme.doneBG},
+		{status: "WontDo", code: "NO", bg: theme.wontDoBG},
 		{status: "Todo", code: "..", bg: theme.nextBG},
 	}
 

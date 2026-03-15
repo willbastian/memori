@@ -450,6 +450,7 @@ In the interactive TUI:
 
 - `j` / `k` move through issues
 - `h` / `l` switch lanes
+- `f` toggles between the fast actionable view and an all-work history view that includes `Done` and `WontDo`
 - `[` jumps to the parent issue and `]` jumps to the first child
 - `{` collapses children and `}` expands them
 - `/` opens issue-id search and `enter` jumps to the selected result
@@ -461,9 +462,10 @@ The board surfaces:
 - blocked work (`Blocked`)
 - ready work (`Todo`) ranked from existing `issue next` guidance
 - likely next work, including continuity signals such as focus, packets, open loops, and gate state
+- completed and declined work through the all-work history view (`Done` and `WontDo`)
 - hierarchy context such as parent, child, depth, and sibling metadata for each issue
 
-For split panes, keep one shell running `board --watch` and do mutations in another. Use `--agent` when you want the likely-next panel to reflect a specific worker's current focus and recovery packet state.
+For split panes, keep one shell running `board --watch` and do mutations in another. When stdout is attached to a real terminal, watch mode redraws in place instead of appending endless snapshots. Use `--agent` when you want the likely-next panel to reflect a specific worker's current focus and recovery packet state.
 
 ### 4. Resume and handoff flow
 

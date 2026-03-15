@@ -64,6 +64,7 @@ func boardSnapshotSignature(snapshot boardSnapshot) string {
 
 func runBoardLoop(ctx context.Context, out io.Writer, interval time.Duration, render func() (string, string, error)) error {
 	var lastSignature string
+	redraw := boardSupportsInteractive(out)
 	renderFrame := func(first bool) error {
 		rendered, signature, err := render()
 		if err != nil {
@@ -72,7 +73,9 @@ func runBoardLoop(ctx context.Context, out io.Writer, interval time.Duration, re
 		if !first && signature == lastSignature {
 			return nil
 		}
-		if !first {
+		if redraw {
+			_, _ = io.WriteString(out, "\x1b[H\x1b[2J")
+		} else if !first {
 			_, _ = io.WriteString(out, "\n")
 		}
 		lastSignature = signature

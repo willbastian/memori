@@ -44,6 +44,8 @@ func readBoardInput(reader *bufio.Reader) (boardKeyInput, error) {
 		return boardKeyInput{action: boardActionBottom}, nil
 	case '?':
 		return boardKeyInput{action: boardActionToggleHelp}, nil
+	case 'f':
+		return boardKeyInput{action: boardActionToggleHistory}, nil
 	case '[':
 		return boardKeyInput{action: boardActionParent}, nil
 	case ']':

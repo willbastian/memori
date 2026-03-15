@@ -9,6 +9,8 @@ const (
 	boardLaneActive
 	boardLaneBlocked
 	boardLaneReady
+	boardLaneDone
+	boardLaneWontDo
 )
 
 type boardAction int
@@ -28,6 +30,7 @@ const (
 	boardActionChild
 	boardActionCollapse
 	boardActionExpand
+	boardActionToggleHistory
 	boardActionQuit
 )
 
@@ -52,6 +55,7 @@ type boardTUIModel struct {
 	searchIndex   int
 	searchOrigin  string
 	searchLane    boardLane
+	showHistory   bool
 }
 
 func newBoardTUIModel(snapshot boardSnapshot, width, height int) boardTUIModel {
@@ -67,6 +71,8 @@ func newBoardTUIModel(snapshot boardSnapshot, width, height int) boardTUIModel {
 }
 
 func boardApplySnapshot(model boardTUIModel, snapshot boardSnapshot, width, height int) boardTUIModel {
+	selectedLane := model.lane
+	selectedIndex := model.index
 	selectedIssue := model.selectedIssue
 	expanded := make(map[string]bool, len(model.expanded))
 	for issueID, open := range model.expanded {
@@ -77,6 +83,18 @@ func boardApplySnapshot(model boardTUIModel, snapshot boardSnapshot, width, heig
 	model.height = maxInt(height, 10)
 	model.expanded = expanded
 	model = boardNormalizeModel(model)
+	if boardLaneInSet(selectedLane, model.availableLanes()) {
+		model.lane = selectedLane
+		model.index = selectedIndex
+		model = boardClampSelection(model)
+		if selectedIssue != "" {
+			preserved := boardFocusIssuePreferred(model, selectedIssue, []boardLane{selectedLane})
+			if preserved.selectedIssue == selectedIssue && preserved.lane == selectedLane {
+				return preserved
+			}
+		}
+		return model
+	}
 	if selectedIssue == "" {
 		return model
 	}
@@ -92,7 +110,7 @@ func boardNormalizeModel(model boardTUIModel) boardTUIModel {
 	model = boardClampSearchSelection(model)
 	lanes := model.availableLanes()
 	if len(lanes) == 0 {
-		model.lane = boardLaneNext
+		model.lane = model.navigationLanes()[0]
 		model.index = 0
 		model.selectedIssue = ""
 		return model
@@ -130,32 +148,11 @@ func boardSyncExpandedState(model boardTUIModel) boardTUIModel {
 		model.expanded = make(map[string]bool)
 	}
 	valid := make(map[string]struct{})
-	for _, row := range model.snapshot.LikelyNext {
-		if row.Hierarchy.HasChildren {
-			valid[row.Issue.ID] = struct{}{}
-			if _, ok := model.expanded[row.Issue.ID]; !ok {
-				model.expanded[row.Issue.ID] = true
+	for _, lane := range boardAllLanes() {
+		for _, row := range model.rawRowsForLane(lane) {
+			if !row.Hierarchy.HasChildren {
+				continue
 			}
-		}
-	}
-	for _, row := range model.snapshot.Active {
-		if row.Hierarchy.HasChildren {
-			valid[row.Issue.ID] = struct{}{}
-			if _, ok := model.expanded[row.Issue.ID]; !ok {
-				model.expanded[row.Issue.ID] = true
-			}
-		}
-	}
-	for _, row := range model.snapshot.Blocked {
-		if row.Hierarchy.HasChildren {
-			valid[row.Issue.ID] = struct{}{}
-			if _, ok := model.expanded[row.Issue.ID]; !ok {
-				model.expanded[row.Issue.ID] = true
-			}
-		}
-	}
-	for _, row := range model.snapshot.Ready {
-		if row.Hierarchy.HasChildren {
 			valid[row.Issue.ID] = struct{}{}
 			if _, ok := model.expanded[row.Issue.ID]; !ok {
 				model.expanded[row.Issue.ID] = true
@@ -189,14 +186,38 @@ func boardClampSelection(model boardTUIModel) boardTUIModel {
 }
 
 func (model boardTUIModel) availableLanes() []boardLane {
-	lanes := make([]boardLane, 0, 4)
-	for _, lane := range []boardLane{boardLaneNext, boardLaneActive, boardLaneBlocked, boardLaneReady} {
+	lanes := make([]boardLane, 0, len(model.navigationLanes()))
+	for _, lane := range model.navigationLanes() {
 		if len(model.rowsForLane(lane)) > 0 {
 			lanes = append(lanes, lane)
 		}
 	}
 	if len(lanes) == 0 {
-		return []boardLane{boardLaneNext, boardLaneActive, boardLaneBlocked, boardLaneReady}
+		return model.navigationLanes()
+	}
+	return lanes
+}
+
+func boardAllLanes() []boardLane {
+	return []boardLane{
+		boardLaneNext,
+		boardLaneActive,
+		boardLaneBlocked,
+		boardLaneReady,
+		boardLaneDone,
+		boardLaneWontDo,
+	}
+}
+
+func (model boardTUIModel) navigationLanes() []boardLane {
+	lanes := []boardLane{
+		boardLaneNext,
+		boardLaneActive,
+		boardLaneBlocked,
+		boardLaneReady,
+	}
+	if model.showHistory {
+		lanes = append(lanes, boardLaneDone, boardLaneWontDo)
 	}
 	return lanes
 }
@@ -248,6 +269,10 @@ func (model boardTUIModel) rawRowsForLane(lane boardLane) []boardIssueRow {
 		return model.snapshot.Blocked
 	case boardLaneReady:
 		return model.snapshot.Ready
+	case boardLaneDone:
+		return model.snapshot.Done
+	case boardLaneWontDo:
+		return model.snapshot.WontDo
 	default:
 		return nil
 	}
@@ -308,7 +333,7 @@ func boardVisibleRows(rows []boardIssueRow, expanded map[string]bool) []boardIss
 }
 
 func boardFocusIssue(model boardTUIModel, issueID string) boardTUIModel {
-	return boardFocusIssuePreferred(model, issueID, boardLanePreference(model.lane))
+	return boardFocusIssuePreferred(model, issueID, boardLanePreference(model.lane, model.navigationLanes()))
 }
 
 func boardFocusIssuePreferred(model boardTUIModel, issueID string, lanes []boardLane) boardTUIModel {

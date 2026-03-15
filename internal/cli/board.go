@@ -21,6 +21,8 @@ type boardData struct {
 	Active     []boardIssueRow `json:"active"`
 	Blocked    []boardIssueRow `json:"blocked"`
 	Ready      []boardIssueRow `json:"ready"`
+	Done       []boardIssueRow `json:"done"`
+	WontDo     []boardIssueRow `json:"wont_do"`
 	LikelyNext *boardIssueRow  `json:"likely_next,omitempty"`
 }
 
@@ -31,6 +33,8 @@ type boardSnapshot struct {
 	Active      []boardIssueRow `json:"active"`
 	Blocked     []boardIssueRow `json:"blocked"`
 	Ready       []boardIssueRow `json:"ready"`
+	Done        []boardIssueRow `json:"done"`
+	WontDo      []boardIssueRow `json:"wont_do"`
 	LikelyNext  []boardIssueRow `json:"likely_next"`
 }
 
@@ -278,6 +282,10 @@ func boardAppendSnapshotRow(snapshot *boardSnapshot, row boardIssueRow) {
 		snapshot.Blocked = append(snapshot.Blocked, row)
 	case "Todo":
 		snapshot.Ready = append(snapshot.Ready, row)
+	case "Done":
+		snapshot.Done = append(snapshot.Done, row)
+	case "WontDo":
+		snapshot.WontDo = append(snapshot.WontDo, row)
 	}
 }
 
@@ -313,6 +321,8 @@ func boardSortSnapshot(snapshot *boardSnapshot, rankByID map[string]int) {
 	sortBoardRows(snapshot.Active, rankByID)
 	sortBoardRows(snapshot.Ready, rankByID)
 	sortBoardRows(snapshot.Blocked, rankByID)
+	sortBoardRows(snapshot.Done, rankByID)
+	sortBoardRows(snapshot.WontDo, rankByID)
 }
 
 func sortBoardRows(rows []boardIssueRow, rankByID map[string]int) {
@@ -339,6 +349,8 @@ func newBoardData(snapshot boardSnapshot) boardData {
 		Active:   append([]boardIssueRow(nil), snapshot.Active...),
 		Blocked:  append([]boardIssueRow(nil), snapshot.Blocked...),
 		Ready:    append([]boardIssueRow(nil), snapshot.Ready...),
+		Done:     append([]boardIssueRow(nil), snapshot.Done...),
+		WontDo:   append([]boardIssueRow(nil), snapshot.WontDo...),
 	}
 	if len(snapshot.LikelyNext) > 0 {
 		row := snapshot.LikelyNext[0]
