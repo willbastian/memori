@@ -273,10 +273,19 @@ func TestContextResumeUsesSavedPacketAndOptionalAgentFocus(t *testing.T) {
 	if resumed.Command != "context resume" || resumed.Data.SessionID != started.Data.Session.SessionID {
 		t.Fatalf("unexpected context resume response: %+v", resumed)
 	}
-	if resumed.Data.Source != "packet" || resumed.Data.Packet.PacketID != saved.Data.Packet.PacketID {
+	if resumed.Data.Source != "packet" {
 		t.Fatalf("expected packet-first resume, got %+v", resumed)
 	}
-	if !resumed.Data.FocusUsed || resumed.Data.Focus.AgentID != "agent-resume-1" || resumed.Data.Focus.LastPacketID != saved.Data.Packet.PacketID {
+	if resumed.Data.Packet.Scope != "issue" {
+		t.Fatalf("expected issue-scoped focus packet for resume, got %+v", resumed)
+	}
+	if resumed.Data.Packet.PacketID == "" || resumed.Data.Packet.PacketID == saved.Data.Packet.PacketID {
+		t.Fatalf("expected resume focus to build or select an issue packet distinct from the saved session packet, got %+v", resumed)
+	}
+	if !resumed.Data.FocusUsed ||
+		resumed.Data.Focus.AgentID != "agent-resume-1" ||
+		resumed.Data.Focus.ActiveIssueID != "mem-a111111" ||
+		resumed.Data.Focus.LastPacketID != resumed.Data.Packet.PacketID {
 		t.Fatalf("expected focused resume response, got %+v", resumed)
 	}
 }

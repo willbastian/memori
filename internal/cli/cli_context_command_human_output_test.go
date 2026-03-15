@@ -283,6 +283,8 @@ func TestContextResumeHumanOutputCoversFallbackAndFocusedResume(t *testing.T) {
 		t.Fatalf("context resume focused: %v\nstderr: %s", err, stderr)
 	}
 	mustContain(t, stdout, "OK Resumed session sess-human-resume-2 via packet and updated focus for agent-human-resume-1")
+	mustContain(t, stdout, "Packet Scope: issue")
+	mustContain(t, stdout, "Issue: mem-a222222")
 	mustContain(t, stdout, "Agent: agent-human-resume-1")
 	mustContain(t, stdout, "memori issue next --agent agent-human-resume-1")
 	mustContain(t, stdout, "memori board --agent agent-human-resume-1")

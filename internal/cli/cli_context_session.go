@@ -324,12 +324,9 @@ func runContextResume(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		packetForFocus := result.Packet
-		if strings.TrimSpace(packetForFocus.PacketID) == "" {
-			packetForFocus, err = buildResumeFocusPacket(ctx, s, resolution.sessionID, identity.Actor, identity.CommandID)
-			if err != nil {
-				return err
-			}
+		packetForFocus, err := resolveResumeFocusPacket(ctx, s, resolution.sessionID, result.Packet, identity.Actor, identity.CommandID)
+		if err != nil {
+			return err
 		}
 		focus, packet, focusIdempotent, err := s.UseRehydratePacket(ctx, store.UsePacketParams{
 			AgentID:   *agentID,
@@ -387,10 +384,11 @@ func runContextResume(args []string, out io.Writer) error {
 	return nil
 }
 
-func buildResumeFocusPacket(
+func resolveResumeFocusPacket(
 	ctx context.Context,
 	s *store.Store,
 	sessionID string,
+	resumePacket store.RehydratePacket,
 	actor string,
 	baseCommandID string,
 ) (store.RehydratePacket, error) {
@@ -399,12 +397,26 @@ func buildResumeFocusPacket(
 		return store.RehydratePacket{}, err
 	}
 
+	if issueID := sessionIssueIDForCLI(session); issueID != "" {
+		if strings.TrimSpace(resumePacket.PacketID) != "" &&
+			strings.EqualFold(strings.TrimSpace(resumePacket.Scope), "issue") &&
+			packetIssueIDForCLI(resumePacket) == issueID {
+			return resumePacket, nil
+		}
+		return s.BuildRehydratePacket(ctx, store.BuildPacketParams{
+			Scope:     "issue",
+			ScopeID:   issueID,
+			Actor:     actor,
+			CommandID: derivedCompositeCommandID(baseCommandID, "packet"),
+		})
+	}
+
+	if strings.TrimSpace(resumePacket.PacketID) != "" {
+		return resumePacket, nil
+	}
+
 	scope := "session"
 	scopeID := sessionID
-	if issueID := sessionIssueIDForCLI(session); issueID != "" {
-		scope = "issue"
-		scopeID = issueID
-	}
 
 	return s.BuildRehydratePacket(ctx, store.BuildPacketParams{
 		Scope:     scope,

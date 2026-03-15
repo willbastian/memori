@@ -526,7 +526,12 @@ func TestDefaultContinuityLoopJSONContract(t *testing.T) {
 	if resumed.Command != "context resume" || resumed.Data.Source != "packet" || !resumed.Data.FocusUsed {
 		t.Fatalf("unexpected context resume response: %+v", resumed)
 	}
-	if resumed.Data.Focus.AgentID != "agent-loop-json-1" || resumed.Data.Focus.LastPacketID == "" {
+	if resumed.Data.Packet.Scope != "issue" {
+		t.Fatalf("expected issue-scoped packet for focused resume, got %+v", resumed)
+	}
+	if resumed.Data.Focus.AgentID != "agent-loop-json-1" ||
+		resumed.Data.Focus.ActiveIssueID != "mem-c111111" ||
+		resumed.Data.Focus.LastPacketID == "" {
 		t.Fatalf("expected focused resume packet for agent-loop-json-1, got %+v", resumed)
 	}
 
