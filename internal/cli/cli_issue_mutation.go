@@ -203,11 +203,6 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	autoStartedContinuity := continuityMode == continuityModeAuto && statusProvided && strings.EqualFold(strings.TrimSpace(*status), "inprogress")
 	autoSavedContinuity := continuityMode == continuityModeAuto && statusProvided && (strings.EqualFold(strings.TrimSpace(*status), "blocked") || strings.EqualFold(strings.TrimSpace(*status), "done")) && !*skipContinuity
 	closeContinuitySession := statusProvided && strings.EqualFold(strings.TrimSpace(*status), "done")
-	if autoSavedContinuity {
-		if _, err := resolveSessionForContinuitySave(ctx, s, "", issueKey, derivedCompositeCommandID(identity.CommandID, "summarize")); err != nil {
-			return fmt.Errorf("automatic continuity capture for %s needs an open session; start work first with `memori issue update --status inprogress` or bypass intentionally with --skip-continuity: %w", strings.ToLower(strings.TrimSpace(*status)), err)
-		}
-	}
 
 	issue, event, idempotent, err := s.UpdateIssue(ctx, store.UpdateIssueParams{
 		IssueID:            issueKey,
@@ -223,6 +218,11 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	})
 	if err != nil {
 		return err
+	}
+	if autoSavedContinuity {
+		if _, err := resolveSessionForContinuitySave(ctx, s, "", issue.ID, derivedCompositeCommandID(identity.CommandID, "summarize")); err != nil {
+			return fmt.Errorf("issue %s is now %s, but automatic continuity capture needs an open session; start work first with `memori issue update --status inprogress` or bypass intentionally with --skip-continuity: %w", issue.ID, issue.Status, err)
+		}
 	}
 
 	var continuityResult startIssueContinuityResult

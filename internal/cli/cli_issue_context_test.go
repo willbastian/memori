@@ -419,8 +419,8 @@ func TestIssueUpdateBlockedRejectsDifferentIssueOpenSession(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &shown); err != nil {
 		t.Fatalf("decode unaffected issue json: %v\nstdout: %s", err, stdout)
 	}
-	if shown.Data.Issue.Status != "Todo" {
-		t.Fatalf("expected unrelated issue to remain Todo, got %+v", shown.Data.Issue)
+	if shown.Data.Issue.Status != "Blocked" {
+		t.Fatalf("expected target issue status update to stick before continuity failure, got %+v", shown.Data.Issue)
 	}
 
 	stdout, stderr, err = runMemoriForTest("context", "rehydrate", "--db", dbPath, "--json")
@@ -565,14 +565,42 @@ func TestIssueUpdateBlockedRequiresOpenSessionUnlessSkipped(t *testing.T) {
 		"--actor", "test",
 		"--command-id", "cmd-cli-blocked-requires-session-blocked-1",
 	)
-	if err == nil || !strings.Contains(err.Error(), "automatic continuity capture for blocked needs an open session") {
+	if err == nil || !strings.Contains(err.Error(), "issue mem-8888aaa is now Blocked, but automatic continuity capture needs an open session") {
 		t.Fatalf("expected blocked continuity session error, got %v", err)
 	}
+	stdout, stderr, err := runMemoriForTest("issue", "show", "--db", dbPath, "--key", "mem-8888aaa", "--json")
+	if err != nil {
+		t.Fatalf("issue show after blocked continuity failure: %v\nstderr: %s", err, stderr)
+	}
+	var blocked issueEnvelope
+	if err := json.Unmarshal([]byte(stdout), &blocked); err != nil {
+		t.Fatalf("decode blocked issue json: %v\nstdout: %s", err, stdout)
+	}
+	if blocked.Data.Issue.Status != "Blocked" {
+		t.Fatalf("expected blocked status to persist after continuity failure, got %+v", blocked.Data.Issue)
+	}
+	if _, _, _, err := s.CreateIssue(ctx, store.CreateIssueParams{
+		IssueID:   "mem-8888aab",
+		Type:      "task",
+		Title:     "Skip continuity session bypass",
+		Actor:     "test",
+		CommandID: "cmd-cli-blocked-requires-session-create-2",
+	}); err != nil {
+		t.Fatalf("create second issue: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, store.UpdateIssueStatusParams{
+		IssueID:   "mem-8888aab",
+		Status:    "inprogress",
+		Actor:     "test",
+		CommandID: "cmd-cli-blocked-requires-session-progress-2",
+	}); err != nil {
+		t.Fatalf("move second issue to inprogress: %v", err)
+	}
 
-	stdout, stderr, err := runMemoriForTest(
+	stdout, stderr, err = runMemoriForTest(
 		"issue", "update",
 		"--db", dbPath,
-		"--key", "mem-8888aaa",
+		"--key", "mem-8888aab",
 		"--status", "blocked",
 		"--skip-continuity",
 		"--actor", "test",
@@ -583,6 +611,30 @@ func TestIssueUpdateBlockedRequiresOpenSessionUnlessSkipped(t *testing.T) {
 	}
 	if strings.Contains(stdout, "Continuity Saved:") {
 		t.Fatalf("did not expect continuity save section when skip flag is set, got:\n%s", stdout)
+	}
+}
+
+func TestIssueUpdateBlockedPreservesIssueNotFoundErrorBeforeContinuityPrecheck(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-issue-update-blocked-missing-issue.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+
+	_, _, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-deadbee",
+		"--status", "blocked",
+		"--actor", "test",
+		"--command-id", "cmd-cli-blocked-missing-issue-1",
+	)
+	if err == nil || !strings.Contains(err.Error(), `issue "mem-deadbee" not found`) {
+		t.Fatalf("expected missing issue error before continuity precheck, got %v", err)
+	}
+	if strings.Contains(err.Error(), "automatic continuity capture needs an open session") {
+		t.Fatalf("expected missing issue error to win over continuity precheck, got %v", err)
 	}
 }
 
