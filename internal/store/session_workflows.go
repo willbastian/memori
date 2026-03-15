@@ -14,6 +14,14 @@ func (s *Store) CheckpointSession(ctx context.Context, p CheckpointSessionParams
 	if sessionID == "" {
 		return Session{}, false, errors.New("--session is required")
 	}
+	issueID := strings.TrimSpace(p.IssueID)
+	if issueID != "" {
+		normalizedIssueID, err := normalizeIssueKey(issueID)
+		if err != nil {
+			return Session{}, false, fmt.Errorf("invalid issue_id: %w", err)
+		}
+		issueID = normalizedIssueID
+	}
 	trigger := strings.TrimSpace(p.Trigger)
 	if trigger == "" {
 		trigger = "manual"
@@ -52,6 +60,14 @@ func (s *Store) CheckpointSession(ctx context.Context, p CheckpointSessionParams
 		"trigger":     trigger,
 		"captured_at": now,
 	}
+	if sessionExists && issueID == "" {
+		if existingIssueID := strings.TrimSpace(anyToString(existingSession.Checkpoint["issue_id"])); existingIssueID != "" {
+			issueID = existingIssueID
+		}
+	}
+	if issueID != "" {
+		checkpoint["issue_id"] = issueID
+	}
 	if latestEventID != "" {
 		checkpoint["latest_event_id"] = latestEventID
 	}
@@ -66,6 +82,9 @@ func (s *Store) CheckpointSession(ctx context.Context, p CheckpointSessionParams
 	chunkMetadata := map[string]any{
 		"trigger":         trigger,
 		"latest_event_id": latestEventID,
+	}
+	if issueID != "" {
+		chunkMetadata["issue_id"] = issueID
 	}
 	payloadBytes, err := json.Marshal(sessionCheckpointedPayload{
 		SessionID:           sessionID,
@@ -305,6 +324,28 @@ func (s *Store) LatestOpenSession(ctx context.Context) (Session, bool, error) {
 	return session, true, nil
 }
 
+func (s *Store) LatestOpenSessionForIssue(ctx context.Context, issueID string) (Session, bool, error) {
+	normalizedIssueID, err := normalizeIssueKey(issueID)
+	if err != nil {
+		return Session{}, false, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Session{}, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	session, err := latestOpenSessionForIssueTx(ctx, tx, normalizedIssueID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Session{}, false, nil
+		}
+		return Session{}, false, err
+	}
+	return session, true, nil
+}
+
 func (s *Store) LatestSession(ctx context.Context) (Session, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -342,4 +383,19 @@ func (s *Store) SessionForCommand(ctx context.Context, commandID string) (Sessio
 		return Session{}, false, err
 	}
 	return session, true, nil
+}
+
+func (s *Store) GetSession(ctx context.Context, sessionID string) (Session, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return Session{}, errors.New("--session is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Session{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	return sessionByIDTx(ctx, tx, sessionID)
 }

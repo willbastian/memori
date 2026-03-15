@@ -314,7 +314,7 @@ func TestIssueUpdateBlockedSavesContinuityByDefault(t *testing.T) {
 		t.Fatalf("issue update blocked: %v\nstderr: %s", err, stderr)
 	}
 	mustContain(t, stdout, "Continuity Saved:")
-	mustContain(t, stdout, "Used open session ")
+	mustContain(t, stdout, "Used the open session already tracking this issue")
 	mustContain(t, stdout, "Summarized session ")
 	mustContain(t, stdout, "Saved session packet ")
 
@@ -352,6 +352,100 @@ func TestIssueUpdateBlockedSavesContinuityByDefault(t *testing.T) {
 	}
 	if sessionEvents.Data.Events[1].CommandID != "cmd-cli-blocked-continuity-blocked-1-summarize" {
 		t.Fatalf("expected summarize command id, got %+v", sessionEvents.Data.Events[1])
+	}
+}
+
+func TestIssueUpdateBlockedRejectsDifferentIssueOpenSession(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-issue-update-blocked-cross-issue.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	for _, args := range [][]string{
+		{
+			"issue", "create",
+			"--db", dbPath,
+			"--key", "mem-7777aaa",
+			"--type", "task",
+			"--title", "Issue with continuity",
+			"--actor", "test",
+			"--command-id", "cmd-cli-cross-issue-create-1",
+			"--json",
+		},
+		{
+			"issue", "create",
+			"--db", dbPath,
+			"--key", "mem-7777aab",
+			"--type", "task",
+			"--title", "Issue without continuity",
+			"--actor", "test",
+			"--command-id", "cmd-cli-cross-issue-create-2",
+			"--json",
+		},
+		{
+			"issue", "update",
+			"--db", dbPath,
+			"--key", "mem-7777aaa",
+			"--status", "inprogress",
+			"--actor", "test",
+			"--command-id", "cmd-cli-cross-issue-progress-1",
+			"--json",
+		},
+	} {
+		if _, stderr, err := runMemoriForTest(args...); err != nil {
+			t.Fatalf("setup command %v: %v\nstderr: %s", args, err, stderr)
+		}
+	}
+
+	_, _, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-7777aab",
+		"--status", "blocked",
+		"--actor", "test",
+		"--command-id", "cmd-cli-cross-issue-blocked-1",
+	)
+	if err == nil || !strings.Contains(err.Error(), "no open session found for issue mem-7777aab") {
+		t.Fatalf("expected issue-scoped continuity error, got %v", err)
+	}
+
+	stdout, stderr, err := runMemoriForTest("issue", "show", "--db", dbPath, "--key", "mem-7777aab", "--json")
+	if err != nil {
+		t.Fatalf("issue show unaffected issue: %v\nstderr: %s", err, stderr)
+	}
+	var shown issueEnvelope
+	if err := json.Unmarshal([]byte(stdout), &shown); err != nil {
+		t.Fatalf("decode unaffected issue json: %v\nstdout: %s", err, stdout)
+	}
+	if shown.Data.Issue.Status != "Todo" {
+		t.Fatalf("expected unrelated issue to remain Todo, got %+v", shown.Data.Issue)
+	}
+
+	stdout, stderr, err = runMemoriForTest("context", "rehydrate", "--db", dbPath, "--json")
+	if err != nil {
+		t.Fatalf("context rehydrate surviving session: %v\nstderr: %s", err, stderr)
+	}
+	var rehydrated contextRehydrateEnvelope
+	if err := json.Unmarshal([]byte(stdout), &rehydrated); err != nil {
+		t.Fatalf("decode surviving session rehydrate json: %v\nstdout: %s", err, stdout)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"event", "log",
+		"--db", dbPath,
+		"--entity", "session:"+rehydrated.Data.SessionID,
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("event log surviving session: %v\nstderr: %s", err, stderr)
+	}
+	var sessionEvents eventLogEnvelope
+	if err := json.Unmarshal([]byte(stdout), &sessionEvents); err != nil {
+		t.Fatalf("decode surviving session event log: %v\nstdout: %s", err, stdout)
+	}
+	if len(sessionEvents.Data.Events) != 1 || sessionEvents.Data.Events[0].EventType != "session.checkpointed" {
+		t.Fatalf("expected the other issue session to stay untouched, got %+v", sessionEvents.Data.Events)
 	}
 }
 

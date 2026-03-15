@@ -204,7 +204,7 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	autoSavedContinuity := continuityMode == continuityModeAuto && statusProvided && (strings.EqualFold(strings.TrimSpace(*status), "blocked") || strings.EqualFold(strings.TrimSpace(*status), "done")) && !*skipContinuity
 	closeContinuitySession := statusProvided && strings.EqualFold(strings.TrimSpace(*status), "done")
 	if autoSavedContinuity {
-		if _, err := resolveOpenSessionForMutation(ctx, s, "", derivedCompositeCommandID(identity.CommandID, "summarize")); err != nil {
+		if _, err := resolveSessionForContinuitySave(ctx, s, "", issueKey, derivedCompositeCommandID(identity.CommandID, "summarize")); err != nil {
 			return fmt.Errorf("automatic continuity capture for %s needs an open session; start work first with `memori issue update --status inprogress` or bypass intentionally with --skip-continuity: %w", strings.ToLower(strings.TrimSpace(*status)), err)
 		}
 	}
@@ -248,6 +248,7 @@ func runIssueUpdate(args []string, out io.Writer) error {
 			ctx,
 			s,
 			"",
+			issue.ID,
 			*note,
 			closeContinuitySession,
 			*reason,
@@ -348,6 +349,8 @@ func issueLifecycleContinuityMessage(action string, resolution sessionResolution
 		case "summarize":
 			return fmt.Sprintf("Used open session %s for continuity capture.", resolution.sessionID)
 		}
+	case "latest-open-issue":
+		return fmt.Sprintf("Used the open session already tracking this issue (%s).", resolution.sessionID)
 	case "generated-new":
 		return fmt.Sprintf("Started new continuity session %s.", resolution.sessionID)
 	case "explicit":

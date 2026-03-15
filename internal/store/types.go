@@ -125,6 +125,7 @@ type GetGateStatusParams struct {
 
 type CheckpointSessionParams struct {
 	SessionID string
+	IssueID   string
 	Trigger   string
 	Actor     string
 	CommandID string

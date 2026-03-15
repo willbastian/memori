@@ -208,6 +208,42 @@ func TestContextResumeHumanOutputCoversFallbackAndFocusedResume(t *testing.T) {
 	if _, stderr, err := runMemoriForTest(
 		"issue", "create",
 		"--db", dbPath,
+		"--key", "mem-a222221",
+		"--type", "task",
+		"--title", "Fallback resume focus target",
+		"--command-id", "cmd-cli-human-resume-fallback-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create fallback target: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"context", "start",
+		"--db", dbPath,
+		"--issue", "mem-a222221",
+		"--session", "sess-human-resume-fallback-1",
+		"--command-id", "cmd-cli-human-resume-fallback-start-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("context start fallback target: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "resume",
+		"--db", dbPath,
+		"--session", "sess-human-resume-fallback-1",
+		"--agent", "agent-human-resume-fallback-1",
+		"--command-id", "cmd-cli-human-resume-fallback-run-1",
+	)
+	if err != nil {
+		t.Fatalf("context resume fallback focus: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "OK Resumed session sess-human-resume-fallback-1 via relevant-chunks-fallback and updated focus for agent-human-resume-fallback-1")
+	mustContain(t, stdout, "Issue: mem-a222221")
+	mustContain(t, stdout, "Agent: agent-human-resume-fallback-1")
+
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
 		"--key", "mem-a222222",
 		"--type", "task",
 		"--title", "Focused resume target",

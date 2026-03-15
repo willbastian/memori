@@ -324,9 +324,16 @@ func runContextResume(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
+		packetForFocus := result.Packet
+		if strings.TrimSpace(packetForFocus.PacketID) == "" {
+			packetForFocus, err = buildResumeFocusPacket(ctx, s, resolution.sessionID, identity.Actor, identity.CommandID)
+			if err != nil {
+				return err
+			}
+		}
 		focus, packet, focusIdempotent, err := s.UseRehydratePacket(ctx, store.UsePacketParams{
 			AgentID:   *agentID,
-			PacketID:  result.Packet.PacketID,
+			PacketID:  packetForFocus.PacketID,
 			Actor:     identity.Actor,
 			CommandID: identity.CommandID,
 		})
@@ -378,6 +385,41 @@ func runContextResume(args []string, out io.Writer) error {
 	}
 	ui.nextSteps(rehydrateNextSteps(data.SessionID, data.Source, data.Packet.PacketID, packetIssueIDForCLI(data.Packet))...)
 	return nil
+}
+
+func buildResumeFocusPacket(
+	ctx context.Context,
+	s *store.Store,
+	sessionID string,
+	actor string,
+	baseCommandID string,
+) (store.RehydratePacket, error) {
+	session, err := s.GetSession(ctx, sessionID)
+	if err != nil {
+		return store.RehydratePacket{}, err
+	}
+
+	scope := "session"
+	scopeID := sessionID
+	if issueID := sessionIssueIDForCLI(session); issueID != "" {
+		scope = "issue"
+		scopeID = issueID
+	}
+
+	return s.BuildRehydratePacket(ctx, store.BuildPacketParams{
+		Scope:     scope,
+		ScopeID:   scopeID,
+		Actor:     actor,
+		CommandID: derivedCompositeCommandID(baseCommandID, "packet"),
+	})
+}
+
+func sessionIssueIDForCLI(session store.Session) string {
+	issueID := strings.TrimSpace(fmt.Sprint(session.Checkpoint["issue_id"]))
+	if issueID == "" || issueID == "<nil>" {
+		return ""
+	}
+	return issueID
 }
 
 type contextCheckpointData struct {

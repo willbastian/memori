@@ -52,6 +52,30 @@ func resolveOpenSessionForMutation(ctx context.Context, s *store.Store, explicit
 	return sessionResolution{}, fmt.Errorf("no open session found; start one with `memori context checkpoint` or pass --session <id>")
 }
 
+func resolveOpenSessionForIssueMutation(ctx context.Context, s *store.Store, issueID, commandID string) (sessionResolution, error) {
+	if session, found, err := s.SessionForCommand(ctx, commandID); err != nil {
+		return sessionResolution{}, err
+	} else if found {
+		return sessionResolution{sessionID: session.SessionID, source: "command-replay"}, nil
+	}
+	if session, found, err := s.LatestOpenSessionForIssue(ctx, issueID); err != nil {
+		return sessionResolution{}, err
+	} else if found {
+		return sessionResolution{sessionID: session.SessionID, source: "latest-open-issue"}, nil
+	}
+	return sessionResolution{}, fmt.Errorf("no open session found for issue %s; start work first with `memori issue update --key %s --status inprogress` or pass --skip-continuity", strings.TrimSpace(issueID), strings.TrimSpace(issueID))
+}
+
+func resolveSessionForContinuitySave(ctx context.Context, s *store.Store, explicitSessionID, issueID, commandID string) (sessionResolution, error) {
+	if strings.TrimSpace(explicitSessionID) != "" {
+		return resolveOpenSessionForMutation(ctx, s, explicitSessionID, commandID)
+	}
+	if strings.TrimSpace(issueID) != "" {
+		return resolveOpenSessionForIssueMutation(ctx, s, issueID, commandID)
+	}
+	return resolveOpenSessionForMutation(ctx, s, "", commandID)
+}
+
 func resolveSessionForRehydrate(ctx context.Context, s *store.Store, explicitSessionID string) (sessionResolution, error) {
 	if sessionID := strings.TrimSpace(explicitSessionID); sessionID != "" {
 		return sessionResolution{sessionID: sessionID, source: "explicit"}, nil
@@ -93,6 +117,10 @@ func sessionResolutionMessage(action string, resolution sessionResolution) strin
 			return fmt.Sprintf("No --session supplied; closing latest open session %s.", resolution.sessionID)
 		case "rehydrate":
 			return fmt.Sprintf("No --session supplied; rehydrating latest open session %s.", resolution.sessionID)
+		}
+	case "latest-open-issue":
+		if action == "summarize" {
+			return fmt.Sprintf("No --session supplied; summarizing the latest open session for this issue (%s).", resolution.sessionID)
 		}
 	case "latest-session":
 		return fmt.Sprintf("No --session supplied; rehydrating latest session %s.", resolution.sessionID)

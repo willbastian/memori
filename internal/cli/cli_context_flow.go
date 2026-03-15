@@ -124,6 +124,7 @@ func startIssueContinuity(
 	}
 	session, created, err := s.CheckpointSession(ctx, store.CheckpointSessionParams{
 		SessionID: resolution.sessionID,
+		IssueID:   issueID,
 		Trigger:   trigger,
 		Actor:     actor,
 		CommandID: checkpointCommandID,
@@ -199,7 +200,7 @@ func runContextSave(args []string, out io.Writer) error {
 		return err
 	}
 
-	result, err := saveIssueContinuity(ctx, s, *sessionID, *note, *closeSession, *reason, identity.Actor, identity.CommandID)
+	result, err := saveIssueContinuity(ctx, s, *sessionID, "", *note, *closeSession, *reason, identity.Actor, identity.CommandID)
 	if err != nil {
 		return err
 	}
@@ -250,6 +251,7 @@ func saveIssueContinuity(
 	ctx context.Context,
 	s *store.Store,
 	sessionID string,
+	issueID string,
 	note string,
 	closeSession bool,
 	reason string,
@@ -260,7 +262,7 @@ func saveIssueContinuity(
 	closeCommandID := derivedCompositeCommandID(baseCommandID, "close")
 	packetCommandID := derivedCompositeCommandID(baseCommandID, "packet")
 
-	resolution, err := resolveOpenSessionForMutation(ctx, s, sessionID, summarizeCommandID)
+	resolution, err := resolveSessionForContinuitySave(ctx, s, sessionID, issueID, summarizeCommandID)
 	if err != nil {
 		return saveIssueContinuityResult{}, err
 	}

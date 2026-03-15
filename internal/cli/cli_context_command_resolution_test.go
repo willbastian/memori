@@ -280,3 +280,64 @@ func TestContextResumeUsesSavedPacketAndOptionalAgentFocus(t *testing.T) {
 		t.Fatalf("expected focused resume response, got %+v", resumed)
 	}
 }
+
+func TestContextResumeBuildsFocusedPacketWhenOnlyFallbackContextExists(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-context-resume-fallback-focus.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-a111112",
+		"--type", "task",
+		"--title", "Resume fallback target",
+		"--command-id", "cmd-cli-resume-fallback-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"context", "start",
+		"--db", dbPath,
+		"--issue", "mem-a111112",
+		"--session", "sess-resume-fallback-1",
+		"--command-id", "cmd-cli-resume-fallback-start-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context start: %v\nstderr: %s", err, stderr)
+	}
+	var started contextStartEnvelope
+	if err := json.Unmarshal([]byte(stdout), &started); err != nil {
+		t.Fatalf("decode context start json: %v\nstdout: %s", err, stdout)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "resume",
+		"--db", dbPath,
+		"--session", started.Data.Session.SessionID,
+		"--agent", "agent-resume-fallback-1",
+		"--command-id", "cmd-cli-resume-fallback-run-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context resume fallback focus: %v\nstderr: %s", err, stderr)
+	}
+	var resumed contextResumeEnvelope
+	if err := json.Unmarshal([]byte(stdout), &resumed); err != nil {
+		t.Fatalf("decode fallback-focused resume json: %v\nstdout: %s", err, stdout)
+	}
+	if resumed.Data.Source != "relevant-chunks-fallback" {
+		t.Fatalf("expected fallback source, got %+v", resumed)
+	}
+	if !resumed.Data.FocusUsed || resumed.Data.Packet.PacketID == "" {
+		t.Fatalf("expected synthesized packet-backed focus, got %+v", resumed)
+	}
+	if resumed.Data.Focus.AgentID != "agent-resume-fallback-1" || resumed.Data.Focus.ActiveIssueID != "mem-a111112" {
+		t.Fatalf("expected issue-focused resume, got %+v", resumed)
+	}
+}
