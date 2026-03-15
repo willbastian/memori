@@ -315,6 +315,184 @@ func TestSessionCheckpointPacketAndRehydrateFlow(t *testing.T) {
 	}
 }
 
+func TestSessionIssueScopedQueriesAndPersistence(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueOne := "mem-1212121"
+	issueTwo := "mem-3434343"
+	for _, tc := range []struct {
+		issueID    string
+		title      string
+		commandID  string
+		progressID string
+	}{
+		{
+			issueID:    issueOne,
+			title:      "Session issue one",
+			commandID:  "cmd-session-issue-one-create-1",
+			progressID: "cmd-session-issue-one-progress-1",
+		},
+		{
+			issueID:    issueTwo,
+			title:      "Session issue two",
+			commandID:  "cmd-session-issue-two-create-1",
+			progressID: "cmd-session-issue-two-progress-1",
+		},
+	} {
+		if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+			IssueID:   tc.issueID,
+			Type:      "task",
+			Title:     tc.title,
+			Actor:     "agent-1",
+			CommandID: tc.commandID,
+		}); err != nil {
+			t.Fatalf("create issue %s: %v", tc.issueID, err)
+		}
+		if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+			IssueID:   tc.issueID,
+			Status:    "inprogress",
+			Actor:     "agent-1",
+			CommandID: tc.progressID,
+		}); err != nil {
+			t.Fatalf("move issue %s to inprogress: %v", tc.issueID, err)
+		}
+	}
+
+	sessionOne, created, err := s.CheckpointSession(ctx, CheckpointSessionParams{
+		SessionID: "sess-issue-one",
+		IssueID:   issueOne,
+		Trigger:   "manual",
+		Actor:     "agent-1",
+		CommandID: "cmd-session-issue-one-checkpoint-1",
+	})
+	if err != nil {
+		t.Fatalf("checkpoint issue one session: %v", err)
+	}
+	if !created {
+		t.Fatal("expected first issue-scoped checkpoint to create a session")
+	}
+	if got := strings.TrimSpace(anyToString(sessionOne.Checkpoint["issue_id"])); got != issueOne {
+		t.Fatalf("expected checkpoint issue_id %q, got %q", issueOne, got)
+	}
+
+	sessionOne, created, err = s.CheckpointSession(ctx, CheckpointSessionParams{
+		SessionID: "sess-issue-one",
+		Trigger:   "refresh",
+		Actor:     "agent-1",
+		CommandID: "cmd-session-issue-one-checkpoint-2",
+	})
+	if err != nil {
+		t.Fatalf("refresh issue one session: %v", err)
+	}
+	if created {
+		t.Fatal("expected second checkpoint to reuse existing session")
+	}
+	if got := strings.TrimSpace(anyToString(sessionOne.Checkpoint["issue_id"])); got != issueOne {
+		t.Fatalf("expected checkpoint to preserve issue_id %q, got %q", issueOne, got)
+	}
+
+	sessionTwo, created, err := s.CheckpointSession(ctx, CheckpointSessionParams{
+		SessionID: "sess-issue-two",
+		IssueID:   issueTwo,
+		Trigger:   "manual",
+		Actor:     "agent-1",
+		CommandID: "cmd-session-issue-two-checkpoint-1",
+	})
+	if err != nil {
+		t.Fatalf("checkpoint issue two session: %v", err)
+	}
+	if !created {
+		t.Fatal("expected issue two checkpoint to create a session")
+	}
+
+	gotSession, err := s.GetSession(ctx, sessionOne.SessionID)
+	if err != nil {
+		t.Fatalf("get session one: %v", err)
+	}
+	if got := strings.TrimSpace(anyToString(gotSession.Checkpoint["issue_id"])); got != issueOne {
+		t.Fatalf("expected persisted issue_id %q, got %q", issueOne, got)
+	}
+
+	latestOpen, found, err := s.LatestOpenSession(ctx)
+	if err != nil {
+		t.Fatalf("latest open session: %v", err)
+	}
+	if !found || latestOpen.SessionID != sessionTwo.SessionID {
+		t.Fatalf("expected latest open session %q, got found=%v session=%+v", sessionTwo.SessionID, found, latestOpen)
+	}
+
+	issueOneOpen, found, err := s.LatestOpenSessionForIssue(ctx, issueOne)
+	if err != nil {
+		t.Fatalf("latest open session for issue one: %v", err)
+	}
+	if !found || issueOneOpen.SessionID != sessionOne.SessionID {
+		t.Fatalf("expected issue one open session %q, got found=%v session=%+v", sessionOne.SessionID, found, issueOneOpen)
+	}
+
+	issueTwoOpen, found, err := s.LatestOpenSessionForIssue(ctx, issueTwo)
+	if err != nil {
+		t.Fatalf("latest open session for issue two: %v", err)
+	}
+	if !found || issueTwoOpen.SessionID != sessionTwo.SessionID {
+		t.Fatalf("expected issue two open session %q, got found=%v session=%+v", sessionTwo.SessionID, found, issueTwoOpen)
+	}
+
+	byCommand, found, err := s.SessionForCommand(ctx, "cmd-session-issue-one-checkpoint-2")
+	if err != nil {
+		t.Fatalf("session for command: %v", err)
+	}
+	if !found || byCommand.SessionID != sessionOne.SessionID {
+		t.Fatalf("expected command replay session %q, got found=%v session=%+v", sessionOne.SessionID, found, byCommand)
+	}
+
+	if _, err := s.CloseSession(ctx, CloseSessionParams{
+		SessionID: sessionTwo.SessionID,
+		Reason:    "done",
+		Actor:     "agent-1",
+		CommandID: "cmd-session-issue-two-close-1",
+	}); err != nil {
+		t.Fatalf("close issue two session: %v", err)
+	}
+
+	latestOpen, found, err = s.LatestOpenSession(ctx)
+	if err != nil {
+		t.Fatalf("latest open session after close: %v", err)
+	}
+	if !found || latestOpen.SessionID != sessionOne.SessionID {
+		t.Fatalf("expected remaining latest open session %q, got found=%v session=%+v", sessionOne.SessionID, found, latestOpen)
+	}
+
+	latestAny, found, err := s.LatestSession(ctx)
+	if err != nil {
+		t.Fatalf("latest session after close: %v", err)
+	}
+	if !found || latestAny.SessionID != sessionTwo.SessionID {
+		t.Fatalf("expected latest session %q, got found=%v session=%+v", sessionTwo.SessionID, found, latestAny)
+	}
+
+	if _, found, err := s.LatestOpenSessionForIssue(ctx, issueTwo); err != nil {
+		t.Fatalf("latest open session for closed issue two: %v", err)
+	} else if found {
+		t.Fatalf("expected no open session for closed issue %s", issueTwo)
+	}
+
+	if _, found, err := s.SessionForCommand(ctx, "cmd-session-missing"); err != nil {
+		t.Fatalf("missing session for command lookup: %v", err)
+	} else if found {
+		t.Fatal("expected missing command lookup to report not found")
+	}
+
+	if _, err := s.GetSession(ctx, ""); err == nil || !strings.Contains(err.Error(), "--session is required") {
+		t.Fatalf("expected empty session lookup error, got %v", err)
+	}
+	if _, _, err := s.LatestOpenSessionForIssue(ctx, "bad"); err == nil || !strings.Contains(err.Error(), "invalid issue key") {
+		t.Fatalf("expected invalid issue lookup error, got %v", err)
+	}
+}
+
 func TestSessionLifecycleSummariesAndClosedRehydrateFlow(t *testing.T) {
 	t.Parallel()
 
