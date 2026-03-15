@@ -121,6 +121,7 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	acceptance := fs.String("acceptance-criteria", "", "acceptance criteria")
 	var references stringSliceFlag
 	fs.Var(&references, "reference", "reference link/evidence (repeatable)")
+	agentID := fs.String("agent", "", "optional agent id to focus when moving work into progress")
 	actor := fs.String("actor", "", "actor id")
 	commandID := fs.String("command-id", "", "idempotency command id")
 	jsonOut := fs.Bool("json", false, "machine-readable output")
@@ -207,6 +208,24 @@ func runIssueUpdate(args []string, out io.Writer) error {
 		return err
 	}
 
+	var continuityResult startIssueContinuityResult
+	autoStartedContinuity := statusProvided && strings.EqualFold(strings.TrimSpace(*status), "inprogress")
+	if autoStartedContinuity {
+		continuityResult, err = startIssueContinuity(
+			ctx,
+			s,
+			issue.ID,
+			*agentID,
+			"",
+			"issue-update-inprogress",
+			identity.Actor,
+			identity.CommandID,
+		)
+		if err != nil {
+			return fmt.Errorf("issue %s is now %s, but automatic continuity start failed: %w", issue.ID, issue.Status, err)
+		}
+	}
+
 	if *jsonOut {
 		return printJSON(out, jsonEnvelope{
 			ResponseSchemaVersion: responseSchemaVersion,
@@ -231,6 +250,22 @@ func runIssueUpdate(args []string, out io.Writer) error {
 		}
 	}
 	ui.field("Event", fmt.Sprintf("%s (%s #%d)", event.EventID, event.EventType, event.EventOrder))
+	if autoStartedContinuity {
+		ui.blank()
+		ui.section("Continuity Started")
+		if msg := sessionResolutionMessage("checkpoint", continuityResult.Resolution); msg != "" {
+			ui.bullet(msg)
+		}
+		ui.bullet(fmt.Sprintf("Captured session %s for active work.", continuityResult.Data.Session.SessionID))
+		ui.bullet(fmt.Sprintf("Refreshed issue packet %s for %s.", continuityResult.Data.Packet.PacketID, issue.ID))
+		if continuityResult.Data.FocusUsed {
+			if continuityResult.Data.FocusIdempotent {
+				ui.bullet(fmt.Sprintf("Agent %s focus already pointed at %s via packet %s.", continuityResult.Data.Focus.AgentID, continuityResult.Data.Focus.ActiveIssueID, continuityResult.Data.Packet.PacketID))
+			} else {
+				ui.bullet(fmt.Sprintf("Updated agent %s focus to %s via packet %s.", continuityResult.Data.Focus.AgentID, continuityResult.Data.Focus.ActiveIssueID, continuityResult.Data.Packet.PacketID))
+			}
+		}
+	}
 	if message, steps := issueContinuityGuidance(issue, "update"); message != "" {
 		ui.blank()
 		ui.section("Continuity")

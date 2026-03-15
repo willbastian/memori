@@ -84,43 +84,28 @@ func TestIssueUpdateAndShowHumanOutputSurfaceStateAwareContinuity(t *testing.T) 
 		"--db", dbPath,
 		"--key", "mem-c0ffee1",
 		"--status", "inprogress",
+		"--agent", "agent-readable-issue-1",
 		"--command-id", "cmd-readable-issue-continuity-update-1",
 	)
 	if err != nil {
 		t.Fatalf("issue update inprogress: %v\nstderr: %s", err, stderr)
 	}
+	mustContain(t, stdout, "Continuity Started:")
+	mustContain(t, stdout, "Captured session ")
+	mustContain(t, stdout, "Refreshed issue packet ")
+	mustContain(t, stdout, "Updated agent agent-readable-issue-1 focus to mem-c0ffee1 via packet ")
 	mustContain(t, stdout, "Continuity:")
 	mustContain(t, stdout, "This issue is active work; keep continuity current so pause, resume, and handoff stay lightweight.")
 	mustContain(t, stdout, "memori context checkpoint")
 	mustContain(t, stdout, "memori context summarize")
 	mustContain(t, stdout, "memori context packet build --scope issue --id mem-c0ffee1")
 
-	if _, stderr, err := runMemoriForTest(
-		"context", "checkpoint",
-		"--db", dbPath,
-		"--session", "sess-readable-1",
-		"--command-id", "cmd-readable-issue-continuity-checkpoint-1",
-		"--json",
-	); err != nil {
-		t.Fatalf("context checkpoint: %v\nstderr: %s", err, stderr)
-	}
-	if _, stderr, err := runMemoriForTest(
-		"context", "packet", "build",
-		"--db", dbPath,
-		"--scope", "issue",
-		"--id", "mem-c0ffee1",
-		"--command-id", "cmd-readable-issue-continuity-packet-1",
-		"--json",
-	); err != nil {
-		t.Fatalf("issue packet build: %v\nstderr: %s", err, stderr)
-	}
-
 	stdout, stderr, err = runMemoriForTest("issue", "show", "--db", dbPath, "--key", "mem-c0ffee1")
 	if err != nil {
 		t.Fatalf("issue show inprogress: %v\nstderr: %s", err, stderr)
 	}
 	mustContain(t, stdout, "Continuity State:")
-	mustContain(t, stdout, "Latest open session sess-readable-1 has no saved summary and no saved session packet yet.")
+	mustContain(t, stdout, "Latest open session sess_")
 	mustContain(t, stdout, "Latest issue packet")
 	mustContain(t, stdout, "is fresh for mem-c0ffee1 cycle 1.")
 	mustContain(t, stdout, "Continuity:")
@@ -204,6 +189,7 @@ func TestIssueNextHumanOutputShowsReasonSection(t *testing.T) {
 	mustContain(t, stdout, "memori context packet build --scope issue --id mem-f111111")
 	mustContain(t, stdout, "memori context loops --issue mem-f111111")
 	mustContain(t, stdout, "memori issue show --key mem-f111111")
+	mustContain(t, stdout, "memori issue update --key mem-f111111 --status inprogress --agent agent-readable-1")
 }
 
 func TestIssueNextHumanOutputShowsContinuityStateWhenResumeContextExists(t *testing.T) {

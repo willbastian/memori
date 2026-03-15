@@ -44,70 +44,27 @@ func runContextStart(args []string, out io.Writer) error {
 		return err
 	}
 
-	checkpointCommandID := derivedCompositeCommandID(identity.CommandID, "checkpoint")
-	packetCommandID := derivedCompositeCommandID(identity.CommandID, "packet")
-	focusCommandID := derivedCompositeCommandID(identity.CommandID, "focus")
-
-	resolution, err := resolveCheckpointSession(ctx, s, *sessionID, checkpointCommandID)
+	result, err := startIssueContinuity(ctx, s, *issueID, *agentID, *sessionID, *trigger, identity.Actor, identity.CommandID)
 	if err != nil {
 		return err
 	}
-	session, created, err := s.CheckpointSession(ctx, store.CheckpointSessionParams{
-		SessionID: resolution.sessionID,
-		Trigger:   *trigger,
-		Actor:     identity.Actor,
-		CommandID: checkpointCommandID,
-	})
-	if err != nil {
-		return err
-	}
-
-	packet, err := s.BuildRehydratePacket(ctx, store.BuildPacketParams{
-		Scope:     "issue",
-		ScopeID:   *issueID,
-		Actor:     identity.Actor,
-		CommandID: packetCommandID,
-	})
-	if err != nil {
-		return err
-	}
-
-	var (
-		focus           store.AgentFocus
-		focusUsed       bool
-		focusIdempotent bool
-	)
-	if strings.TrimSpace(*agentID) != "" {
-		focus, packet, focusIdempotent, err = s.UseRehydratePacket(ctx, store.UsePacketParams{
-			AgentID:   *agentID,
-			PacketID:  packet.PacketID,
-			Actor:     identity.Actor,
-			CommandID: focusCommandID,
-		})
-		if err != nil {
-			return err
-		}
-		focusUsed = true
-	}
+	session := result.Data.Session
+	packet := result.Data.Packet
+	focus := result.Data.Focus
+	focusUsed := result.Data.FocusUsed
+	focusIdempotent := result.Data.FocusIdempotent
 
 	if *jsonOut {
 		return printJSON(out, jsonEnvelope{
 			ResponseSchemaVersion: responseSchemaVersion,
 			DBSchemaVersion:       dbVersion,
 			Command:               "context start",
-			Data: contextStartData{
-				Session:         session,
-				Created:         created,
-				Packet:          packet,
-				Focus:           focus,
-				FocusUsed:       focusUsed,
-				FocusIdempotent: focusIdempotent,
-			},
+			Data:                  result.Data,
 		})
 	}
 
 	ui := newTextUI(out)
-	if msg := sessionResolutionMessage("checkpoint", resolution); msg != "" {
+	if msg := sessionResolutionMessage("checkpoint", result.Resolution); msg != "" {
 		ui.note(msg)
 	}
 	if focusUsed {
@@ -140,6 +97,77 @@ func runContextStart(args []string, out io.Writer) error {
 	}
 	ui.nextSteps(steps...)
 	return nil
+}
+
+type startIssueContinuityResult struct {
+	Resolution sessionResolution
+	Data       contextStartData
+}
+
+func startIssueContinuity(
+	ctx context.Context,
+	s *store.Store,
+	issueID string,
+	agentID string,
+	sessionID string,
+	trigger string,
+	actor string,
+	baseCommandID string,
+) (startIssueContinuityResult, error) {
+	checkpointCommandID := derivedCompositeCommandID(baseCommandID, "checkpoint")
+	packetCommandID := derivedCompositeCommandID(baseCommandID, "packet")
+	focusCommandID := derivedCompositeCommandID(baseCommandID, "focus")
+
+	resolution, err := resolveCheckpointSession(ctx, s, sessionID, checkpointCommandID)
+	if err != nil {
+		return startIssueContinuityResult{}, err
+	}
+	session, created, err := s.CheckpointSession(ctx, store.CheckpointSessionParams{
+		SessionID: resolution.sessionID,
+		Trigger:   trigger,
+		Actor:     actor,
+		CommandID: checkpointCommandID,
+	})
+	if err != nil {
+		return startIssueContinuityResult{}, err
+	}
+
+	packet, err := s.BuildRehydratePacket(ctx, store.BuildPacketParams{
+		Scope:     "issue",
+		ScopeID:   issueID,
+		Actor:     actor,
+		CommandID: packetCommandID,
+	})
+	if err != nil {
+		return startIssueContinuityResult{}, err
+	}
+
+	result := startIssueContinuityResult{
+		Resolution: resolution,
+		Data: contextStartData{
+			Session: session,
+			Created: created,
+			Packet:  packet,
+		},
+	}
+	if strings.TrimSpace(agentID) == "" {
+		return result, nil
+	}
+
+	focus, packet, focusIdempotent, err := s.UseRehydratePacket(ctx, store.UsePacketParams{
+		AgentID:   agentID,
+		PacketID:  packet.PacketID,
+		Actor:     actor,
+		CommandID: focusCommandID,
+	})
+	if err != nil {
+		return startIssueContinuityResult{}, err
+	}
+	result.Data.Packet = packet
+	result.Data.Focus = focus
+	result.Data.FocusUsed = true
+	result.Data.FocusIdempotent = focusIdempotent
+	return result, nil
 }
 
 func runContextSave(args []string, out io.Writer) error {

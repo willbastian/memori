@@ -166,3 +166,105 @@ func TestIssueUpdateRejectsBlankTitle(t *testing.T) {
 		t.Fatalf("expected blank title validation error, got: %v", err)
 	}
 }
+
+func TestIssueUpdateInProgressStartsContinuityAndFocusForAgent(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-issue-update-starts-continuity.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-6666eee",
+		"--type", "task",
+		"--title", "Auto-start continuity",
+		"--actor", "test",
+		"--command-id", "cmd-cli-start-continuity-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-6666eee",
+		"--status", "inprogress",
+		"--agent", "agent-start-1",
+		"--actor", "test",
+		"--command-id", "cmd-cli-start-continuity-update-1",
+	)
+	if err != nil {
+		t.Fatalf("issue update inprogress: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Continuity Started:")
+	mustContain(t, stdout, "Captured session ")
+	mustContain(t, stdout, "Refreshed issue packet ")
+	mustContain(t, stdout, "Updated agent agent-start-1 focus to mem-6666eee via packet ")
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "rehydrate",
+		"--db", dbPath,
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context rehydrate latest session: %v\nstderr: %s", err, stderr)
+	}
+	var rehydrated contextRehydrateEnvelope
+	if err := json.Unmarshal([]byte(stdout), &rehydrated); err != nil {
+		t.Fatalf("decode context rehydrate json: %v\nstdout: %s", err, stdout)
+	}
+	if !strings.HasPrefix(rehydrated.Data.SessionID, "sess_") {
+		t.Fatalf("expected auto-created session id, got %+v", rehydrated)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"event", "log",
+		"--db", dbPath,
+		"--entity", "session:"+rehydrated.Data.SessionID,
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("event log session: %v\nstderr: %s", err, stderr)
+	}
+	var sessionEvents eventLogEnvelope
+	if err := json.Unmarshal([]byte(stdout), &sessionEvents); err != nil {
+		t.Fatalf("decode session event log json: %v\nstdout: %s", err, stdout)
+	}
+	if len(sessionEvents.Data.Events) != 1 || sessionEvents.Data.Events[0].EventType != "session.checkpointed" {
+		t.Fatalf("expected session checkpoint event, got %+v", sessionEvents.Data.Events)
+	}
+	if sessionEvents.Data.Events[0].CommandID != "cmd-cli-start-continuity-update-1-checkpoint" {
+		t.Fatalf("expected checkpoint command id, got %+v", sessionEvents.Data.Events[0])
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"event", "log",
+		"--db", dbPath,
+		"--entity", "focus:agent-start-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("event log focus: %v\nstderr: %s", err, stderr)
+	}
+	var focusEvents eventLogEnvelope
+	if err := json.Unmarshal([]byte(stdout), &focusEvents); err != nil {
+		t.Fatalf("decode focus event log json: %v\nstdout: %s", err, stdout)
+	}
+	if len(focusEvents.Data.Events) != 1 || focusEvents.Data.Events[0].EventType != "focus.used" {
+		t.Fatalf("expected focus.used event, got %+v", focusEvents.Data.Events)
+	}
+	if focusEvents.Data.Events[0].CommandID != "cmd-cli-start-continuity-update-1-focus" {
+		t.Fatalf("expected focus command id, got %+v", focusEvents.Data.Events[0])
+	}
+
+	stdout, stderr, err = runMemoriForTest("issue", "show", "--db", dbPath, "--key", "mem-6666eee")
+	if err != nil {
+		t.Fatalf("issue show: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Latest open session "+rehydrated.Data.SessionID+" has no saved summary and no saved session packet yet.")
+	mustContain(t, stdout, "Latest issue packet ")
+	mustContain(t, stdout, "is fresh for mem-6666eee cycle 1.")
+}

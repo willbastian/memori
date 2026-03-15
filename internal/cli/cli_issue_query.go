@@ -172,6 +172,9 @@ func runIssueNext(args []string, out io.Writer) error {
 		fmt.Sprintf("memori issue show --key %s", next.Candidate.Issue.ID),
 		fmt.Sprintf("memori issue update --key %s --status inprogress", next.Candidate.Issue.ID),
 	}
+	if strings.TrimSpace(*agent) != "" {
+		steps[1] = fmt.Sprintf("memori issue update --key %s --status inprogress --agent %s", next.Candidate.Issue.ID, *agent)
+	}
 	if strings.TrimSpace(*agent) != "" && !continuitySignalsPresent(next.Candidate.Reasons) {
 		ui.blank()
 		ui.section("Continuity")
