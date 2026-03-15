@@ -1,0 +1,105 @@
+package cli
+
+import (
+	"path/filepath"
+	"testing"
+)
+
+func TestContextHumanOutputAutoResolvesSessionWhenOmitted(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-context-human-auto-session.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"context", "checkpoint",
+		"--db", dbPath,
+		"--command-id", "cmd-cli-human-auto-session-checkpoint-1",
+	)
+	if err != nil {
+		t.Fatalf("context checkpoint auto session: %v\nstderr: %s", err, stderr)
+	}
+	sessionID := sessionIDFromHumanOutput(t, stdout)
+	mustContain(t, stdout, "Note No --session supplied; started new session "+sessionID+".")
+	mustContain(t, stdout, "OK Created session checkpoint "+sessionID)
+	mustContain(t, stdout, "memori context rehydrate --session "+sessionID)
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "checkpoint",
+		"--db", dbPath,
+		"--command-id", "cmd-cli-human-auto-session-checkpoint-2",
+	)
+	if err != nil {
+		t.Fatalf("context checkpoint latest open session: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Note No --session supplied; continuing latest open session "+sessionID+". Pass --session to start a parallel session.")
+	mustContain(t, stdout, "OK Updated session checkpoint "+sessionID)
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "rehydrate",
+		"--db", dbPath,
+	)
+	if err != nil {
+		t.Fatalf("context rehydrate latest open session: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Note No --session supplied; rehydrating latest open session "+sessionID+".")
+	mustContain(t, stdout, "OK Rehydrated session "+sessionID+" via relevant-chunks-fallback")
+}
+
+func TestContextSummarizeAndCloseHumanOutputShowLifecycleGuidance(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-context-human-lifecycle.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+
+	if _, stderr, err := runMemoriForTest(
+		"context", "checkpoint",
+		"--db", dbPath,
+		"--session", "sess-human-life-1",
+		"--command-id", "cmd-cli-human-life-checkpoint-1",
+	); err != nil {
+		t.Fatalf("context checkpoint: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"context", "summarize",
+		"--db", dbPath,
+		"--session", "sess-human-life-1",
+		"--note", "paused after review",
+		"--command-id", "cmd-cli-human-life-summarize-1",
+	)
+	if err != nil {
+		t.Fatalf("context summarize text: %v\nstderr: %s", err, stderr)
+	}
+	for _, want := range []string{
+		"OK Summarized session sess-human-life-1",
+		"Summary Event:",
+		"memori context rehydrate --session sess-human-life-1",
+		"memori context close --session sess-human-life-1",
+	} {
+		mustContain(t, stdout, want)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "close",
+		"--db", dbPath,
+		"--session", "sess-human-life-1",
+		"--reason", "handoff complete",
+		"--command-id", "cmd-cli-human-life-close-1",
+	)
+	if err != nil {
+		t.Fatalf("context close text: %v\nstderr: %s", err, stderr)
+	}
+	for _, want := range []string{
+		"OK Closed session sess-human-life-1",
+		"Ended At:",
+		"memori context rehydrate --session sess-human-life-1",
+		"memori context checkpoint",
+	} {
+		mustContain(t, stdout, want)
+	}
+}
