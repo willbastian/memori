@@ -478,6 +478,7 @@ The board surfaces:
 - likely next work, including continuity signals such as focus, packets, open loops, and gate state
 - completed and declined work through the all-work history view (`Done` and `WontDo`)
 - hierarchy context such as parent, child, depth, and sibling metadata for each issue
+- ambient continuity pressure for active, blocked, or resume-rich work when packets are stale, missing, or already helping
 
 For split panes, keep one shell running `board --watch` and do mutations in another. When stdout is attached to a real terminal, watch mode redraws in place instead of appending endless snapshots. Use `--agent` when you want the likely-next panel to reflect a specific worker's current focus and recovery packet state.
 
@@ -637,7 +638,7 @@ For day-to-day work, the shortest path is usually:
 
 Human-readable `issue create`, `issue update`, `issue show`, and `issue next` now surface continuity guidance when the current work state makes it relevant. In practice that means `todo`, `inprogress`, and `blocked` work will point you toward `context checkpoint`, `context summarize`, `context packet build`, or `context loops` instead of treating continuity as a separate subsystem you have to remember on your own.
 When you move an issue into progress, `issue update --status inprogress` also starts or continues continuity automatically, and `--agent <id>` folds the focus update into that same command so start-work and resume context stay aligned. When you pause or finish work, `issue update --status blocked|done` saves continuity automatically from the latest open session; use `--note` to capture handoff detail, `--reason` to explain a done-path close, and `--skip-continuity` only when you need to bypass the default save behavior deliberately.
-Human-readable `issue show`, `issue next`, and `board` also surface continuity state at the point where work starts or resumes, including whether a saved issue packet is fresh or stale, whether an open session already exists, and whether an agent already has saved focus on the work. `issue show` and continuity-rich `issue next` flows now point to `memori context resume` explicitly so resume looks like one obvious action instead of packet and rehydrate choreography.
+Human-readable `issue show`, `issue next`, and `board` also surface continuity state at the point where work starts or resumes, including whether a saved issue packet is fresh or stale, whether an open session already exists, and whether an agent already has saved focus on the work. They now add a `Continuity Pressure` section when handoff state is missing, stale, or already strong enough to make resume lightweight, so freshness and recovery risk stay visible in the same place you pick or inspect work. `issue show` and continuity-rich `issue next` flows now point to `memori context resume` explicitly so resume looks like one obvious action instead of packet and rehydrate choreography.
 
 ### Database operations
 

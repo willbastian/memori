@@ -110,6 +110,9 @@ func TestIssueUpdateAndShowHumanOutputSurfaceStateAwareContinuity(t *testing.T) 
 	mustContain(t, stdout, "Latest open session sess_")
 	mustContain(t, stdout, "Latest issue packet")
 	mustContain(t, stdout, "is fresh for mem-c0ffee1 cycle 1.")
+	mustContain(t, stdout, "Continuity Pressure:")
+	mustContain(t, stdout, "Open session sess_")
+	mustContain(t, stdout, "has no saved session packet yet; save continuity before you pause or close it.")
 	mustContain(t, stdout, "Resume:")
 	mustContain(t, stdout, "memori context resume")
 	mustContain(t, stdout, "Continuity:")
@@ -132,6 +135,13 @@ func TestIssueUpdateAndShowHumanOutputSurfaceStateAwareContinuity(t *testing.T) 
 	mustContain(t, stdout, "Saved session packet ")
 	mustContain(t, stdout, "This issue is blocked; preserve the current state before waiting or handing it off.")
 	mustContain(t, stdout, "memori context loops --issue mem-c0ffee1")
+
+	stdout, stderr, err = runMemoriForTest("issue", "show", "--db", dbPath, "--key", "mem-c0ffee1")
+	if err != nil {
+		t.Fatalf("issue show blocked: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Continuity Pressure:")
+	mustContain(t, stdout, "mem-c0ffee1 is blocked and its saved issue packet is stale; rebuild it before the next handoff.")
 }
 
 func TestIssueShowHumanOutputSkipsContinuityForEpic(t *testing.T) {
@@ -267,6 +277,8 @@ func TestIssueNextHumanOutputShowsContinuityStateWhenResumeContextExists(t *test
 	mustContain(t, stdout, "Latest open session sess-readable-next-1 has summary")
 	mustContain(t, stdout, "Latest issue packet")
 	mustContain(t, stdout, "is fresh for mem-f222222 cycle 1.")
+	mustContain(t, stdout, "Continuity Pressure:")
+	mustContain(t, stdout, "mem-f222222 is resume-ready with a fresh issue packet and saved focus for agent-readable-resume-1.")
 	mustContain(t, stdout, "memori context resume --agent agent-readable-resume-1")
 }
 

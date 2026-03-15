@@ -98,6 +98,13 @@ func runIssueShow(args []string, out io.Writer) error {
 				ui.bullet(line)
 			}
 		}
+		if lines := continuityPressureLines(issue, snapshot, ""); len(lines) > 0 {
+			ui.blank()
+			ui.section("Continuity Pressure")
+			for _, line := range lines {
+				ui.bullet(line)
+			}
+		}
 		if steps := issueResumeSteps(issue); len(steps) > 0 {
 			ui.blank()
 			ui.section("Resume")
@@ -171,6 +178,13 @@ func runIssueNext(args []string, out io.Writer) error {
 	if lines := continuityStatusLines(snapshot); len(lines) > 0 {
 		ui.blank()
 		ui.section("Continuity State")
+		for _, line := range lines {
+			ui.bullet(line)
+		}
+	}
+	if lines := continuityPressureLines(next.Candidate.Issue, snapshot, *agent); len(lines) > 0 {
+		ui.blank()
+		ui.section("Continuity Pressure")
 		for _, line := range lines {
 			ui.bullet(line)
 		}
