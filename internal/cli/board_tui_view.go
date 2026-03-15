@@ -20,6 +20,10 @@ type boardTheme struct {
 	helpBG      string
 	helpFG      string
 	detailFG    string
+	epicFG      string
+	storyFG     string
+	taskFG      string
+	bugFG       string
 	activeFG    string
 	activeBG    string
 	blockedFG   string
@@ -59,6 +63,10 @@ func renderBoardTUI(model boardTUIModel, colors bool) string {
 		helpBG:      "30;41;59",
 		helpFG:      "226;232;240",
 		detailFG:    "226;232;240",
+		epicFG:      "251;191;36",
+		storyFG:     "125;211;252",
+		taskFG:      "134;239;172",
+		bugFG:       "253;164;175",
 		activeFG:    "17;24;39",
 		activeBG:    "250;204;21",
 		blockedFG:   "255;241;242",

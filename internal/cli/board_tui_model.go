@@ -1,6 +1,9 @@
 package cli
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 type boardLane int
 
@@ -252,11 +255,20 @@ func (model boardTUIModel) rows() []boardIssueRow {
 }
 
 func (model boardTUIModel) rowsForLane(lane boardLane) []boardIssueRow {
-	rows := model.rawRowsForLane(lane)
+	rows := model.baseRowsForLane(lane)
 	if lane == boardLaneNext {
 		return append([]boardIssueRow(nil), rows...)
 	}
 	return boardVisibleRows(rows, model.expanded)
+}
+
+func (model boardTUIModel) baseRowsForLane(lane boardLane) []boardIssueRow {
+	switch lane {
+	case boardLaneReady, boardLaneActive:
+		return boardContextRowsForLane(model.snapshot, lane)
+	default:
+		return model.rawRowsForLane(lane)
+	}
 }
 
 func (model boardTUIModel) rawRowsForLane(lane boardLane) []boardIssueRow {
@@ -338,7 +350,7 @@ func boardFocusIssue(model boardTUIModel, issueID string) boardTUIModel {
 
 func boardFocusIssuePreferred(model boardTUIModel, issueID string, lanes []boardLane) boardTUIModel {
 	for _, lane := range lanes {
-		for _, row := range model.rawRowsForLane(lane) {
+		for _, row := range model.baseRowsForLane(lane) {
 			if row.Issue.ID != issueID {
 				continue
 			}
@@ -364,7 +376,7 @@ func boardListHierarchyPrefix(model boardTUIModel, row boardIssueRow) string {
 		return ""
 	}
 
-	rows := model.rawRowsForLane(model.lane)
+	rows := model.baseRowsForLane(model.lane)
 	rowByID := make(map[string]boardIssueRow, len(rows))
 	for _, candidate := range rows {
 		rowByID[candidate.Issue.ID] = candidate
@@ -434,4 +446,186 @@ func boardRowAppearsLaterInLane(rows []boardIssueRow, currentID, candidateID str
 		}
 	}
 	return currentIndex >= 0 && candidateIndex > currentIndex
+}
+
+func boardLaneTargetStatus(lane boardLane) string {
+	switch lane {
+	case boardLaneActive:
+		return "InProgress"
+	case boardLaneReady:
+		return "Todo"
+	default:
+		return ""
+	}
+}
+
+func boardRowMatchesLaneStatus(lane boardLane, row boardIssueRow) bool {
+	targetStatus := boardLaneTargetStatus(lane)
+	if targetStatus == "" {
+		return true
+	}
+	return row.Issue.Status == targetStatus
+}
+
+func boardContextRowsForLane(snapshot boardSnapshot, lane boardLane) []boardIssueRow {
+	targetStatus := boardLaneTargetStatus(lane)
+	if targetStatus == "" {
+		return nil
+	}
+
+	allRows := boardAllSnapshotRows(snapshot)
+	if len(allRows) == 0 {
+		return nil
+	}
+
+	rootRank := make(map[string]int)
+	targetRankByID := make(map[string]int)
+	for idx, row := range rawSnapshotRowsForStatus(snapshot, targetStatus) {
+		targetRankByID[row.Issue.ID] = idx
+		rootID := boardHierarchyRootID(row)
+		if rank, ok := rootRank[rootID]; !ok || idx < rank {
+			rootRank[rootID] = idx
+		}
+	}
+	if len(rootRank) == 0 {
+		return nil
+	}
+
+	included := make(map[string]struct{})
+	for _, row := range allRows {
+		if _, ok := rootRank[boardHierarchyRootID(row)]; ok {
+			included[row.Issue.ID] = struct{}{}
+		}
+	}
+	return boardOrderedContextRows(allRows, included, rootRank, targetStatus, targetRankByID)
+}
+
+func boardAllSnapshotRows(snapshot boardSnapshot) []boardIssueRow {
+	rows := make([]boardIssueRow, 0, len(snapshot.Active)+len(snapshot.Blocked)+len(snapshot.Ready)+len(snapshot.Done)+len(snapshot.WontDo))
+	rows = append(rows, snapshot.Active...)
+	rows = append(rows, snapshot.Blocked...)
+	rows = append(rows, snapshot.Ready...)
+	rows = append(rows, snapshot.Done...)
+	rows = append(rows, snapshot.WontDo...)
+	return rows
+}
+
+func rawSnapshotRowsForStatus(snapshot boardSnapshot, status string) []boardIssueRow {
+	switch status {
+	case "InProgress":
+		return snapshot.Active
+	case "Blocked":
+		return snapshot.Blocked
+	case "Todo":
+		return snapshot.Ready
+	case "Done":
+		return snapshot.Done
+	case "WontDo":
+		return snapshot.WontDo
+	default:
+		return nil
+	}
+}
+
+func boardHierarchyRootID(row boardIssueRow) string {
+	if len(row.Hierarchy.Path) > 0 {
+		return row.Hierarchy.Path[0]
+	}
+	return row.Issue.ID
+}
+
+func boardOrderedContextRows(
+	allRows []boardIssueRow,
+	included map[string]struct{},
+	rootRank map[string]int,
+	targetStatus string,
+	targetRankByID map[string]int,
+) []boardIssueRow {
+	rowByID := make(map[string]boardIssueRow, len(allRows))
+	orderByID := make(map[string]int, len(allRows))
+	for idx, row := range allRows {
+		if _, ok := included[row.Issue.ID]; !ok {
+			continue
+		}
+		rowByID[row.Issue.ID] = row
+		orderByID[row.Issue.ID] = idx
+	}
+
+	childIDsByParent := make(map[string][]string)
+	rootIDs := make([]string, 0)
+	for issueID, row := range rowByID {
+		parentID := strings.TrimSpace(row.Hierarchy.ParentID)
+		if parentID != "" {
+			if _, ok := included[parentID]; ok {
+				childIDsByParent[parentID] = append(childIDsByParent[parentID], issueID)
+				continue
+			}
+		}
+		rootIDs = append(rootIDs, issueID)
+	}
+
+	sort.SliceStable(rootIDs, func(i, j int) bool {
+		leftRoot := rootIDs[i]
+		rightRoot := rootIDs[j]
+		leftRank, leftHasRank := rootRank[leftRoot]
+		rightRank, rightHasRank := rootRank[rightRoot]
+		if leftHasRank != rightHasRank {
+			return leftHasRank
+		}
+		if leftHasRank && rightHasRank && leftRank != rightRank {
+			return leftRank < rightRank
+		}
+		leftRow := rowByID[leftRoot]
+		rightRow := rowByID[rightRoot]
+		if leftRow.Hierarchy.SiblingIndex != rightRow.Hierarchy.SiblingIndex {
+			return leftRow.Hierarchy.SiblingIndex < rightRow.Hierarchy.SiblingIndex
+		}
+		return orderByID[leftRoot] < orderByID[rightRoot]
+	})
+
+	for parentID := range childIDsByParent {
+		childIDs := childIDsByParent[parentID]
+		sort.SliceStable(childIDs, func(i, j int) bool {
+			leftRow := rowByID[childIDs[i]]
+			rightRow := rowByID[childIDs[j]]
+			leftMatches := leftRow.Issue.Status == targetStatus
+			rightMatches := rightRow.Issue.Status == targetStatus
+			if leftMatches != rightMatches {
+				return leftMatches
+			}
+			leftTargetRank, leftRanked := targetRankByID[childIDs[i]]
+			rightTargetRank, rightRanked := targetRankByID[childIDs[j]]
+			if leftRanked != rightRanked {
+				return leftRanked
+			}
+			if leftRanked && rightRanked && leftTargetRank != rightTargetRank {
+				return leftTargetRank < rightTargetRank
+			}
+			leftOrder := orderByID[childIDs[i]]
+			rightOrder := orderByID[childIDs[j]]
+			if leftOrder != rightOrder {
+				return leftOrder < rightOrder
+			}
+			return leftRow.Hierarchy.SiblingIndex < rightRow.Hierarchy.SiblingIndex
+		})
+		childIDsByParent[parentID] = childIDs
+	}
+
+	ordered := make([]boardIssueRow, 0, len(rowByID))
+	var walk func(string)
+	walk = func(issueID string) {
+		row, ok := rowByID[issueID]
+		if !ok {
+			return
+		}
+		ordered = append(ordered, row)
+		for _, childID := range childIDsByParent[issueID] {
+			walk(childID)
+		}
+	}
+
+	for _, rootID := range rootIDs {
+		walk(rootID)
+	}
+	return ordered
 }

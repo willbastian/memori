@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -237,6 +238,102 @@ func TestBoardTUIHierarchyNavigationAndFolding(t *testing.T) {
 	model = boardReduce(model, boardActionExpand)
 	if got := len(model.rowsForLane(boardLaneReady)); got != 3 {
 		t.Fatalf("expected expanded tree to restore children, got %d rows", got)
+	}
+}
+
+func TestBoardTUIReadyLaneIncludesFullHierarchyContext(t *testing.T) {
+	t.Parallel()
+
+	root := boardIssueRow{
+		Issue: boardTestIssue("mem-a111111", "Epic", "InProgress", "Epic"),
+		Hierarchy: boardIssueHierarchy{
+			ChildIDs:        []string{"mem-b222222", "mem-c333333"},
+			ChildCount:      2,
+			DescendantCount: 2,
+			HasChildren:     true,
+		},
+	}
+	readyChild := boardIssueRow{
+		Issue: boardTestIssue("mem-b222222", "Task", "Todo", "Ready child"),
+		Hierarchy: boardIssueHierarchy{
+			Depth:        1,
+			Path:         []string{"mem-a111111", "mem-b222222"},
+			AncestorIDs:  []string{"mem-a111111"},
+			ParentID:     "mem-a111111",
+			SiblingIndex: 0,
+			SiblingCount: 2,
+		},
+	}
+	activeChild := boardIssueRow{
+		Issue: boardTestIssue("mem-c333333", "Task", "InProgress", "Active sibling"),
+		Hierarchy: boardIssueHierarchy{
+			Depth:        1,
+			Path:         []string{"mem-a111111", "mem-c333333"},
+			AncestorIDs:  []string{"mem-a111111"},
+			ParentID:     "mem-a111111",
+			SiblingIndex: 1,
+			SiblingCount: 2,
+		},
+	}
+
+	model := newBoardTUIModel(boardSnapshot{
+		Active: []boardIssueRow{root, activeChild},
+		Ready:  []boardIssueRow{readyChild},
+	}, 120, 28)
+	model.lane = boardLaneReady
+	model = boardNormalizeModel(model)
+
+	rows := model.rowsForLane(boardLaneReady)
+	if got := []string{rows[0].Issue.ID, rows[1].Issue.ID, rows[2].Issue.ID}; !reflect.DeepEqual(got, []string{"mem-a111111", "mem-b222222", "mem-c333333"}) {
+		t.Fatalf("expected ready lane to include full hierarchy context, got %+v", got)
+	}
+}
+
+func TestBoardTUIActiveLaneIncludesFullHierarchyContext(t *testing.T) {
+	t.Parallel()
+
+	story := boardIssueRow{
+		Issue: boardTestIssue("mem-a111111", "Story", "Todo", "Story"),
+		Hierarchy: boardIssueHierarchy{
+			ChildIDs:        []string{"mem-b222222", "mem-c333333"},
+			ChildCount:      2,
+			DescendantCount: 2,
+			HasChildren:     true,
+		},
+	}
+	activeChild := boardIssueRow{
+		Issue: boardTestIssue("mem-b222222", "Task", "InProgress", "Active child"),
+		Hierarchy: boardIssueHierarchy{
+			Depth:        1,
+			Path:         []string{"mem-a111111", "mem-b222222"},
+			AncestorIDs:  []string{"mem-a111111"},
+			ParentID:     "mem-a111111",
+			SiblingIndex: 0,
+			SiblingCount: 2,
+		},
+	}
+	readySibling := boardIssueRow{
+		Issue: boardTestIssue("mem-c333333", "Bug", "Todo", "Ready sibling"),
+		Hierarchy: boardIssueHierarchy{
+			Depth:        1,
+			Path:         []string{"mem-a111111", "mem-c333333"},
+			AncestorIDs:  []string{"mem-a111111"},
+			ParentID:     "mem-a111111",
+			SiblingIndex: 1,
+			SiblingCount: 2,
+		},
+	}
+
+	model := newBoardTUIModel(boardSnapshot{
+		Active: []boardIssueRow{activeChild},
+		Ready:  []boardIssueRow{story, readySibling},
+	}, 120, 28)
+	model.lane = boardLaneActive
+	model = boardNormalizeModel(model)
+
+	rows := model.rowsForLane(boardLaneActive)
+	if got := []string{rows[0].Issue.ID, rows[1].Issue.ID, rows[2].Issue.ID}; !reflect.DeepEqual(got, []string{"mem-a111111", "mem-b222222", "mem-c333333"}) {
+		t.Fatalf("expected active lane to include full hierarchy context, got %+v", got)
 	}
 }
 

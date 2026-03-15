@@ -46,7 +46,7 @@ func boardListPanel(model boardTUIModel, theme boardTheme, width, height int) []
 			if idx%2 == 1 {
 				bg = theme.panelAltBG
 			}
-			line = theme.paintLine(theme.detailFG, bg, false, line)
+			line = theme.paintLine(boardRowForeground(theme, row), bg, boardRowMatchesLaneStatus(model.lane, row), line)
 		}
 		lines = append(lines, line)
 	}
@@ -61,6 +61,7 @@ func boardListRow(row boardIssueRow, showScore bool, width int) string {
 }
 
 func boardRenderListRow(model boardTUIModel, row boardIssueRow, showScore bool, width int) string {
+	laneMarker := boardLaneMembershipToken(model.lane, row)
 	chip := boardStatusCode(row.Issue.Status)
 	issueID := boardDisplayIssueID(row.Issue.ID, width)
 	prefix := ""
@@ -77,13 +78,45 @@ func boardRenderListRow(model boardTUIModel, row boardIssueRow, showScore bool, 
 	}
 	switch {
 	case width < 28:
-		return truncateBoardLine(fmt.Sprintf(" %s %s%s%s", chip, prefix, row.Issue.Title, toggle), width)
+		return truncateBoardLine(fmt.Sprintf(" %s %s %s%s%s", laneMarker, chip, prefix, row.Issue.Title, toggle), width)
 	case width < 40:
-		return truncateBoardLine(fmt.Sprintf(" %s %s%s", chip, lead, row.Issue.Title), width)
+		return truncateBoardLine(fmt.Sprintf(" %s %s %s%s", laneMarker, chip, lead, row.Issue.Title), width)
 	case showScore && row.Score > 0 && width >= 52:
-		return truncateBoardLine(fmt.Sprintf(" %-3s %s%-8s %s · s%d", chip, lead, issueID, row.Issue.Title, row.Score), width)
+		return truncateBoardLine(fmt.Sprintf(" %s %-3s %s%-8s %s · s%d", laneMarker, chip, lead, issueID, row.Issue.Title, row.Score), width)
 	default:
-		return truncateBoardLine(fmt.Sprintf(" %-3s %s%-8s %s", chip, lead, issueID, row.Issue.Title), width)
+		return truncateBoardLine(fmt.Sprintf(" %s %-3s %s%-8s %s", laneMarker, chip, lead, issueID, row.Issue.Title), width)
+	}
+}
+
+func boardLaneMembershipToken(lane boardLane, row boardIssueRow) string {
+	switch lane {
+	case boardLaneReady:
+		if row.Issue.Status == "Todo" {
+			return "R"
+		}
+		return "."
+	case boardLaneActive:
+		if row.Issue.Status == "InProgress" {
+			return "A"
+		}
+		return "."
+	default:
+		return " "
+	}
+}
+
+func boardRowForeground(theme boardTheme, row boardIssueRow) string {
+	switch strings.ToLower(strings.TrimSpace(row.Issue.Type)) {
+	case "epic":
+		return theme.epicFG
+	case "story":
+		return theme.storyFG
+	case "task":
+		return theme.taskFG
+	case "bug":
+		return theme.bugFG
+	default:
+		return theme.detailFG
 	}
 }
 

@@ -409,3 +409,113 @@ func TestRenderBoardTUIHistoryModeShowsDoneAndWontDoTabs(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderBoardTUIReadyLaneMarksReadyRowsWithinContextTree(t *testing.T) {
+	t.Parallel()
+
+	model := newBoardTUIModel(boardSnapshot{
+		Active: []boardIssueRow{
+			{
+				Issue: boardTestIssue("mem-a111111", "Story", "InProgress", "Parent story"),
+				Hierarchy: boardIssueHierarchy{
+					ChildIDs:        []string{"mem-b222222", "mem-c333333"},
+					ChildCount:      2,
+					DescendantCount: 2,
+					HasChildren:     true,
+				},
+			},
+			{
+				Issue: boardTestIssue("mem-c333333", "Bug", "InProgress", "Active sibling"),
+				Hierarchy: boardIssueHierarchy{
+					Depth:        1,
+					Path:         []string{"mem-a111111", "mem-c333333"},
+					AncestorIDs:  []string{"mem-a111111"},
+					ParentID:     "mem-a111111",
+					SiblingIndex: 1,
+					SiblingCount: 2,
+				},
+			},
+		},
+		Ready: []boardIssueRow{
+			{
+				Issue: boardTestIssue("mem-b222222", "Task", "Todo", "Ready child"),
+				Hierarchy: boardIssueHierarchy{
+					Depth:        1,
+					Path:         []string{"mem-a111111", "mem-b222222"},
+					AncestorIDs:  []string{"mem-a111111"},
+					ParentID:     "mem-a111111",
+					SiblingIndex: 0,
+					SiblingCount: 2,
+				},
+			},
+		},
+	}, 120, 24)
+	model.lane = boardLaneReady
+	model = boardNormalizeModel(model)
+
+	rendered := renderBoardTUI(model, false)
+	for _, want := range []string{
+		". >>  [-] a111111  Parent story",
+		"R ..     |- b222222  Ready child",
+		". >>     `- c333333  Active sibling",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected ready context render to contain %q, got:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestRenderBoardTUIActiveLaneMarksActiveRowsWithinContextTree(t *testing.T) {
+	t.Parallel()
+
+	model := newBoardTUIModel(boardSnapshot{
+		Active: []boardIssueRow{
+			{
+				Issue: boardTestIssue("mem-b222222", "Task", "InProgress", "Active child"),
+				Hierarchy: boardIssueHierarchy{
+					Depth:        1,
+					Path:         []string{"mem-a111111", "mem-b222222"},
+					AncestorIDs:  []string{"mem-a111111"},
+					ParentID:     "mem-a111111",
+					SiblingIndex: 0,
+					SiblingCount: 2,
+				},
+			},
+		},
+		Ready: []boardIssueRow{
+			{
+				Issue: boardTestIssue("mem-a111111", "Story", "Todo", "Parent story"),
+				Hierarchy: boardIssueHierarchy{
+					ChildIDs:        []string{"mem-b222222", "mem-c333333"},
+					ChildCount:      2,
+					DescendantCount: 2,
+					HasChildren:     true,
+				},
+			},
+			{
+				Issue: boardTestIssue("mem-c333333", "Task", "Todo", "Ready sibling"),
+				Hierarchy: boardIssueHierarchy{
+					Depth:        1,
+					Path:         []string{"mem-a111111", "mem-c333333"},
+					AncestorIDs:  []string{"mem-a111111"},
+					ParentID:     "mem-a111111",
+					SiblingIndex: 1,
+					SiblingCount: 2,
+				},
+			},
+		},
+	}, 120, 24)
+	model.lane = boardLaneActive
+	model = boardNormalizeModel(model)
+
+	rendered := renderBoardTUI(model, false)
+	for _, want := range []string{
+		". ..  [-] a111111  Parent story",
+		"A >>     |- b222222  Active child",
+		". ..     `- c333333  Ready sibling",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected active context render to contain %q, got:\n%s", want, rendered)
+		}
+	}
+}

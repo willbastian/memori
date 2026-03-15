@@ -86,6 +86,56 @@ func TestBoardListRowShowsIssueIDAndScoreOnWideRows(t *testing.T) {
 	}
 }
 
+func TestBoardLaneMembershipTokenMarksReadyAndActiveRows(t *testing.T) {
+	t.Parallel()
+
+	ready := boardIssueRow{Issue: store.Issue{Status: "Todo"}}
+	active := boardIssueRow{Issue: store.Issue{Status: "InProgress"}}
+	blocked := boardIssueRow{Issue: store.Issue{Status: "Blocked"}}
+
+	if got := boardLaneMembershipToken(boardLaneReady, ready); got != "R" {
+		t.Fatalf("expected ready token R, got %q", got)
+	}
+	if got := boardLaneMembershipToken(boardLaneReady, active); got != "." {
+		t.Fatalf("expected non-ready context token ., got %q", got)
+	}
+	if got := boardLaneMembershipToken(boardLaneActive, active); got != "A" {
+		t.Fatalf("expected active token A, got %q", got)
+	}
+	if got := boardLaneMembershipToken(boardLaneActive, blocked); got != "." {
+		t.Fatalf("expected non-active context token ., got %q", got)
+	}
+}
+
+func TestBoardRowForegroundUsesIssueTypePalette(t *testing.T) {
+	t.Parallel()
+
+	theme := boardTheme{
+		detailFG: "0",
+		epicFG:   "1",
+		storyFG:  "2",
+		taskFG:   "3",
+		bugFG:    "4",
+	}
+
+	cases := []struct {
+		issueType string
+		want      string
+	}{
+		{issueType: "Epic", want: theme.epicFG},
+		{issueType: "Story", want: theme.storyFG},
+		{issueType: "Task", want: theme.taskFG},
+		{issueType: "Bug", want: theme.bugFG},
+		{issueType: "Unknown", want: theme.detailFG},
+	}
+
+	for _, tc := range cases {
+		if got := boardRowForeground(theme, boardIssueRow{Issue: store.Issue{Type: tc.issueType}}); got != tc.want {
+			t.Fatalf("type %q: expected %q, got %q", tc.issueType, tc.want, got)
+		}
+	}
+}
+
 func TestBoardThemePaintLineHonorsColorMode(t *testing.T) {
 	t.Parallel()
 

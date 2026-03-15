@@ -461,6 +461,7 @@ The board surfaces:
 - active work (`InProgress`)
 - blocked work (`Blocked`)
 - ready work (`Todo`) ranked from existing `issue next` guidance
+- full parent/child hierarchy context in the `Active` and `Ready` lanes so related adjacent work stays visible even when siblings or parents are in a different status
 - likely next work, including continuity signals such as focus, packets, open loops, and gate state
 - completed and declined work through the all-work history view (`Done` and `WontDo`)
 - hierarchy context such as parent, child, depth, and sibling metadata for each issue
