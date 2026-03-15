@@ -311,6 +311,7 @@ For agents:
 ```bash
 memori issue next --agent writer-1 --json
 memori context checkpoint --json
+memori context resume --agent writer-1 --json
 memori context rehydrate --json
 memori context summarize --json
 ```
@@ -508,15 +509,18 @@ go run ./cmd/memori context packet build \
 
 go run ./cmd/memori context packet show --packet <issue-packet-id> --json
 go run ./cmd/memori context packet use --agent writer-1 --packet <issue-packet-id> --json
+go run ./cmd/memori context resume --agent writer-1 --json
 go run ./cmd/memori context rehydrate --json
 go run ./cmd/memori context loops --issue mem-a111111 --json
 ```
 
 Use `context start` when you want the happy-path “begin work” flow to checkpoint a session, build an issue packet, and optionally update an agent’s focus in one command.
 Use `context save` when you want the happy-path “pause or hand off” flow to summarize the session, build a fresh session packet, and optionally close the session in one command.
+Use `context resume` when you want the happy-path “pick work back up” flow to rehydrate the latest session payload and, with `--agent`, refresh saved focus in the same command.
 When you omit `--session`, memori keeps the continuity flow ergonomic:
 - `context checkpoint` continues the latest open session when one exists, or creates a fresh deterministic session id when one does not.
 - `context summarize` and `context close` target the latest open session.
+- `context resume` uses the same session-selection rules as `context rehydrate`, but names the action the way operators think about it.
 - `context rehydrate` prefers the latest open session and falls back to the latest session when everything is already closed.
 - Human output always tells you which session was used so you can copy it into explicit commands when you want tighter control.
 
@@ -617,6 +621,7 @@ For day-to-day work, the shortest path is usually:
 - `memori context checkpoint`
 - `memori context summarize`
 - `memori context close`
+- `memori context resume`
 - `memori context packet build`
 - `memori context packet show`
 - `memori context packet use`
@@ -625,7 +630,7 @@ For day-to-day work, the shortest path is usually:
 
 Human-readable `issue create`, `issue update`, `issue show`, and `issue next` now surface continuity guidance when the current work state makes it relevant. In practice that means `todo`, `inprogress`, and `blocked` work will point you toward `context checkpoint`, `context summarize`, `context packet build`, or `context loops` instead of treating continuity as a separate subsystem you have to remember on your own.
 When you move an issue into progress, `issue update --status inprogress` also starts or continues continuity automatically, and `--agent <id>` folds the focus update into that same command so start-work and resume context stay aligned. When you pause or finish work, `issue update --status blocked|done` saves continuity automatically from the latest open session; use `--note` to capture handoff detail, `--reason` to explain a done-path close, and `--skip-continuity` only when you need to bypass the default save behavior deliberately.
-Human-readable `issue show`, `issue next`, and `board` also surface continuity state at the point where work starts or resumes, including whether a saved issue packet is fresh or stale, whether an open session already exists, and whether an agent already has saved focus on the work.
+Human-readable `issue show`, `issue next`, and `board` also surface continuity state at the point where work starts or resumes, including whether a saved issue packet is fresh or stale, whether an open session already exists, and whether an agent already has saved focus on the work. `issue show` and continuity-rich `issue next` flows now point to `memori context resume` explicitly so resume looks like one obvious action instead of packet and rehydrate choreography.
 
 ### Database operations
 

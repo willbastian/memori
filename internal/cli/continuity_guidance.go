@@ -63,19 +63,38 @@ func issueContinuityGuidance(issue store.Issue, command string) (string, []strin
 			fmt.Sprintf("memori context packet build --scope issue --id %s", issueID),
 		}
 	case "inprogress":
-		return "This issue is active work; keep continuity current so pause, resume, and handoff stay lightweight.", []string{
+		steps := []string{
 			"memori context checkpoint",
 			"memori context summarize",
 			fmt.Sprintf("memori context packet build --scope issue --id %s", issueID),
 		}
+		if command == "show" {
+			steps = append([]string{"memori context resume"}, steps...)
+		}
+		return "This issue is active work; keep continuity current so pause, resume, and handoff stay lightweight.", steps
 	case "blocked":
-		return "This issue is blocked; preserve the current state before waiting or handing it off.", []string{
+		steps := []string{
 			"memori context summarize",
 			fmt.Sprintf("memori context packet build --scope issue --id %s", issueID),
 			fmt.Sprintf("memori context loops --issue %s", issueID),
 		}
+		if command == "show" {
+			steps = append([]string{"memori context resume"}, steps...)
+		}
+		return "This issue is blocked; preserve the current state before waiting or handing it off.", steps
 	default:
 		return "", nil
+	}
+}
+
+func issueResumeSteps(issue store.Issue) []string {
+	status := strings.ToLower(strings.TrimSpace(issue.Status))
+	if status != "inprogress" && status != "blocked" {
+		return nil
+	}
+	return []string{
+		"memori context resume",
+		"memori context resume --agent <agent-id>",
 	}
 }
 
@@ -127,7 +146,10 @@ func packetUseNextSteps(agentID, packetID, issueID, sessionID string) []string {
 		steps = append(steps, fmt.Sprintf("memori context rehydrate --session %s", sessionID))
 	}
 	if agentID != "" {
-		steps = append(steps, fmt.Sprintf("memori issue next --agent %s", agentID))
+		steps = append(steps,
+			fmt.Sprintf("memori issue next --agent %s", agentID),
+			fmt.Sprintf("memori board --agent %s", agentID),
+		)
 	}
 	if packetID != "" {
 		steps = append(steps, fmt.Sprintf("memori context packet show --packet %s", packetID))

@@ -98,6 +98,13 @@ func runIssueShow(args []string, out io.Writer) error {
 				ui.bullet(line)
 			}
 		}
+		if steps := issueResumeSteps(issue); len(steps) > 0 {
+			ui.blank()
+			ui.section("Resume")
+			for _, step := range steps {
+				ui.bullet(step)
+			}
+		}
 	}
 	if message, steps := issueContinuityGuidance(issue, "show"); message != "" {
 		ui.blank()
@@ -174,6 +181,9 @@ func runIssueNext(args []string, out io.Writer) error {
 	}
 	if strings.TrimSpace(*agent) != "" {
 		steps[1] = fmt.Sprintf("memori issue update --key %s --status inprogress --agent %s", next.Candidate.Issue.ID, *agent)
+		if continuitySignalsPresent(next.Candidate.Reasons) {
+			steps = append([]string{fmt.Sprintf("memori context resume --agent %s", *agent)}, steps...)
+		}
 	}
 	if strings.TrimSpace(*agent) != "" && !continuitySignalsPresent(next.Candidate.Reasons) {
 		ui.blank()

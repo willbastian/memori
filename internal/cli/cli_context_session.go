@@ -280,6 +280,106 @@ func runContextRehydrate(args []string, out io.Writer) error {
 	return nil
 }
 
+func runContextResume(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("context resume", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
+	sessionID := fs.String("session", "", "session id")
+	agentID := fs.String("agent", "", "optional agent id to focus on the resume packet")
+	actor := fs.String("actor", "", "actor id")
+	commandID := fs.String("command-id", "", "idempotency command id")
+	jsonOut := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, dbVersion, err := openInitializedStore(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	resolution, err := resolveSessionForRehydrate(ctx, s, *sessionID)
+	if err != nil {
+		return err
+	}
+
+	result, err := s.RehydrateSession(ctx, store.RehydrateSessionParams{
+		SessionID: resolution.sessionID,
+	})
+	if err != nil {
+		return err
+	}
+
+	data := contextResumeData{
+		SessionID: result.SessionID,
+		Source:    result.Source,
+		Packet:    result.Packet,
+	}
+	if strings.TrimSpace(*agentID) != "" {
+		identity, err := resolveMutationIdentity(ctx, s, *dbPath, "context-resume", *actor, *commandID, defaultMutationAuthDeps())
+		if err != nil {
+			return err
+		}
+		focus, packet, focusIdempotent, err := s.UseRehydratePacket(ctx, store.UsePacketParams{
+			AgentID:   *agentID,
+			PacketID:  result.Packet.PacketID,
+			Actor:     identity.Actor,
+			CommandID: identity.CommandID,
+		})
+		if err != nil {
+			return err
+		}
+		data.Packet = packet
+		data.Focus = focus
+		data.FocusUsed = true
+		data.FocusIdempotent = focusIdempotent
+	}
+
+	if *jsonOut {
+		return printJSON(out, jsonEnvelope{
+			ResponseSchemaVersion: responseSchemaVersion,
+			DBSchemaVersion:       dbVersion,
+			Command:               "context resume",
+			Data:                  data,
+		})
+	}
+
+	ui := newTextUI(out)
+	if msg := sessionResolutionMessage("rehydrate", resolution); msg != "" {
+		ui.note(msg)
+	}
+	if data.FocusUsed {
+		if data.FocusIdempotent {
+			ui.note(fmt.Sprintf("Agent focus for %s already points at packet %s.", data.Focus.AgentID, data.Packet.PacketID))
+		} else {
+			ui.success(fmt.Sprintf("Resumed session %s via %s and updated focus for %s", data.SessionID, data.Source, data.Focus.AgentID))
+		}
+	} else {
+		ui.success(fmt.Sprintf("Resumed session %s via %s", data.SessionID, data.Source))
+	}
+	if sourceMsg := rehydrateSourceMessage(data.Source); sourceMsg != "" {
+		ui.note(sourceMsg)
+	}
+	ui.field("Packet Scope", data.Packet.Scope)
+	if strings.TrimSpace(data.Packet.PacketID) != "" {
+		ui.field("Packet ID", data.Packet.PacketID)
+	}
+	if issueID := packetIssueIDForCLI(data.Packet); issueID != "" {
+		ui.field("Issue", issueID)
+	}
+	if data.FocusUsed {
+		ui.field("Agent", data.Focus.AgentID)
+		ui.nextSteps(packetUseNextSteps(data.Focus.AgentID, data.Packet.PacketID, packetIssueIDForCLI(data.Packet), packetSessionIDForCLI(data.Packet))...)
+		return nil
+	}
+	ui.nextSteps(rehydrateNextSteps(data.SessionID, data.Source, data.Packet.PacketID, packetIssueIDForCLI(data.Packet))...)
+	return nil
+}
+
 type contextCheckpointData struct {
 	Session store.Session `json:"session"`
 	Created bool          `json:"created"`
@@ -293,4 +393,13 @@ type contextRehydrateData struct {
 	SessionID string                `json:"session_id"`
 	Source    string                `json:"source"`
 	Packet    store.RehydratePacket `json:"packet"`
+}
+
+type contextResumeData struct {
+	SessionID       string                `json:"session_id"`
+	Source          string                `json:"source"`
+	Packet          store.RehydratePacket `json:"packet"`
+	Focus           store.AgentFocus      `json:"focus,omitempty"`
+	FocusUsed       bool                  `json:"focus_used"`
+	FocusIdempotent bool                  `json:"focus_idempotent"`
 }

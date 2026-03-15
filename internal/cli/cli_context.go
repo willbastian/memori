@@ -8,7 +8,7 @@ import (
 
 func runContext(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("context subcommand required: start|save|checkpoint|summarize|close|rehydrate|packet|loops")
+		return errors.New("context subcommand required: start|save|checkpoint|summarize|close|resume|rehydrate|packet|loops")
 	}
 	switch args[0] {
 	case "start":
@@ -21,6 +21,8 @@ func runContext(args []string, out io.Writer) error {
 		return runContextSummarize(args[1:], out)
 	case "close":
 		return runContextClose(args[1:], out)
+	case "resume":
+		return runContextResume(args[1:], out)
 	case "rehydrate":
 		return runContextRehydrate(args[1:], out)
 	case "packet":

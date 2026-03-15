@@ -24,6 +24,7 @@ func TestHelpHumanOutputSeparatesHumanAndAgentWorkflows(t *testing.T) {
 	mustContain(t, stdout, "memori context start --issue <prefix-shortSHA> [--agent <id>] [--session <id>] [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]")
 	mustContain(t, stdout, "memori context save [--session <id>] [--note <text>] [--close] [--reason <text>] [--actor <actor>] [--command-id <id>] [--json]")
 	mustContain(t, stdout, "memori context checkpoint [--session <id>] [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]")
+	mustContain(t, stdout, "memori context resume [--session <id>] [--agent <id>] [--actor <actor>] [--command-id <id>] [--json]")
 	mustContain(t, stdout, "memori context rehydrate [--session <id>] [--json]")
 	mustContain(t, stdout, "memori context packet show --packet <id> [--json]")
 	mustContain(t, stdout, "MEMORI_COLOR=auto|always|never")
@@ -108,6 +109,8 @@ func TestIssueUpdateAndShowHumanOutputSurfaceStateAwareContinuity(t *testing.T) 
 	mustContain(t, stdout, "Latest open session sess_")
 	mustContain(t, stdout, "Latest issue packet")
 	mustContain(t, stdout, "is fresh for mem-c0ffee1 cycle 1.")
+	mustContain(t, stdout, "Resume:")
+	mustContain(t, stdout, "memori context resume")
 	mustContain(t, stdout, "Continuity:")
 	mustContain(t, stdout, "This issue is active work; keep continuity current so pause, resume, and handoff stay lightweight.")
 	mustContain(t, stdout, "memori context summarize")
@@ -263,6 +266,7 @@ func TestIssueNextHumanOutputShowsContinuityStateWhenResumeContextExists(t *test
 	mustContain(t, stdout, "Latest open session sess-readable-next-1 has summary")
 	mustContain(t, stdout, "Latest issue packet")
 	mustContain(t, stdout, "is fresh for mem-f222222 cycle 1.")
+	mustContain(t, stdout, "memori context resume --agent agent-readable-resume-1")
 }
 
 func TestBacklogColorModeAlwaysAndNever(t *testing.T) {

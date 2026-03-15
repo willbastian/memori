@@ -106,6 +106,7 @@ func runHelp(args []string, out io.Writer) error {
 			"memori context checkpoint [--session <id>] [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]",
 			"memori context summarize [--session <id>] [--note <text>] [--actor <actor>] [--command-id <id>] [--json]",
 			"memori context close [--session <id>] [--reason <text>] [--actor <actor>] [--command-id <id>] [--json]",
+			"memori context resume [--session <id>] [--agent <id>] [--actor <actor>] [--command-id <id>] [--json]",
 			"memori context rehydrate [--session <id>] [--json]",
 			"memori context packet build --scope issue|session --id <id> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori context packet show --packet <id> [--json]",
@@ -247,6 +248,7 @@ func printHelp(out io.Writer) {
 	ui.bullet("memori context checkpoint [--session <id>] [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori context summarize [--session <id>] [--note <text>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori context close [--session <id>] [--reason <text>] [--actor <actor>] [--command-id <id>] [--json]")
+	ui.bullet("memori context resume [--session <id>] [--agent <id>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori context packet build --scope issue|session --id <id> [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori context packet show --packet <id> [--json]")
 	ui.bullet("memori context packet use --agent <id> --packet <id> [--actor <actor>] [--command-id <id>] [--json]")

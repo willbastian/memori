@@ -204,3 +204,79 @@ func TestContextCommandsKeepReplaySelectionStableWithoutExplicitSession(t *testi
 		t.Fatalf("expected rehydrate without --session to use latest open session, got %+v", latestOpen)
 	}
 }
+
+func TestContextResumeUsesSavedPacketAndOptionalAgentFocus(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-context-resume.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-a111111",
+		"--type", "task",
+		"--title", "Resume target",
+		"--command-id", "cmd-cli-resume-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"context", "start",
+		"--db", dbPath,
+		"--issue", "mem-a111111",
+		"--command-id", "cmd-cli-resume-start-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context start: %v\nstderr: %s", err, stderr)
+	}
+	var started contextStartEnvelope
+	if err := json.Unmarshal([]byte(stdout), &started); err != nil {
+		t.Fatalf("decode context start json: %v\nstdout: %s", err, stdout)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "save",
+		"--db", dbPath,
+		"--session", started.Data.Session.SessionID,
+		"--note", "ready to resume",
+		"--command-id", "cmd-cli-resume-save-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context save: %v\nstderr: %s", err, stderr)
+	}
+	var saved contextSaveEnvelope
+	if err := json.Unmarshal([]byte(stdout), &saved); err != nil {
+		t.Fatalf("decode context save json: %v\nstdout: %s", err, stdout)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "resume",
+		"--db", dbPath,
+		"--session", started.Data.Session.SessionID,
+		"--agent", "agent-resume-1",
+		"--command-id", "cmd-cli-resume-run-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context resume: %v\nstderr: %s", err, stderr)
+	}
+	var resumed contextResumeEnvelope
+	if err := json.Unmarshal([]byte(stdout), &resumed); err != nil {
+		t.Fatalf("decode context resume json: %v\nstdout: %s", err, stdout)
+	}
+	if resumed.Command != "context resume" || resumed.Data.SessionID != started.Data.Session.SessionID {
+		t.Fatalf("unexpected context resume response: %+v", resumed)
+	}
+	if resumed.Data.Source != "packet" || resumed.Data.Packet.PacketID != saved.Data.Packet.PacketID {
+		t.Fatalf("expected packet-first resume, got %+v", resumed)
+	}
+	if !resumed.Data.FocusUsed || resumed.Data.Focus.AgentID != "agent-resume-1" || resumed.Data.Focus.LastPacketID != saved.Data.Packet.PacketID {
+		t.Fatalf("expected focused resume response, got %+v", resumed)
+	}
+}
