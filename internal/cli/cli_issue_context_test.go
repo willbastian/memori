@@ -771,6 +771,41 @@ func TestIssueUpdateDoneSavesAndClosesContinuityByDefault(t *testing.T) {
 	if sessionEvents.Data.Events[2].CommandID != "cmd-cli-done-continuity-done-1-close" {
 		t.Fatalf("expected close command id, got %+v", sessionEvents.Data.Events[2])
 	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-c111111",
+		"--status", "done",
+		"--note", "completed implementation",
+		"--reason", "ready for handoff",
+		"--actor", "test",
+		"--command-id", "cmd-cli-done-continuity-done-1",
+	)
+	if err != nil {
+		t.Fatalf("idempotent issue update done replay: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Command replay detected; issue mem-c111111 is already up to date.")
+	if strings.Contains(stdout, "Continuity Saved:") {
+		t.Fatalf("did not expect continuity save section on idempotent replay, got:\n%s", stdout)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"event", "log",
+		"--db", dbPath,
+		"--entity", "session:"+rehydrated.Data.SessionID,
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("event log done session after replay: %v\nstderr: %s", err, stderr)
+	}
+	sessionEvents = eventLogEnvelope{}
+	if err := json.Unmarshal([]byte(stdout), &sessionEvents); err != nil {
+		t.Fatalf("decode done session replay event log: %v\nstdout: %s", err, stdout)
+	}
+	if len(sessionEvents.Data.Events) != 3 {
+		t.Fatalf("expected no extra continuity events after idempotent replay, got %+v", sessionEvents.Data.Events)
+	}
 }
 
 func TestIssueUpdateContinuityModeManualSkipsAutomaticStart(t *testing.T) {

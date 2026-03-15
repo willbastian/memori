@@ -219,14 +219,16 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if autoSavedContinuity {
+	ranAutoStartedContinuity := autoStartedContinuity && !idempotent
+	ranAutoSavedContinuity := autoSavedContinuity && !idempotent
+	if ranAutoSavedContinuity {
 		if _, err := resolveSessionForContinuitySave(ctx, s, "", issue.ID, derivedCompositeCommandID(identity.CommandID, "summarize")); err != nil {
 			return fmt.Errorf("issue %s is now %s, but automatic continuity capture needs an open session; start work first with `memori issue update --status inprogress` or bypass intentionally with --skip-continuity: %w", issue.ID, issue.Status, err)
 		}
 	}
 
 	var continuityResult startIssueContinuityResult
-	if autoStartedContinuity {
+	if ranAutoStartedContinuity {
 		continuityResult, err = startIssueContinuity(
 			ctx,
 			s,
@@ -243,7 +245,7 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	}
 
 	var savedContinuityResult saveIssueContinuityResult
-	if autoSavedContinuity {
+	if ranAutoSavedContinuity {
 		savedContinuityResult, err = saveIssueContinuity(
 			ctx,
 			s,
@@ -284,7 +286,7 @@ func runIssueUpdate(args []string, out io.Writer) error {
 		}
 	}
 	ui.field("Event", fmt.Sprintf("%s (%s #%d)", event.EventID, event.EventType, event.EventOrder))
-	if autoStartedContinuity {
+	if ranAutoStartedContinuity {
 		ui.blank()
 		ui.section("Continuity Started")
 		ui.bullet(issueLifecycleContinuityMessage("checkpoint", continuityResult.Resolution))
@@ -298,7 +300,7 @@ func runIssueUpdate(args []string, out io.Writer) error {
 			}
 		}
 	}
-	if autoSavedContinuity {
+	if ranAutoSavedContinuity {
 		ui.blank()
 		ui.section("Continuity Saved")
 		ui.bullet(issueLifecycleContinuityMessage("summarize", savedContinuityResult.Resolution))
@@ -335,9 +337,9 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	}
 	guidanceSessionID := ""
 	switch {
-	case autoStartedContinuity:
+	case ranAutoStartedContinuity:
 		guidanceSessionID = continuityResult.Data.Session.SessionID
-	case autoSavedContinuity:
+	case ranAutoSavedContinuity:
 		guidanceSessionID = savedContinuityResult.Data.Session.SessionID
 	}
 	if message, steps := issueContinuityGuidance(issue, "update", guidanceSessionID); message != "" {
