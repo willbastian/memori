@@ -122,6 +122,7 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	var references stringSliceFlag
 	fs.Var(&references, "reference", "reference link/evidence (repeatable)")
 	agentID := fs.String("agent", "", "optional agent id to focus when moving work into progress")
+	continuity := fs.String("continuity", "", "continuity automation mode: manual|assist|auto")
 	note := fs.String("note", "", "optional continuity note when pausing or closing work")
 	reason := fs.String("reason", "", "optional continuity close reason when marking work done")
 	skipContinuity := fs.Bool("skip-continuity", false, "skip automatic continuity capture for blocked/done transitions")
@@ -194,9 +195,13 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	continuityMode, err := resolveContinuityMode(*continuity)
+	if err != nil {
+		return err
+	}
 
-	autoStartedContinuity := statusProvided && strings.EqualFold(strings.TrimSpace(*status), "inprogress")
-	autoSavedContinuity := statusProvided && (strings.EqualFold(strings.TrimSpace(*status), "blocked") || strings.EqualFold(strings.TrimSpace(*status), "done")) && !*skipContinuity
+	autoStartedContinuity := continuityMode == continuityModeAuto && statusProvided && strings.EqualFold(strings.TrimSpace(*status), "inprogress")
+	autoSavedContinuity := continuityMode == continuityModeAuto && statusProvided && (strings.EqualFold(strings.TrimSpace(*status), "blocked") || strings.EqualFold(strings.TrimSpace(*status), "done")) && !*skipContinuity
 	closeContinuitySession := statusProvided && strings.EqualFold(strings.TrimSpace(*status), "done")
 	if autoSavedContinuity {
 		if _, err := resolveOpenSessionForMutation(ctx, s, "", derivedCompositeCommandID(identity.CommandID, "summarize")); err != nil {
@@ -301,6 +306,21 @@ func runIssueUpdate(args []string, out io.Writer) error {
 			ui.bullet(fmt.Sprintf("Closed session %s.", savedContinuityResult.Data.Session.SessionID))
 		}
 		ui.bullet(fmt.Sprintf("Saved session packet %s for %s.", savedContinuityResult.Data.Packet.PacketID, issue.ID))
+	}
+	if continuityMode == continuityModeAssist && statusProvided {
+		if steps := issueUpdateContinuityAssistSteps(issue.ID, *status, *agentID, *note, *reason); len(steps) > 0 {
+			ui.blank()
+			ui.section("Continuity Assist")
+			ui.bullet("Continuity mode assist kept continuity explicit for this command.")
+			for _, step := range steps {
+				ui.bullet(step)
+			}
+		}
+	}
+	if continuityMode == continuityModeManual && statusProvided && strings.TrimSpace(*status) != "" {
+		ui.blank()
+		ui.section("Continuity Mode")
+		ui.bullet("Continuity mode manual disabled automatic continuity for this command.")
 	}
 	if message, steps := issueContinuityGuidance(issue, "update"); message != "" {
 		ui.blank()

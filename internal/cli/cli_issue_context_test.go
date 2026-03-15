@@ -550,3 +550,117 @@ func TestIssueUpdateDoneSavesAndClosesContinuityByDefault(t *testing.T) {
 		t.Fatalf("expected close command id, got %+v", sessionEvents.Data.Events[2])
 	}
 }
+
+func TestIssueUpdateContinuityModeManualSkipsAutomaticStart(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-issue-update-manual-mode.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-b111111",
+		"--type", "task",
+		"--title", "Manual continuity mode",
+		"--command-id", "cmd-cli-manual-mode-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-b111111",
+		"--status", "inprogress",
+		"--continuity", "manual",
+		"--command-id", "cmd-cli-manual-mode-update-1",
+	)
+	if err != nil {
+		t.Fatalf("issue update manual mode: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Continuity Mode:")
+	mustContain(t, stdout, "Continuity mode manual disabled automatic continuity for this command.")
+	if strings.Contains(stdout, "Continuity Started:") {
+		t.Fatalf("did not expect automatic continuity start in manual mode, got:\n%s", stdout)
+	}
+
+	stdout, stderr, err = runMemoriForTest("issue", "show", "--db", dbPath, "--key", "mem-b111111")
+	if err != nil {
+		t.Fatalf("issue show manual mode: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "No open or historical session is available yet.")
+}
+
+func TestIssueUpdateContinuityModeAssistShowsExplicitBundleSteps(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-issue-update-assist-mode.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-b222222",
+		"--type", "task",
+		"--title", "Assist continuity mode",
+		"--command-id", "cmd-cli-assist-mode-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-b222222",
+		"--status", "inprogress",
+		"--agent", "agent-assist-1",
+		"--continuity", "assist",
+		"--command-id", "cmd-cli-assist-mode-update-1",
+	)
+	if err != nil {
+		t.Fatalf("issue update assist mode: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Continuity Assist:")
+	mustContain(t, stdout, "Continuity mode assist kept continuity explicit for this command.")
+	mustContain(t, stdout, "memori context start --issue mem-b222222 --agent agent-assist-1")
+	if strings.Contains(stdout, "Continuity Started:") {
+		t.Fatalf("did not expect automatic continuity start in assist mode, got:\n%s", stdout)
+	}
+}
+
+func TestIssueUpdateContinuityModeCanBeSetByEnv(t *testing.T) {
+	t.Setenv("MEMORI_CONTINUITY_MODE", "manual")
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-issue-update-env-mode.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-b333333",
+		"--type", "task",
+		"--title", "Env continuity mode",
+		"--command-id", "cmd-cli-env-mode-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-b333333",
+		"--status", "inprogress",
+		"--command-id", "cmd-cli-env-mode-update-1",
+	)
+	if err != nil {
+		t.Fatalf("issue update env mode: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Continuity mode manual disabled automatic continuity for this command.")
+}

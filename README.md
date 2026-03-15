@@ -254,6 +254,13 @@ Humans and agents operate against the same ledger. The usual loop is: pick track
 
 Issue status transitions now bundle continuity into the normal work loop. `issue update --status inprogress` automatically starts or continues a session, refreshes the issue packet, and, when you pass `--agent`, updates that agent's saved focus as part of the same start-work step. `issue update --status blocked` automatically summarizes the active session and saves a fresh session packet, while `issue update --status done` does the same and closes the session as part of the handoff trail.
 
+You can tune that behavior with continuity automation modes:
+- `auto`: the default. Start, pause, and close issue transitions bundle the continuity writes directly into the command.
+- `assist`: keep continuity explicit, but have `issue update` print the exact `context start`, `context save`, or `context save --close` command that matches the transition you just made.
+- `manual`: disable automatic continuity for the command and skip the extra assist bundle guidance.
+
+Choose a mode per command with `--continuity manual|assist|auto`, or set `MEMORI_CONTINUITY_MODE` to make it the session default. In practice, `auto` tends to fit agent-driven loops well, while humans who want tighter step-by-step control may prefer `assist` or `manual`.
+
 ### 1. Initialize project state
 
 From the root of the repository you want to track:
