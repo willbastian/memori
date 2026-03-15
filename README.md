@@ -582,11 +582,13 @@ For day-to-day work, the shortest path is usually:
 
 1. `memori board` or `memori board --agent <id>` to see active, blocked, ready, and likely-next work.
 2. `memori issue next --agent <id> --json` when an agent needs a ranked continuity-aware recommendation.
-3. `memori context start --issue <issue> --agent <id>` when you want the CLI to checkpoint and focus the work in one step.
+3. `memori issue update --key <issue> --status inprogress --agent <id>` to start work and continuity in one step.
 4. `memori issue show --key <issue>` and `memori event log --entity <issue> --json` before editing.
-4. `memori version --json` when you need the binary build metadata and embedded schema head version.
-5. `memori gate template list --json` when you need to find a close template before locking gates for a cycle.
-6. `memori gate template pending --json` when you need to review executable templates that are still awaiting human approval.
+5. `memori issue update --key <issue> --status blocked --note "<handoff>"` or `--status done --note "<summary>" --reason "<close reason>"` to save continuity at pause and close.
+6. `memori context resume --agent <id>` when returning to paused work from the latest saved session packet.
+7. `memori version --json` when you need the binary build metadata and embedded schema head version.
+8. `memori gate template list --json` when you need to find a close template before locking gates for a cycle.
+9. `memori gate template pending --json` when you need to review executable templates that are still awaiting human approval.
 
 ## Command map
 
