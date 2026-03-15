@@ -86,6 +86,19 @@ func runIssueShow(args []string, out io.Writer) error {
 	ui.section("Timeline")
 	ui.field("Created", issue.CreatedAt)
 	ui.field("Updated", issue.UpdatedAt)
+	if !strings.EqualFold(issue.Type, "epic") {
+		snapshot, err := s.ContinuitySnapshot(ctx, store.ContinuitySnapshotParams{IssueID: issue.ID})
+		if err != nil {
+			return err
+		}
+		if lines := continuityStatusLines(snapshot); len(lines) > 0 {
+			ui.blank()
+			ui.section("Continuity State")
+			for _, line := range lines {
+				ui.bullet(line)
+			}
+		}
+	}
 	if message, steps := issueContinuityGuidance(issue, "show"); message != "" {
 		ui.blank()
 		ui.section("Continuity")
@@ -140,6 +153,20 @@ func runIssueNext(args []string, out io.Writer) error {
 	ui.section("Why This Issue")
 	for _, reason := range next.Candidate.Reasons {
 		ui.bullet(reason)
+	}
+	snapshot, err := s.ContinuitySnapshot(ctx, store.ContinuitySnapshotParams{
+		IssueID: next.Candidate.Issue.ID,
+		AgentID: *agent,
+	})
+	if err != nil {
+		return err
+	}
+	if lines := continuityStatusLines(snapshot); len(lines) > 0 {
+		ui.blank()
+		ui.section("Continuity State")
+		for _, line := range lines {
+			ui.bullet(line)
+		}
 	}
 	steps := []string{
 		fmt.Sprintf("memori issue show --key %s", next.Candidate.Issue.ID),

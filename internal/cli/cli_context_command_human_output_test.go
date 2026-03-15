@@ -2,6 +2,7 @@ package cli
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -98,6 +99,79 @@ func TestContextSummarizeAndCloseHumanOutputShowLifecycleGuidance(t *testing.T) 
 		"OK Closed session sess-human-life-1",
 		"Ended At:",
 		"memori context rehydrate --session sess-human-life-1",
+		"memori context checkpoint",
+	} {
+		mustContain(t, stdout, want)
+	}
+}
+
+func TestContextStartAndSaveHumanOutputShowHappyPathGuidance(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-context-human-flow.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-f10a002",
+		"--type", "task",
+		"--title", "Human flow task",
+		"--command-id", "cmd-cli-human-flow-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"context", "start",
+		"--db", dbPath,
+		"--issue", "mem-f10a002",
+		"--agent", "agent-human-flow-1",
+		"--command-id", "cmd-cli-human-flow-start-1",
+	)
+	if err != nil {
+		t.Fatalf("context start text: %v\nstderr: %s", err, stderr)
+	}
+	for _, want := range []string{
+		"OK Started continuity for issue mem-f10a002 and updated focus for agent-human-flow-1",
+		"Session:",
+		"Issue Packet:",
+		"memori board --agent agent-human-flow-1",
+		"memori context save --session",
+	} {
+		mustContain(t, stdout, want)
+	}
+	sessionID := ""
+	for _, line := range strings.Split(stdout, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Session: ") {
+			sessionID = strings.TrimSpace(strings.TrimPrefix(line, "Session: "))
+			break
+		}
+	}
+	if sessionID == "" {
+		t.Fatalf("expected session id in context start output, got:\n%s", stdout)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "save",
+		"--db", dbPath,
+		"--session", sessionID,
+		"--note", "ready for handoff",
+		"--close",
+		"--reason", "handoff complete",
+		"--command-id", "cmd-cli-human-flow-save-1",
+	)
+	if err != nil {
+		t.Fatalf("context save text: %v\nstderr: %s", err, stderr)
+	}
+	for _, want := range []string{
+		"OK Saved continuity and closed session " + sessionID,
+		"Summary Event:",
+		"Session Packet:",
+		"memori context rehydrate --session " + sessionID,
 		"memori context checkpoint",
 	} {
 		mustContain(t, stdout, want)

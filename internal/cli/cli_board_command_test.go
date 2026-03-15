@@ -114,12 +114,15 @@ func TestBoardCommandHumanOutputShowsSections(t *testing.T) {
 		"memori board",
 		"Summary:",
 		"Next:",
+		"Continuity State:",
 		"Active (1):",
 		"Blocked (1):",
 		"Ready (2):",
 		"mem-a121212 Baseline active task",
 		"mem-d454545 Blocked bug",
 		"mem-b343434 Continuity-heavy task [s300,focus,packet,loop,+5 more]",
+		"Agent agent-board-1 focus points to mem-b343434 cycle 1 via packet",
+		"Latest issue packet",
 		"Next:",
 		"memori board --watch",
 	} {
@@ -158,6 +161,10 @@ func TestBoardCommandHumanOutputShowsContinuityBootstrapWhenAgentHasNoSignals(t 
 	}
 
 	for _, want := range []string{
+		"Continuity State:",
+		"Agent agent-board-dormant has no saved focus yet.",
+		"No open or historical session is available yet.",
+		"No saved issue packet exists for mem-e565656 cycle 1 yet.",
 		"Continuity:",
 		"No saved focus, recovery packet, or open-loop continuity is shaping recommendations for agent-board-dormant yet.",
 		"memori context checkpoint",

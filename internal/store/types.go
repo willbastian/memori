@@ -499,6 +499,44 @@ type AgentFocus struct {
 	UpdatedAt     string `json:"updated_at"`
 }
 
+type ContinuitySnapshotParams struct {
+	IssueID string
+	AgentID string
+}
+
+type ContinuitySnapshot struct {
+	Issue   IssueContinuitySnapshot   `json:"issue"`
+	Agent   AgentContinuitySnapshot   `json:"agent"`
+	Session SessionContinuitySnapshot `json:"session"`
+}
+
+type IssueContinuitySnapshot struct {
+	IssueID        string          `json:"issue_id,omitempty"`
+	CurrentCycleNo int             `json:"current_cycle_no,omitempty"`
+	LastEventID    string          `json:"last_event_id,omitempty"`
+	OpenLoopCount  int             `json:"open_loop_count,omitempty"`
+	LatestPacket   RehydratePacket `json:"latest_packet,omitempty"`
+	HasPacket      bool            `json:"has_packet"`
+	PacketFresh    bool            `json:"packet_fresh"`
+	PacketStale    bool            `json:"packet_stale"`
+}
+
+type AgentContinuitySnapshot struct {
+	AgentID       string          `json:"agent_id,omitempty"`
+	Focus         AgentFocus      `json:"focus,omitempty"`
+	HasFocus      bool            `json:"has_focus"`
+	LastPacket    RehydratePacket `json:"last_packet,omitempty"`
+	HasLastPacket bool            `json:"has_last_packet"`
+}
+
+type SessionContinuitySnapshot struct {
+	Source     string          `json:"source,omitempty"`
+	Session    Session         `json:"session,omitempty"`
+	HasSession bool            `json:"has_session"`
+	Packet     RehydratePacket `json:"packet,omitempty"`
+	HasPacket  bool            `json:"has_packet"`
+}
+
 type SessionRehydrateResult struct {
 	SessionID string          `json:"session_id"`
 	Source    string          `json:"source"`

@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/willbastian/memori/internal/store"
 )
 
 func TestHelpHumanOutputSeparatesHumanAndAgentWorkflows(t *testing.T) {
@@ -18,6 +21,8 @@ func TestHelpHumanOutputSeparatesHumanAndAgentWorkflows(t *testing.T) {
 	mustContain(t, stdout, "Agent Workflows:")
 	mustContain(t, stdout, "Create And Update Work:")
 	mustContain(t, stdout, "memori board [--db <path>] [--agent <id>] [--watch] [--interval <duration>] [--json]")
+	mustContain(t, stdout, "memori context start --issue <prefix-shortSHA> [--agent <id>] [--session <id>] [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]")
+	mustContain(t, stdout, "memori context save [--session <id>] [--note <text>] [--close] [--reason <text>] [--actor <actor>] [--command-id <id>] [--json]")
 	mustContain(t, stdout, "memori context checkpoint [--session <id>] [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]")
 	mustContain(t, stdout, "memori context rehydrate [--session <id>] [--json]")
 	mustContain(t, stdout, "memori context packet show --packet <id> [--json]")
@@ -90,10 +95,34 @@ func TestIssueUpdateAndShowHumanOutputSurfaceStateAwareContinuity(t *testing.T) 
 	mustContain(t, stdout, "memori context summarize")
 	mustContain(t, stdout, "memori context packet build --scope issue --id mem-c0ffee1")
 
+	if _, stderr, err := runMemoriForTest(
+		"context", "checkpoint",
+		"--db", dbPath,
+		"--session", "sess-readable-1",
+		"--command-id", "cmd-readable-issue-continuity-checkpoint-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("context checkpoint: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"context", "packet", "build",
+		"--db", dbPath,
+		"--scope", "issue",
+		"--id", "mem-c0ffee1",
+		"--command-id", "cmd-readable-issue-continuity-packet-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue packet build: %v\nstderr: %s", err, stderr)
+	}
+
 	stdout, stderr, err = runMemoriForTest("issue", "show", "--db", dbPath, "--key", "mem-c0ffee1")
 	if err != nil {
 		t.Fatalf("issue show inprogress: %v\nstderr: %s", err, stderr)
 	}
+	mustContain(t, stdout, "Continuity State:")
+	mustContain(t, stdout, "Latest open session sess-readable-1 has no saved summary and no saved session packet yet.")
+	mustContain(t, stdout, "Latest issue packet")
+	mustContain(t, stdout, "is fresh for mem-c0ffee1 cycle 1.")
 	mustContain(t, stdout, "Continuity:")
 	mustContain(t, stdout, "This issue is active work; keep continuity current so pause, resume, and handoff stay lightweight.")
 	mustContain(t, stdout, "memori context summarize")
@@ -175,6 +204,75 @@ func TestIssueNextHumanOutputShowsReasonSection(t *testing.T) {
 	mustContain(t, stdout, "memori context packet build --scope issue --id mem-f111111")
 	mustContain(t, stdout, "memori context loops --issue mem-f111111")
 	mustContain(t, stdout, "memori issue show --key mem-f111111")
+}
+
+func TestIssueNextHumanOutputShowsContinuityStateWhenResumeContextExists(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-output-next-resume.db")
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	if err := s.Initialize(ctx, store.InitializeParams{IssueKeyPrefix: "mem"}); err != nil {
+		t.Fatalf("initialize store: %v", err)
+	}
+	if _, _, _, err := s.CreateIssue(ctx, store.CreateIssueParams{
+		IssueID:   "mem-f222222",
+		Type:      "task",
+		Title:     "Readable resume issue",
+		Actor:     "test",
+		CommandID: "cmd-readable-resume-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	packet, err := s.BuildRehydratePacket(ctx, store.BuildPacketParams{
+		Scope:     "issue",
+		ScopeID:   "mem-f222222",
+		Actor:     "test",
+		CommandID: "cmd-readable-resume-packet-1",
+	})
+	if err != nil {
+		t.Fatalf("build issue packet: %v", err)
+	}
+	if _, _, err := s.CheckpointSession(ctx, store.CheckpointSessionParams{
+		SessionID: "sess-readable-next-1",
+		Trigger:   "manual",
+		Actor:     "test",
+		CommandID: "cmd-readable-resume-checkpoint-1",
+	}); err != nil {
+		t.Fatalf("checkpoint session: %v", err)
+	}
+	if _, err := s.SummarizeSession(ctx, store.SummarizeSessionParams{
+		SessionID: "sess-readable-next-1",
+		Note:      "paused before handoff",
+		Actor:     "test",
+		CommandID: "cmd-readable-resume-summarize-1",
+	}); err != nil {
+		t.Fatalf("summarize session: %v", err)
+	}
+	if _, _, _, err := s.UseRehydratePacket(ctx, store.UsePacketParams{
+		AgentID:   "agent-readable-resume-1",
+		PacketID:  packet.PacketID,
+		Actor:     "test",
+		CommandID: "cmd-readable-resume-use-1",
+	}); err != nil {
+		t.Fatalf("use packet: %v", err)
+	}
+
+	stdout, stderr, err := runMemoriForTest("issue", "next", "--db", dbPath, "--agent", "agent-readable-resume-1")
+	if err != nil {
+		t.Fatalf("issue next: %v\nstderr: %s", err, stderr)
+	}
+
+	mustContain(t, stdout, "Continuity State:")
+	mustContain(t, stdout, "Agent agent-readable-resume-1 focus points to mem-f222222 cycle 1 via packet")
+	mustContain(t, stdout, "Latest open session sess-readable-next-1 has summary")
+	mustContain(t, stdout, "Latest issue packet")
+	mustContain(t, stdout, "is fresh for mem-f222222 cycle 1.")
 }
 
 func TestBacklogColorModeAlwaysAndNever(t *testing.T) {

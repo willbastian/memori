@@ -473,6 +473,14 @@ For split panes, keep one shell running `board --watch` and do mutations in anot
 memori’s context commands are built for “pick the work back up” scenarios.
 
 ```bash
+go run ./cmd/memori context start --issue mem-a111111 --agent writer-1 --json
+
+go run ./cmd/memori context save \
+  --note "paused after reproducing the gate failure" \
+  --close \
+  --reason "handoff captured for the next worker" \
+  --json
+
 go run ./cmd/memori context checkpoint --trigger manual
 
 go run ./cmd/memori context summarize \
@@ -499,6 +507,8 @@ go run ./cmd/memori context rehydrate --json
 go run ./cmd/memori context loops --issue mem-a111111 --json
 ```
 
+Use `context start` when you want the happy-path “begin work” flow to checkpoint a session, build an issue packet, and optionally update an agent’s focus in one command.
+Use `context save` when you want the happy-path “pause or hand off” flow to summarize the session, build a fresh session packet, and optionally close the session in one command.
 When you omit `--session`, memori keeps the continuity flow ergonomic:
 - `context checkpoint` continues the latest open session when one exists, or creates a fresh deterministic session id when one does not.
 - `context summarize` and `context close` target the latest open session.
@@ -555,7 +565,8 @@ For day-to-day work, the shortest path is usually:
 
 1. `memori board` or `memori board --agent <id>` to see active, blocked, ready, and likely-next work.
 2. `memori issue next --agent <id> --json` when an agent needs a ranked continuity-aware recommendation.
-3. `memori issue show --key <issue>` and `memori event log --entity <issue> --json` before editing.
+3. `memori context start --issue <issue> --agent <id>` when you want the CLI to checkpoint and focus the work in one step.
+4. `memori issue show --key <issue>` and `memori event log --entity <issue> --json` before editing.
 4. `memori version --json` when you need the binary build metadata and embedded schema head version.
 5. `memori gate template list --json` when you need to find a close template before locking gates for a cycle.
 6. `memori gate template pending --json` when you need to review executable templates that are still awaiting human approval.
@@ -596,6 +607,8 @@ For day-to-day work, the shortest path is usually:
 
 - `memori issue next`
 - `memori board`
+- `memori context start`
+- `memori context save`
 - `memori context checkpoint`
 - `memori context summarize`
 - `memori context close`
@@ -606,6 +619,7 @@ For day-to-day work, the shortest path is usually:
 - `memori context loops`
 
 Human-readable `issue create`, `issue update`, `issue show`, and `issue next` now surface continuity guidance when the current work state makes it relevant. In practice that means `todo`, `inprogress`, and `blocked` work will point you toward `context checkpoint`, `context summarize`, `context packet build`, or `context loops` instead of treating continuity as a separate subsystem you have to remember on your own.
+Human-readable `issue show`, `issue next`, and `board` also surface continuity state at the point where work starts or resumes, including whether a saved issue packet is fresh or stale, whether an open session already exists, and whether an agent already has saved focus on the work.
 
 ### Database operations
 

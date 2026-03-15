@@ -170,3 +170,89 @@ func TestContextSessionLifecycleCommands(t *testing.T) {
 		t.Fatalf("expected closed session checkpoint failure, err=%v stderr=%s", err, stderr)
 	}
 }
+
+func TestContextStartAndSaveCompositeCommands(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-context-flow.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-f10a001",
+		"--type", "task",
+		"--title", "Composite continuity flow",
+		"--command-id", "cmd-cli-flow-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"context", "start",
+		"--db", dbPath,
+		"--issue", "mem-f10a001",
+		"--agent", "agent-flow-1",
+		"--command-id", "cmd-cli-flow-start-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context start: %v\nstderr: %s", err, stderr)
+	}
+	var started contextStartEnvelope
+	if err := json.Unmarshal([]byte(stdout), &started); err != nil {
+		t.Fatalf("decode context start json: %v\nstdout: %s", err, stdout)
+	}
+	if started.Command != "context start" || !started.Data.Created || !started.Data.FocusUsed {
+		t.Fatalf("unexpected context start response: %+v", started)
+	}
+	if started.Data.Packet.Scope != "issue" || started.Data.Focus.ActiveIssueID != "mem-f10a001" {
+		t.Fatalf("expected issue packet focus for mem-f10a001, got %+v", started)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "save",
+		"--db", dbPath,
+		"--session", started.Data.Session.SessionID,
+		"--note", "paused after setup",
+		"--close",
+		"--reason", "handoff ready",
+		"--command-id", "cmd-cli-flow-save-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context save: %v\nstderr: %s", err, stderr)
+	}
+	var saved contextSaveEnvelope
+	if err := json.Unmarshal([]byte(stdout), &saved); err != nil {
+		t.Fatalf("decode context save json: %v\nstdout: %s", err, stdout)
+	}
+	if saved.Command != "context save" || !saved.Data.Closed {
+		t.Fatalf("unexpected context save response: %+v", saved)
+	}
+	if saved.Data.Session.SessionID != started.Data.Session.SessionID || saved.Data.Session.EndedAt == "" || saved.Data.Session.SummaryEventID == "" {
+		t.Fatalf("expected saved closed session lifecycle fields, got %+v", saved)
+	}
+	if saved.Data.Packet.Scope != "session" || saved.Data.Packet.PacketID == "" {
+		t.Fatalf("expected session packet from context save, got %+v", saved)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "rehydrate",
+		"--db", dbPath,
+		"--session", started.Data.Session.SessionID,
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context rehydrate after save: %v\nstderr: %s", err, stderr)
+	}
+	var rehydrated contextRehydrateEnvelope
+	if err := json.Unmarshal([]byte(stdout), &rehydrated); err != nil {
+		t.Fatalf("decode context rehydrate json: %v\nstdout: %s", err, stdout)
+	}
+	if rehydrated.Data.Source != "packet" || rehydrated.Data.Packet.PacketID != saved.Data.Packet.PacketID {
+		t.Fatalf("expected packet-first resume after context save, got %+v", rehydrated)
+	}
+}

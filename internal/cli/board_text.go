@@ -30,6 +30,13 @@ func renderBoardSnapshot(snapshot boardSnapshot, opts boardRenderOptions) (strin
 	ui.blank()
 
 	renderBoardNext(ui, snapshot.LikelyNext, width)
+	if lines := continuityStatusLines(opts.Continuity); len(lines) > 0 && len(snapshot.LikelyNext) > 0 {
+		ui.section("Continuity State")
+		for _, line := range lines {
+			ui.bullet(line)
+		}
+		ui.blank()
+	}
 	if snapshot.Agent != "" && len(snapshot.LikelyNext) > 0 && !continuitySignalsPresent(snapshot.LikelyNext[0].Reasons) {
 		ui.section("Continuity")
 		ui.bullet(continuityBootstrapMessage(snapshot.Agent))

@@ -15,6 +15,27 @@ type contextCheckpointEnvelope struct {
 	} `json:"data"`
 }
 
+type contextStartEnvelope struct {
+	Command string `json:"command"`
+	Data    struct {
+		Created bool `json:"created"`
+		Session struct {
+			SessionID string `json:"session_id"`
+		} `json:"session"`
+		Packet struct {
+			PacketID string `json:"packet_id"`
+			Scope    string `json:"scope"`
+		} `json:"packet"`
+		Focus struct {
+			AgentID       string `json:"agent_id"`
+			ActiveIssueID string `json:"active_issue_id"`
+			LastPacketID  string `json:"last_packet_id"`
+		} `json:"focus"`
+		FocusUsed       bool `json:"focus_used"`
+		FocusIdempotent bool `json:"focus_idempotent"`
+	} `json:"data"`
+}
+
 type contextSessionEnvelope struct {
 	Command string `json:"command"`
 	Data    struct {
@@ -23,6 +44,22 @@ type contextSessionEnvelope struct {
 			EndedAt        string `json:"ended_at"`
 			SummaryEventID string `json:"summary_event_id"`
 		} `json:"session"`
+	} `json:"data"`
+}
+
+type contextSaveEnvelope struct {
+	Command string `json:"command"`
+	Data    struct {
+		Closed  bool `json:"closed"`
+		Session struct {
+			SessionID      string `json:"session_id"`
+			EndedAt        string `json:"ended_at"`
+			SummaryEventID string `json:"summary_event_id"`
+		} `json:"session"`
+		Packet struct {
+			PacketID string `json:"packet_id"`
+			Scope    string `json:"scope"`
+		} `json:"packet"`
 	} `json:"data"`
 }
 

@@ -71,10 +71,11 @@ type boardIssueHierarchy struct {
 }
 
 type boardRenderOptions struct {
-	Colors   bool
-	Watch    bool
-	Interval time.Duration
-	Width    int
+	Colors     bool
+	Watch      bool
+	Interval   time.Duration
+	Width      int
+	Continuity store.ContinuitySnapshot
 }
 
 type boardReasonRule struct {
@@ -142,11 +143,22 @@ func runBoard(args []string, out io.Writer) error {
 		if err != nil {
 			return "", "", err
 		}
+		var continuity store.ContinuitySnapshot
+		if len(snapshot.LikelyNext) > 0 {
+			continuity, err = s.ContinuitySnapshot(baseCtx, store.ContinuitySnapshotParams{
+				IssueID: snapshot.LikelyNext[0].Issue.ID,
+				AgentID: *agent,
+			})
+			if err != nil {
+				return "", "", err
+			}
+		}
 		rendered, err := renderBoardSnapshot(snapshot, boardRenderOptions{
-			Colors:   shouldUseColor(out),
-			Watch:    *watch,
-			Interval: *interval,
-			Width:    boardRenderWidth(),
+			Colors:     shouldUseColor(out),
+			Watch:      *watch,
+			Interval:   *interval,
+			Width:      boardRenderWidth(),
+			Continuity: continuity,
 		})
 		if err != nil {
 			return "", "", err

@@ -101,6 +101,8 @@ func runHelp(args []string, out io.Writer) error {
 			"memori gate evaluate --issue <prefix-shortSHA> --gate <gate-id> --result PASS|FAIL|BLOCKED --evidence <ref> [--evidence <ref>]... [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate verify --issue <prefix-shortSHA> --gate <gate-id> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate status --issue <prefix-shortSHA> [--cycle <n>] [--json]",
+			"memori context start --issue <prefix-shortSHA> [--agent <id>] [--session <id>] [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]",
+			"memori context save [--session <id>] [--note <text>] [--close] [--reason <text>] [--actor <actor>] [--command-id <id>] [--json]",
 			"memori context checkpoint [--session <id>] [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]",
 			"memori context summarize [--session <id>] [--note <text>] [--actor <actor>] [--command-id <id>] [--json]",
 			"memori context close [--session <id>] [--reason <text>] [--actor <actor>] [--command-id <id>] [--json]",
@@ -240,6 +242,8 @@ func printHelp(out io.Writer) {
 	ui.section("Agent Workflows")
 	ui.bullet("memori issue next [--agent <id>] [--json]")
 	ui.bullet("memori board [--db <path>] [--agent <id>] [--watch] [--interval <duration>] [--json]")
+	ui.bullet("memori context start --issue <prefix-shortSHA> [--agent <id>] [--session <id>] [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]")
+	ui.bullet("memori context save [--session <id>] [--note <text>] [--close] [--reason <text>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori context checkpoint [--session <id>] [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori context summarize [--session <id>] [--note <text>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori context close [--session <id>] [--reason <text>] [--actor <actor>] [--command-id <id>] [--json]")
