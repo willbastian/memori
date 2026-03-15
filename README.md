@@ -183,7 +183,7 @@ Tagged releases build cross-platform archives for:
 
 The automation lives in [.github/workflows/release.yml](.github/workflows/release.yml) and uses [scripts/build_release_artifacts.sh](scripts/build_release_artifacts.sh) so the same build flow can run locally or in GitHub Actions.
 
-The test-and-coverage CI lives in [.github/workflows/ci.yml](.github/workflows/ci.yml) and uses [scripts/check_coverage_baseline.sh](scripts/check_coverage_baseline.sh). It runs on every branch push plus pull requests targeting `main`, executes `go test ./...`, and fails if total Go statement coverage drops below the committed baseline.
+The test-and-coverage CI lives in [.github/workflows/ci.yml](.github/workflows/ci.yml) and uses [scripts/check_coverage_baseline.sh](scripts/check_coverage_baseline.sh). It runs on every branch push plus pull requests targeting `main`, executes `go test ./...`, and fails if total Go statement coverage drops materially below the committed baseline. The script includes a small default `0.25` percentage-point tolerance so harmless cross-platform coverage drift does not fail CI.
 
 To cut a release from a tag:
 
@@ -658,6 +658,8 @@ Run the same full-suite coverage check that GitHub Actions enforces:
 ```bash
 ./scripts/check_coverage_baseline.sh
 ```
+
+The coverage check compares against the committed baseline in `.github/coverage-baseline.txt` with a default `0.25` percentage-point tolerance. Override that buffer with `MEMORI_COVERAGE_TOLERANCE=<value>` if you need a stricter or looser local check.
 
 Before starting a structural refactor of a large file, run a baseline regression pass first:
 
