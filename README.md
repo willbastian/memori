@@ -183,6 +183,8 @@ Tagged releases build cross-platform archives for:
 
 The automation lives in [.github/workflows/release.yml](.github/workflows/release.yml) and uses [scripts/build_release_artifacts.sh](scripts/build_release_artifacts.sh) so the same build flow can run locally or in GitHub Actions.
 
+The test-and-coverage CI lives in [.github/workflows/ci.yml](.github/workflows/ci.yml) and uses [scripts/check_coverage_baseline.sh](scripts/check_coverage_baseline.sh). It runs on every branch push plus pull requests targeting `main`, executes `go test ./...`, and fails if total Go statement coverage drops below the committed baseline.
+
 To cut a release from a tag:
 
 ```bash
@@ -649,6 +651,12 @@ Run the full test suite:
 
 ```bash
 go test ./...
+```
+
+Run the same full-suite coverage check that GitHub Actions enforces:
+
+```bash
+./scripts/check_coverage_baseline.sh
 ```
 
 Before starting a structural refactor of a large file, run a baseline regression pass first:
