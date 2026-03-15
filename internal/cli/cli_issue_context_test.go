@@ -909,3 +909,97 @@ func TestIssueShowResumeGuidanceUsesIssueSessionWhenAnotherSessionIsNewer(t *tes
 		t.Fatalf("expected resume guidance to stay scoped to the issue session, got:\n%s", stdout)
 	}
 }
+
+func TestIssueUpdateInProgressKeepsSessionsScopedPerIssue(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-issue-update-start-scope.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	for _, issueKey := range []string{"mem-b222228", "mem-b222229"} {
+		if _, stderr, err := runMemoriForTest(
+			"issue", "create",
+			"--db", dbPath,
+			"--key", issueKey,
+			"--type", "task",
+			"--title", "Issue start scope",
+			"--command-id", "cmd-"+issueKey+"-create-1",
+			"--json",
+		); err != nil {
+			t.Fatalf("issue create %s: %v\nstderr: %s", issueKey, err, stderr)
+		}
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-b222228",
+		"--status", "inprogress",
+		"--agent", "agent-start-scope-1",
+		"--command-id", "cmd-start-scope-issue-a-inprogress-1",
+	)
+	if err != nil {
+		t.Fatalf("issue A inprogress: %v\nstderr: %s", err, stderr)
+	}
+	if strings.Contains(stdout, "Continuing open session already tracking this issue") {
+		t.Fatalf("did not expect issue A to reuse an existing issue session, got:\n%s", stdout)
+	}
+
+	ctx := context.Background()
+	s, _, err := openInitializedStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open store after issue A: %v", err)
+	}
+	issueASession, found, err := s.LatestOpenSessionForIssue(ctx, "mem-b222228")
+	s.Close()
+	if err != nil {
+		t.Fatalf("latest open session for issue A: %v", err)
+	}
+	if !found {
+		t.Fatal("expected open session for issue A")
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-b222229",
+		"--status", "inprogress",
+		"--agent", "agent-start-scope-2",
+		"--command-id", "cmd-start-scope-issue-b-inprogress-1",
+	)
+	if err != nil {
+		t.Fatalf("issue B inprogress: %v\nstderr: %s", err, stderr)
+	}
+	if strings.Contains(stdout, "Continued open session "+issueASession.SessionID) {
+		t.Fatalf("expected issue B to get its own continuity session, got:\n%s", stdout)
+	}
+
+	s, _, err = openInitializedStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("reopen store after issue B: %v", err)
+	}
+	issueAAfter, found, err := s.LatestOpenSessionForIssue(ctx, "mem-b222228")
+	if err != nil {
+		s.Close()
+		t.Fatalf("latest open session for issue A after issue B start: %v", err)
+	}
+	if !found {
+		s.Close()
+		t.Fatal("expected issue A to keep its open session after issue B started")
+	}
+	issueBSession, found, err := s.LatestOpenSessionForIssue(ctx, "mem-b222229")
+	s.Close()
+	if err != nil {
+		t.Fatalf("latest open session for issue B: %v", err)
+	}
+	if !found {
+		t.Fatal("expected open session for issue B")
+	}
+	if issueAAfter.SessionID != issueASession.SessionID {
+		t.Fatalf("expected issue A session to remain %s, got %s", issueASession.SessionID, issueAAfter.SessionID)
+	}
+	if issueBSession.SessionID == issueASession.SessionID {
+		t.Fatalf("expected issue B to get a distinct session, both used %s", issueBSession.SessionID)
+	}
+}

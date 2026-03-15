@@ -35,6 +35,26 @@ func resolveCheckpointSession(ctx context.Context, s *store.Store, explicitSessi
 	}, nil
 }
 
+func resolveCheckpointSessionForIssue(ctx context.Context, s *store.Store, explicitSessionID, issueID, commandID string) (sessionResolution, error) {
+	if sessionID := strings.TrimSpace(explicitSessionID); sessionID != "" {
+		return sessionResolution{sessionID: sessionID, source: "explicit"}, nil
+	}
+	if session, found, err := s.SessionForCommand(ctx, commandID); err != nil {
+		return sessionResolution{}, err
+	} else if found {
+		return sessionResolution{sessionID: session.SessionID, source: "command-replay"}, nil
+	}
+	if session, found, err := s.LatestOpenSessionForIssue(ctx, issueID); err != nil {
+		return sessionResolution{}, err
+	} else if found {
+		return sessionResolution{sessionID: session.SessionID, source: "latest-open-issue"}, nil
+	}
+	return sessionResolution{
+		sessionID: generatedSessionIDForCommand(commandID),
+		source:    "generated-new",
+	}, nil
+}
+
 func resolveOpenSessionForMutation(ctx context.Context, s *store.Store, explicitSessionID, commandID string) (sessionResolution, error) {
 	if sessionID := strings.TrimSpace(explicitSessionID); sessionID != "" {
 		return sessionResolution{sessionID: sessionID, source: "explicit"}, nil
@@ -134,6 +154,9 @@ func sessionResolutionMessage(action string, resolution sessionResolution) strin
 			return fmt.Sprintf("No --session supplied; rehydrating latest open session %s.", resolution.sessionID)
 		}
 	case "latest-open-issue":
+		if action == "checkpoint" {
+			return fmt.Sprintf("No --session supplied; continuing the open session already tracking this issue (%s).", resolution.sessionID)
+		}
 		if action == "summarize" {
 			return fmt.Sprintf("No --session supplied; summarizing the latest open session for this issue (%s).", resolution.sessionID)
 		}

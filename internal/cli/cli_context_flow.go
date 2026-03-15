@@ -118,7 +118,7 @@ func startIssueContinuity(
 	packetCommandID := derivedCompositeCommandID(baseCommandID, "packet")
 	focusCommandID := derivedCompositeCommandID(baseCommandID, "focus")
 
-	resolution, err := resolveCheckpointSession(ctx, s, sessionID, checkpointCommandID)
+	resolution, err := resolveCheckpointSessionForIssue(ctx, s, sessionID, issueID, checkpointCommandID)
 	if err != nil {
 		return startIssueContinuityResult{}, err
 	}
