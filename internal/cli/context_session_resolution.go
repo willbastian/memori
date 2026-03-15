@@ -66,6 +66,21 @@ func resolveOpenSessionForIssueMutation(ctx context.Context, s *store.Store, iss
 	return sessionResolution{}, fmt.Errorf("no open session found for issue %s; start work first with `memori issue update --key %s --status inprogress` or pass --skip-continuity", strings.TrimSpace(issueID), strings.TrimSpace(issueID))
 }
 
+func latestOpenSessionIDForIssue(ctx context.Context, s *store.Store, issueID string) (string, bool, error) {
+	issueID = strings.TrimSpace(issueID)
+	if issueID == "" {
+		return "", false, nil
+	}
+	session, found, err := s.LatestOpenSessionForIssue(ctx, issueID)
+	if err != nil {
+		return "", false, err
+	}
+	if !found {
+		return "", false, nil
+	}
+	return session.SessionID, true, nil
+}
+
 func resolveSessionForContinuitySave(ctx context.Context, s *store.Store, explicitSessionID, issueID, commandID string) (sessionResolution, error) {
 	if strings.TrimSpace(explicitSessionID) != "" {
 		return resolveOpenSessionForMutation(ctx, s, explicitSessionID, commandID)

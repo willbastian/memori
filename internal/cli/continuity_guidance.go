@@ -43,8 +43,9 @@ func continuityBootstrapSteps(issueID string) []string {
 	}
 }
 
-func issueContinuityGuidance(issue store.Issue, command string) (string, []string) {
+func issueContinuityGuidance(issue store.Issue, command, issueSessionID string) (string, []string) {
 	command = strings.TrimSpace(command)
+	issueSessionID = strings.TrimSpace(issueSessionID)
 	issueType := strings.ToLower(strings.TrimSpace(issue.Type))
 	status := strings.ToLower(strings.TrimSpace(issue.Status))
 	issueID := strings.TrimSpace(issue.ID)
@@ -68,8 +69,8 @@ func issueContinuityGuidance(issue store.Issue, command string) (string, []strin
 			"memori context summarize",
 			fmt.Sprintf("memori context packet build --scope issue --id %s", issueID),
 		}
-		if command == "show" {
-			steps = append([]string{"memori context resume"}, steps...)
+		if command == "show" && issueSessionID != "" {
+			steps = append([]string{fmt.Sprintf("memori context resume --session %s", issueSessionID)}, steps...)
 		}
 		return "This issue is active work; keep continuity current so pause, resume, and handoff stay lightweight.", steps
 	case "blocked":
@@ -78,8 +79,8 @@ func issueContinuityGuidance(issue store.Issue, command string) (string, []strin
 			fmt.Sprintf("memori context packet build --scope issue --id %s", issueID),
 			fmt.Sprintf("memori context loops --issue %s", issueID),
 		}
-		if command == "show" {
-			steps = append([]string{"memori context resume"}, steps...)
+		if command == "show" && issueSessionID != "" {
+			steps = append([]string{fmt.Sprintf("memori context resume --session %s", issueSessionID)}, steps...)
 		}
 		return "This issue is blocked; preserve the current state before waiting or handing it off.", steps
 	default:
@@ -87,14 +88,18 @@ func issueContinuityGuidance(issue store.Issue, command string) (string, []strin
 	}
 }
 
-func issueResumeSteps(issue store.Issue) []string {
+func issueResumeSteps(issue store.Issue, issueSessionID string) []string {
 	status := strings.ToLower(strings.TrimSpace(issue.Status))
 	if status != "inprogress" && status != "blocked" {
 		return nil
 	}
+	issueSessionID = strings.TrimSpace(issueSessionID)
+	if issueSessionID == "" {
+		return nil
+	}
 	return []string{
-		"memori context resume",
-		"memori context resume --agent <agent-id>",
+		fmt.Sprintf("memori context resume --session %s", issueSessionID),
+		fmt.Sprintf("memori context resume --session %s --agent <agent-id>", issueSessionID),
 	}
 }
 

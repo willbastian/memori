@@ -363,7 +363,7 @@ func TestDefaultContinuityLoopHumanContract(t *testing.T) {
 	mustContain(t, stdout, "Continuity Pressure:")
 	mustContain(t, stdout, "Open session sess_")
 	mustContain(t, stdout, "Resume:")
-	mustContain(t, stdout, "memori context resume")
+	mustContain(t, stdout, "memori context resume --session sess_")
 
 	stdout, stderr, err = runMemoriForTest(
 		"issue", "update",
@@ -388,7 +388,7 @@ func TestDefaultContinuityLoopHumanContract(t *testing.T) {
 	mustContain(t, stdout, "Continuity Pressure:")
 	mustContain(t, stdout, "mem-c111111 is blocked and its saved issue packet is stale; rebuild it before the next handoff.")
 	mustContain(t, stdout, "Resume:")
-	mustContain(t, stdout, "memori context resume")
+	mustContain(t, stdout, "memori context resume --session sess_")
 
 	stdout, stderr, err = runMemoriForTest(
 		"context", "resume",

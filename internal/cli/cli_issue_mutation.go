@@ -91,7 +91,7 @@ func runIssueCreate(args []string, out io.Writer) error {
 		ui.field("Parent", issue.ParentID)
 	}
 	ui.field("Event", fmt.Sprintf("%s (%s #%d)", event.EventID, event.EventType, event.EventOrder))
-	if message, steps := issueContinuityGuidance(issue, "create"); message != "" {
+	if message, steps := issueContinuityGuidance(issue, "create", ""); message != "" {
 		ui.blank()
 		ui.section("Continuity")
 		ui.bullet(message)
@@ -309,7 +309,17 @@ func runIssueUpdate(args []string, out io.Writer) error {
 		ui.bullet(fmt.Sprintf("Saved session packet %s for %s.", savedContinuityResult.Data.Packet.PacketID, issue.ID))
 	}
 	if continuityMode == continuityModeAssist && statusProvided {
-		if steps := issueUpdateContinuityAssistSteps(issue.ID, *status, *agentID, *note, *reason); len(steps) > 0 {
+		assistSessionID := ""
+		if strings.EqualFold(strings.TrimSpace(*status), "blocked") || strings.EqualFold(strings.TrimSpace(*status), "done") {
+			issueSessionID, found, err := latestOpenSessionIDForIssue(ctx, s, issue.ID)
+			if err != nil {
+				return err
+			}
+			if found {
+				assistSessionID = issueSessionID
+			}
+		}
+		if steps := issueUpdateContinuityAssistSteps(issue.ID, assistSessionID, *status, *agentID, *note, *reason); len(steps) > 0 {
 			ui.blank()
 			ui.section("Continuity Assist")
 			ui.bullet("Continuity mode assist kept continuity explicit for this command.")
@@ -323,7 +333,7 @@ func runIssueUpdate(args []string, out io.Writer) error {
 		ui.section("Continuity Mode")
 		ui.bullet("Continuity mode manual disabled automatic continuity for this command.")
 	}
-	if message, steps := issueContinuityGuidance(issue, "update"); message != "" {
+	if message, steps := issueContinuityGuidance(issue, "update", ""); message != "" {
 		ui.blank()
 		ui.section("Continuity")
 		ui.bullet(message)

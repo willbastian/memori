@@ -86,7 +86,15 @@ func runIssueShow(args []string, out io.Writer) error {
 	ui.section("Timeline")
 	ui.field("Created", issue.CreatedAt)
 	ui.field("Updated", issue.UpdatedAt)
+	issueSessionID := ""
 	if !strings.EqualFold(issue.Type, "epic") {
+		resolvedSessionID, found, err := latestOpenSessionIDForIssue(ctx, s, issue.ID)
+		if err != nil {
+			return err
+		}
+		if found {
+			issueSessionID = resolvedSessionID
+		}
 		snapshot, err := s.ContinuitySnapshot(ctx, store.ContinuitySnapshotParams{IssueID: issue.ID})
 		if err != nil {
 			return err
@@ -105,7 +113,7 @@ func runIssueShow(args []string, out io.Writer) error {
 				ui.bullet(line)
 			}
 		}
-		if steps := issueResumeSteps(issue); len(steps) > 0 {
+		if steps := issueResumeSteps(issue, issueSessionID); len(steps) > 0 {
 			ui.blank()
 			ui.section("Resume")
 			for _, step := range steps {
@@ -113,7 +121,7 @@ func runIssueShow(args []string, out io.Writer) error {
 			}
 		}
 	}
-	if message, steps := issueContinuityGuidance(issue, "show"); message != "" {
+	if message, steps := issueContinuityGuidance(issue, "show", issueSessionID); message != "" {
 		ui.blank()
 		ui.section("Continuity")
 		ui.bullet(message)

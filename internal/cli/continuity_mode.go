@@ -30,8 +30,9 @@ func resolveContinuityMode(modeHint string) (continuityMode, error) {
 	}
 }
 
-func issueUpdateContinuityAssistSteps(issueID, requestedStatus, agentID, note, reason string) []string {
+func issueUpdateContinuityAssistSteps(issueID, sessionID, requestedStatus, agentID, note, reason string) []string {
 	issueID = strings.TrimSpace(issueID)
+	sessionID = strings.TrimSpace(sessionID)
 	requestedStatus = strings.ToLower(strings.TrimSpace(requestedStatus))
 	agentID = strings.TrimSpace(agentID)
 	note = strings.TrimSpace(note)
@@ -45,13 +46,19 @@ func issueUpdateContinuityAssistSteps(issueID, requestedStatus, agentID, note, r
 		}
 		return []string{cmd}
 	case "blocked":
-		cmd := "memori context save"
+		if sessionID == "" {
+			return []string{fmt.Sprintf("No open session is tracking %s yet; start continuity explicitly before saving it.", issueID)}
+		}
+		cmd := fmt.Sprintf("memori context save --session %s", sessionID)
 		if note != "" {
 			cmd += " --note " + shellQuote(note)
 		}
 		return []string{cmd}
 	case "done":
-		cmd := "memori context save --close"
+		if sessionID == "" {
+			return []string{fmt.Sprintf("No open session is tracking %s yet; start continuity explicitly before closing it.", issueID)}
+		}
+		cmd := fmt.Sprintf("memori context save --session %s --close", sessionID)
 		if note != "" {
 			cmd += " --note " + shellQuote(note)
 		}

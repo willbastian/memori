@@ -727,6 +727,89 @@ func TestIssueUpdateContinuityModeAssistShowsExplicitBundleSteps(t *testing.T) {
 	}
 }
 
+func TestIssueUpdateContinuityModeAssistScopesSaveStepsToIssueSession(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-issue-update-assist-scope.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	for _, issueKey := range []string{"mem-b222223", "mem-b222224"} {
+		if _, stderr, err := runMemoriForTest(
+			"issue", "create",
+			"--db", dbPath,
+			"--key", issueKey,
+			"--type", "task",
+			"--title", "Assist continuity scope",
+			"--command-id", "cmd-"+issueKey+"-create-1",
+			"--json",
+		); err != nil {
+			t.Fatalf("issue create %s: %v\nstderr: %s", issueKey, err, stderr)
+		}
+	}
+
+	if _, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-b222223",
+		"--status", "inprogress",
+		"--agent", "agent-assist-scope-1",
+		"--command-id", "cmd-assist-scope-issue-a-inprogress-1",
+	); err != nil {
+		t.Fatalf("issue A inprogress: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"context", "start",
+		"--db", dbPath,
+		"--issue", "mem-b222224",
+		"--session", "sess-assist-scope-b",
+		"--agent", "agent-assist-scope-2",
+		"--command-id", "cmd-assist-scope-issue-b-context-start-1",
+	); err != nil {
+		t.Fatalf("issue B context start: %v\nstderr: %s", err, stderr)
+	}
+
+	ctx := context.Background()
+	s, _, err := openInitializedStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	issueASession, found, err := s.LatestOpenSessionForIssue(ctx, "mem-b222223")
+	s.Close()
+	if err != nil {
+		t.Fatalf("latest open session for issue A: %v", err)
+	}
+	if !found {
+		t.Fatal("expected open session for issue A")
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-b222223",
+		"--status", "blocked",
+		"--continuity", "assist",
+		"--note", "waiting on review",
+		"--command-id", "cmd-assist-scope-issue-a-blocked-1",
+	)
+	if err != nil {
+		t.Fatalf("issue A blocked assist mode: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Continuity Assist:")
+	mustContain(t, stdout, "memori context save --session "+issueASession.SessionID+" --note 'waiting on review'")
+	if strings.Contains(stdout, "memori context save --note 'waiting on review'") {
+		t.Fatalf("expected assist guidance to scope save command to the issue session, got:\n%s", stdout)
+	}
+
+	doneSteps := issueUpdateContinuityAssistSteps("mem-b222227", "sess-assist-scope-c", "done", "", "wrapped up", "merged")
+	if len(doneSteps) != 1 {
+		t.Fatalf("expected one done assist step, got %#v", doneSteps)
+	}
+	if doneSteps[0] != "memori context save --session sess-assist-scope-c --close --note 'wrapped up' --reason merged" {
+		t.Fatalf("expected done assist guidance to scope close command to the issue session, got %#v", doneSteps)
+	}
+}
+
 func TestIssueUpdateContinuityModeCanBeSetByEnv(t *testing.T) {
 	t.Setenv("MEMORI_CONTINUITY_MODE", "manual")
 
@@ -757,4 +840,72 @@ func TestIssueUpdateContinuityModeCanBeSetByEnv(t *testing.T) {
 		t.Fatalf("issue update env mode: %v\nstderr: %s", err, stderr)
 	}
 	mustContain(t, stdout, "Continuity mode manual disabled automatic continuity for this command.")
+}
+
+func TestIssueShowResumeGuidanceUsesIssueSessionWhenAnotherSessionIsNewer(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-issue-show-resume-scope.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	for _, issueKey := range []string{"mem-b222225", "mem-b222226"} {
+		if _, stderr, err := runMemoriForTest(
+			"issue", "create",
+			"--db", dbPath,
+			"--key", issueKey,
+			"--type", "task",
+			"--title", "Issue show resume scope",
+			"--command-id", "cmd-"+issueKey+"-create-1",
+			"--json",
+		); err != nil {
+			t.Fatalf("issue create %s: %v\nstderr: %s", issueKey, err, stderr)
+		}
+	}
+
+	if _, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-b222225",
+		"--status", "inprogress",
+		"--agent", "agent-show-scope-1",
+		"--command-id", "cmd-show-scope-issue-a-inprogress-1",
+	); err != nil {
+		t.Fatalf("issue A inprogress: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"context", "start",
+		"--db", dbPath,
+		"--issue", "mem-b222226",
+		"--session", "sess-show-scope-b",
+		"--agent", "agent-show-scope-2",
+		"--command-id", "cmd-show-scope-issue-b-context-start-1",
+	); err != nil {
+		t.Fatalf("issue B context start: %v\nstderr: %s", err, stderr)
+	}
+
+	ctx := context.Background()
+	s, _, err := openInitializedStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	issueASession, found, err := s.LatestOpenSessionForIssue(ctx, "mem-b222225")
+	s.Close()
+	if err != nil {
+		t.Fatalf("latest open session for issue A: %v", err)
+	}
+	if !found {
+		t.Fatal("expected open session for issue A")
+	}
+
+	stdout, stderr, err := runMemoriForTest("issue", "show", "--db", dbPath, "--key", "mem-b222225")
+	if err != nil {
+		t.Fatalf("issue show scoped resume guidance: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Resume:")
+	mustContain(t, stdout, "memori context resume --session "+issueASession.SessionID)
+	mustContain(t, stdout, "memori context resume --session "+issueASession.SessionID+" --agent <agent-id>")
+	if strings.Contains(stdout, "memori context resume --agent <agent-id>") {
+		t.Fatalf("expected resume guidance to stay scoped to the issue session, got:\n%s", stdout)
+	}
 }
