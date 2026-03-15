@@ -333,7 +333,14 @@ func runIssueUpdate(args []string, out io.Writer) error {
 		ui.section("Continuity Mode")
 		ui.bullet("Continuity mode manual disabled automatic continuity for this command.")
 	}
-	if message, steps := issueContinuityGuidance(issue, "update", ""); message != "" {
+	guidanceSessionID := ""
+	switch {
+	case autoStartedContinuity:
+		guidanceSessionID = continuityResult.Data.Session.SessionID
+	case autoSavedContinuity:
+		guidanceSessionID = savedContinuityResult.Data.Session.SessionID
+	}
+	if message, steps := issueContinuityGuidance(issue, "update", guidanceSessionID); message != "" {
 		ui.blank()
 		ui.section("Continuity")
 		ui.bullet(message)

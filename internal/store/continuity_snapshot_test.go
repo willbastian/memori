@@ -34,6 +34,7 @@ func TestContinuitySnapshotIncludesIssueAgentAndSessionState(t *testing.T) {
 
 	if _, _, err := s.CheckpointSession(ctx, CheckpointSessionParams{
 		SessionID: "sess-snapshot-1",
+		IssueID:   issueID,
 		Trigger:   "manual",
 		Actor:     "agent-1",
 		CommandID: "cmd-snapshot-checkpoint-1",
@@ -127,13 +128,65 @@ func TestContinuitySnapshotIncludesIssueAgentAndSessionState(t *testing.T) {
 	if !snapshot.Agent.HasLastPacket || snapshot.Agent.LastPacket.PacketID != packet.PacketID {
 		t.Fatalf("expected focus packet %q, got %+v", packet.PacketID, snapshot.Agent)
 	}
-	if !snapshot.Session.HasSession || snapshot.Session.Source != "latest-open" {
-		t.Fatalf("expected latest open session, got %+v", snapshot.Session)
+	if !snapshot.Session.HasSession || snapshot.Session.Source != "latest-open-issue" {
+		t.Fatalf("expected latest open issue session, got %+v", snapshot.Session)
 	}
 	if snapshot.Session.Session.SessionID != "sess-snapshot-1" || snapshot.Session.Session.SummaryEventID == "" {
 		t.Fatalf("expected summarized session sess-snapshot-1, got %+v", snapshot.Session.Session)
 	}
 	if !snapshot.Session.HasPacket || snapshot.Session.Packet.PacketID != sessionPacket.PacketID {
 		t.Fatalf("expected session packet %q, got %+v", sessionPacket.PacketID, snapshot.Session)
+	}
+}
+
+func TestContinuitySnapshotScopesSessionStateToRequestedIssue(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	for _, issueID := range []string{"mem-6161616", "mem-7171717"} {
+		if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+			IssueID:   issueID,
+			Type:      "task",
+			Title:     "Scoped continuity snapshot",
+			Actor:     "agent-1",
+			CommandID: "cmd-snapshot-create-" + issueID,
+		}); err != nil {
+			t.Fatalf("create issue %s: %v", issueID, err)
+		}
+	}
+
+	if _, _, err := s.CheckpointSession(ctx, CheckpointSessionParams{
+		SessionID: "sess-snapshot-issue-a",
+		IssueID:   "mem-6161616",
+		Trigger:   "manual",
+		Actor:     "agent-1",
+		CommandID: "cmd-snapshot-issue-a-checkpoint-1",
+	}); err != nil {
+		t.Fatalf("checkpoint issue A session: %v", err)
+	}
+	if _, _, err := s.CheckpointSession(ctx, CheckpointSessionParams{
+		SessionID: "sess-snapshot-issue-b",
+		IssueID:   "mem-7171717",
+		Trigger:   "manual",
+		Actor:     "agent-1",
+		CommandID: "cmd-snapshot-issue-b-checkpoint-1",
+	}); err != nil {
+		t.Fatalf("checkpoint issue B session: %v", err)
+	}
+
+	snapshot, err := s.ContinuitySnapshot(ctx, ContinuitySnapshotParams{IssueID: "mem-6161616"})
+	if err != nil {
+		t.Fatalf("continuity snapshot: %v", err)
+	}
+	if !snapshot.Session.HasSession {
+		t.Fatalf("expected issue-scoped session snapshot, got %+v", snapshot.Session)
+	}
+	if snapshot.Session.Session.SessionID != "sess-snapshot-issue-a" {
+		t.Fatalf("expected issue A session, got %+v", snapshot.Session)
+	}
+	if snapshot.Session.Source != "latest-open-issue" {
+		t.Fatalf("expected latest-open-issue source, got %+v", snapshot.Session)
 	}
 }

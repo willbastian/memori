@@ -98,8 +98,8 @@ func TestIssueUpdateAndShowHumanOutputSurfaceStateAwareContinuity(t *testing.T) 
 	mustContain(t, stdout, "Updated agent agent-readable-issue-1 focus to mem-c0ffee1 via packet ")
 	mustContain(t, stdout, "Continuity:")
 	mustContain(t, stdout, "This issue is active work; keep continuity current so pause, resume, and handoff stay lightweight.")
-	mustContain(t, stdout, "memori context checkpoint")
-	mustContain(t, stdout, "memori context summarize")
+	mustContain(t, stdout, "memori context checkpoint --session sess_")
+	mustContain(t, stdout, "memori context summarize --session sess_")
 	mustContain(t, stdout, "memori context packet build --scope issue --id mem-c0ffee1")
 
 	stdout, stderr, err = runMemoriForTest("issue", "show", "--db", dbPath, "--key", "mem-c0ffee1")
@@ -107,7 +107,7 @@ func TestIssueUpdateAndShowHumanOutputSurfaceStateAwareContinuity(t *testing.T) 
 		t.Fatalf("issue show inprogress: %v\nstderr: %s", err, stderr)
 	}
 	mustContain(t, stdout, "Continuity State:")
-	mustContain(t, stdout, "Latest open session sess_")
+	mustContain(t, stdout, "Latest open session for this issue sess_")
 	mustContain(t, stdout, "Latest issue packet")
 	mustContain(t, stdout, "is fresh for mem-c0ffee1 cycle 1.")
 	mustContain(t, stdout, "Continuity Pressure:")
@@ -117,7 +117,8 @@ func TestIssueUpdateAndShowHumanOutputSurfaceStateAwareContinuity(t *testing.T) 
 	mustContain(t, stdout, "memori context resume --session sess_")
 	mustContain(t, stdout, "Continuity:")
 	mustContain(t, stdout, "This issue is active work; keep continuity current so pause, resume, and handoff stay lightweight.")
-	mustContain(t, stdout, "memori context summarize")
+	mustContain(t, stdout, "memori context checkpoint --session sess_")
+	mustContain(t, stdout, "memori context summarize --session sess_")
 
 	stdout, stderr, err = runMemoriForTest(
 		"issue", "update",
@@ -244,6 +245,7 @@ func TestIssueNextHumanOutputShowsContinuityStateWhenResumeContextExists(t *test
 	}
 	if _, _, err := s.CheckpointSession(ctx, store.CheckpointSessionParams{
 		SessionID: "sess-readable-next-1",
+		IssueID:   "mem-f222222",
 		Trigger:   "manual",
 		Actor:     "test",
 		CommandID: "cmd-readable-resume-checkpoint-1",
@@ -274,12 +276,12 @@ func TestIssueNextHumanOutputShowsContinuityStateWhenResumeContextExists(t *test
 
 	mustContain(t, stdout, "Continuity State:")
 	mustContain(t, stdout, "Agent agent-readable-resume-1 focus points to mem-f222222 cycle 1 via packet")
-	mustContain(t, stdout, "Latest open session sess-readable-next-1 has summary")
+	mustContain(t, stdout, "Latest open session for this issue sess-readable-next-1 has summary")
 	mustContain(t, stdout, "Latest issue packet")
 	mustContain(t, stdout, "is fresh for mem-f222222 cycle 1.")
 	mustContain(t, stdout, "Continuity Pressure:")
 	mustContain(t, stdout, "mem-f222222 is resume-ready with a fresh issue packet and saved focus for agent-readable-resume-1.")
-	mustContain(t, stdout, "memori context resume --agent agent-readable-resume-1")
+	mustContain(t, stdout, "memori context resume --session sess-readable-next-1 --agent agent-readable-resume-1")
 }
 
 func TestBacklogColorModeAlwaysAndNever(t *testing.T) {

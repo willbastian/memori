@@ -265,7 +265,7 @@ func TestIssueUpdateInProgressStartsContinuityAndFocusForAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("issue show: %v\nstderr: %s", err, stderr)
 	}
-	mustContain(t, stdout, "Latest open session "+rehydrated.Data.SessionID+" has no saved summary and no saved session packet yet.")
+	mustContain(t, stdout, "Latest open session for this issue "+rehydrated.Data.SessionID+" has no saved summary and no saved session packet yet.")
 	mustContain(t, stdout, "Latest issue packet ")
 	mustContain(t, stdout, "is fresh for mem-6666eee cycle 1.")
 }
@@ -905,8 +905,99 @@ func TestIssueShowResumeGuidanceUsesIssueSessionWhenAnotherSessionIsNewer(t *tes
 	mustContain(t, stdout, "Resume:")
 	mustContain(t, stdout, "memori context resume --session "+issueASession.SessionID)
 	mustContain(t, stdout, "memori context resume --session "+issueASession.SessionID+" --agent <agent-id>")
+	if strings.Contains(stdout, "sess-show-scope-b") {
+		t.Fatalf("expected issue show continuity surfaces to ignore another issue's session, got:\n%s", stdout)
+	}
 	if strings.Contains(stdout, "memori context resume --agent <agent-id>") {
 		t.Fatalf("expected resume guidance to stay scoped to the issue session, got:\n%s", stdout)
+	}
+}
+
+func TestIssueNextScopesResumeAndPressureToRecommendedIssueSession(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-issue-next-scope.db")
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	if err := s.Initialize(ctx, store.InitializeParams{IssueKeyPrefix: "mem"}); err != nil {
+		t.Fatalf("initialize store: %v", err)
+	}
+	for _, issueID := range []string{"mem-b222230", "mem-b222231"} {
+		if _, _, _, err := s.CreateIssue(ctx, store.CreateIssueParams{
+			IssueID:   issueID,
+			Type:      "task",
+			Title:     "Issue next scope",
+			Actor:     "test",
+			CommandID: "cmd-create-" + issueID,
+		}); err != nil {
+			t.Fatalf("create issue %s: %v", issueID, err)
+		}
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, store.UpdateIssueStatusParams{
+		IssueID:   "mem-b222230",
+		Status:    "inprogress",
+		Actor:     "test",
+		CommandID: "cmd-issue-next-scope-progress-1",
+	}); err != nil {
+		t.Fatalf("set issue A inprogress: %v", err)
+	}
+	packet, err := s.BuildRehydratePacket(ctx, store.BuildPacketParams{
+		Scope:     "issue",
+		ScopeID:   "mem-b222230",
+		Actor:     "test",
+		CommandID: "cmd-issue-next-scope-packet-1",
+	})
+	if err != nil {
+		t.Fatalf("build issue packet: %v", err)
+	}
+	if _, _, err := s.CheckpointSession(ctx, store.CheckpointSessionParams{
+		SessionID: "sess-next-scope-a",
+		IssueID:   "mem-b222230",
+		Trigger:   "manual",
+		Actor:     "test",
+		CommandID: "cmd-issue-next-scope-checkpoint-a-1",
+	}); err != nil {
+		t.Fatalf("checkpoint issue A: %v", err)
+	}
+	if _, err := s.SummarizeSession(ctx, store.SummarizeSessionParams{
+		SessionID: "sess-next-scope-a",
+		Note:      "issue A summary",
+		Actor:     "test",
+		CommandID: "cmd-issue-next-scope-summarize-a-1",
+	}); err != nil {
+		t.Fatalf("summarize issue A: %v", err)
+	}
+	if _, _, _, err := s.UseRehydratePacket(ctx, store.UsePacketParams{
+		AgentID:   "agent-next-scope-1",
+		PacketID:  packet.PacketID,
+		Actor:     "test",
+		CommandID: "cmd-issue-next-scope-use-a-1",
+	}); err != nil {
+		t.Fatalf("use packet for issue A: %v", err)
+	}
+	if _, _, err := s.CheckpointSession(ctx, store.CheckpointSessionParams{
+		SessionID: "sess-next-scope-b",
+		IssueID:   "mem-b222231",
+		Trigger:   "manual",
+		Actor:     "test",
+		CommandID: "cmd-issue-next-scope-checkpoint-b-1",
+	}); err != nil {
+		t.Fatalf("checkpoint issue B: %v", err)
+	}
+
+	stdout, stderr, err := runMemoriForTest("issue", "next", "--db", dbPath, "--agent", "agent-next-scope-1")
+	if err != nil {
+		t.Fatalf("issue next scoped continuity: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Latest open session for this issue sess-next-scope-a has summary")
+	mustContain(t, stdout, "memori context resume --session sess-next-scope-a --agent agent-next-scope-1")
+	if strings.Contains(stdout, "sess-next-scope-b") {
+		t.Fatalf("expected issue next continuity surfaces to ignore another issue's session, got:\n%s", stdout)
 	}
 }
 

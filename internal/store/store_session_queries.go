@@ -110,6 +110,24 @@ func latestSessionTx(ctx context.Context, tx *sql.Tx) (Session, error) {
 	return sessionByIDTx(ctx, tx, sessionID)
 }
 
+func latestSessionForIssueTx(ctx context.Context, tx *sql.Tx, issueID string) (Session, error) {
+	sessionID, err := sessionIDForQueryTx(ctx, tx, `
+		SELECT s.session_id
+		FROM sessions s
+		JOIN events e
+		  ON e.entity_type = ?
+		 AND e.entity_id = s.session_id
+		WHERE TRIM(COALESCE(json_extract(s.checkpoint_json, '$.issue_id'), '')) = ?
+		GROUP BY s.session_id
+		ORDER BY MAX(e.event_order) DESC, s.session_id DESC
+		LIMIT 1
+	`, entityTypeSession, issueID)
+	if err != nil {
+		return Session{}, fmt.Errorf("query latest session for issue %q: %w", issueID, err)
+	}
+	return sessionByIDTx(ctx, tx, sessionID)
+}
+
 func sessionForCommandIDTx(ctx context.Context, tx *sql.Tx, commandID string) (Session, error) {
 	sessionID, err := sessionIDForQueryTx(ctx, tx, `
 		SELECT entity_id

@@ -41,8 +41,13 @@ func continuitySessionStatusLine(snapshot store.SessionContinuitySnapshot) strin
 	}
 
 	label := "Latest open session"
-	if snapshot.Source == "latest-session" {
+	switch snapshot.Source {
+	case "latest-open-issue":
+		label = "Latest open session for this issue"
+	case "latest-session":
 		label = "Latest session"
+	case "latest-session-issue":
+		label = "Latest session for this issue"
 	}
 	state := "has no saved summary"
 	if strings.TrimSpace(snapshot.Session.SummaryEventID) != "" {
@@ -172,6 +177,13 @@ func continuityHelpfulLine(issueID string, snapshot store.ContinuitySnapshot, ag
 		line += fmt.Sprintf("; session %s already has a saved packet too", snapshot.Session.Session.SessionID)
 	}
 	return line + "."
+}
+
+func openSessionIDForContinuitySnapshot(snapshot store.ContinuitySnapshot) string {
+	if !snapshot.Session.HasSession || strings.TrimSpace(snapshot.Session.Session.EndedAt) != "" {
+		return ""
+	}
+	return strings.TrimSpace(snapshot.Session.Session.SessionID)
 }
 
 func filterNonEmpty(lines []string) []string {

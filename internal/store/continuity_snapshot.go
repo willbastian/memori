@@ -37,7 +37,7 @@ func (s *Store) ContinuitySnapshot(ctx context.Context, p ContinuitySnapshotPara
 		snapshot.Agent = agentSnapshot
 	}
 
-	sessionSnapshot, err := continuitySessionSnapshotTx(ctx, tx)
+	sessionSnapshot, err := continuitySessionSnapshotTx(ctx, tx, strings.TrimSpace(p.IssueID))
 	if err != nil {
 		return ContinuitySnapshot{}, err
 	}
@@ -125,8 +125,8 @@ func continuityAgentSnapshotTx(ctx context.Context, tx *sql.Tx, agentID string) 
 	return snapshot, nil
 }
 
-func continuitySessionSnapshotTx(ctx context.Context, tx *sql.Tx) (SessionContinuitySnapshot, error) {
-	session, source, found, err := latestContinuitySessionTx(ctx, tx)
+func continuitySessionSnapshotTx(ctx context.Context, tx *sql.Tx, issueID string) (SessionContinuitySnapshot, error) {
+	session, source, found, err := latestContinuitySessionTx(ctx, tx, issueID)
 	if err != nil {
 		return SessionContinuitySnapshot{}, err
 	}
@@ -150,7 +150,27 @@ func continuitySessionSnapshotTx(ctx context.Context, tx *sql.Tx) (SessionContin
 	return snapshot, nil
 }
 
-func latestContinuitySessionTx(ctx context.Context, tx *sql.Tx) (Session, string, bool, error) {
+func latestContinuitySessionTx(ctx context.Context, tx *sql.Tx, issueID string) (Session, string, bool, error) {
+	issueID = strings.TrimSpace(issueID)
+	if issueID != "" {
+		session, err := latestOpenSessionForIssueTx(ctx, tx, issueID)
+		if err == nil {
+			return session, "latest-open-issue", true, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return Session{}, "", false, err
+		}
+
+		session, err = latestSessionForIssueTx(ctx, tx, issueID)
+		if err == nil {
+			return session, "latest-session-issue", true, nil
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			return Session{}, "", false, nil
+		}
+		return Session{}, "", false, err
+	}
+
 	session, err := latestOpenSessionTx(ctx, tx)
 	if err == nil {
 		return session, "latest-open", true, nil

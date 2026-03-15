@@ -86,19 +86,12 @@ func runIssueShow(args []string, out io.Writer) error {
 	ui.section("Timeline")
 	ui.field("Created", issue.CreatedAt)
 	ui.field("Updated", issue.UpdatedAt)
-	issueSessionID := ""
 	if !strings.EqualFold(issue.Type, "epic") {
-		resolvedSessionID, found, err := latestOpenSessionIDForIssue(ctx, s, issue.ID)
-		if err != nil {
-			return err
-		}
-		if found {
-			issueSessionID = resolvedSessionID
-		}
 		snapshot, err := s.ContinuitySnapshot(ctx, store.ContinuitySnapshotParams{IssueID: issue.ID})
 		if err != nil {
 			return err
 		}
+		issueSessionID := openSessionIDForContinuitySnapshot(snapshot)
 		if lines := continuityStatusLines(snapshot); len(lines) > 0 {
 			ui.blank()
 			ui.section("Continuity State")
@@ -120,13 +113,13 @@ func runIssueShow(args []string, out io.Writer) error {
 				ui.bullet(step)
 			}
 		}
-	}
-	if message, steps := issueContinuityGuidance(issue, "show", issueSessionID); message != "" {
-		ui.blank()
-		ui.section("Continuity")
-		ui.bullet(message)
-		for _, step := range steps {
-			ui.bullet(step)
+		if message, steps := issueContinuityGuidance(issue, "show", issueSessionID); message != "" {
+			ui.blank()
+			ui.section("Continuity")
+			ui.bullet(message)
+			for _, step := range steps {
+				ui.bullet(step)
+			}
 		}
 	}
 	return nil
@@ -201,10 +194,11 @@ func runIssueNext(args []string, out io.Writer) error {
 		fmt.Sprintf("memori issue show --key %s", next.Candidate.Issue.ID),
 		fmt.Sprintf("memori issue update --key %s --status inprogress", next.Candidate.Issue.ID),
 	}
+	issueSessionID := openSessionIDForContinuitySnapshot(snapshot)
 	if strings.TrimSpace(*agent) != "" {
 		steps[1] = fmt.Sprintf("memori issue update --key %s --status inprogress --agent %s", next.Candidate.Issue.ID, *agent)
-		if continuitySignalsPresent(next.Candidate.Reasons) {
-			steps = append([]string{fmt.Sprintf("memori context resume --agent %s", *agent)}, steps...)
+		if continuitySignalsPresent(next.Candidate.Reasons) && issueSessionID != "" {
+			steps = append([]string{fmt.Sprintf("memori context resume --session %s --agent %s", issueSessionID, *agent)}, steps...)
 		}
 	}
 	if strings.TrimSpace(*agent) != "" && !continuitySignalsPresent(next.Candidate.Reasons) {
