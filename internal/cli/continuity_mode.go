@@ -41,6 +41,9 @@ func issueUpdateContinuityAssistSteps(issueID, sessionID, requestedStatus, agent
 	switch requestedStatus {
 	case "inprogress":
 		cmd := fmt.Sprintf("memori context start --issue %s", issueID)
+		if sessionID != "" {
+			cmd += " --session " + sessionID
+		}
 		if agentID != "" {
 			cmd += " --agent " + agentID
 		}

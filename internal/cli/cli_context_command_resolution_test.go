@@ -581,3 +581,35 @@ func TestContextResumeBuildsIssuePacketForLegacyIssueSessionFocus(t *testing.T) 
 		t.Fatalf("expected focused legacy resume to point at returned packet, got %+v", resumed)
 	}
 }
+
+func TestContextStartMissingIssueDoesNotPersistIssueSession(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-context-start-missing-issue.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+
+	_, _, err := runMemoriForTest(
+		"context", "start",
+		"--db", dbPath,
+		"--issue", "mem-deadbee",
+		"--session", "sess-missing-issue-start-1",
+		"--command-id", "cmd-cli-context-start-missing-issue-1",
+		"--json",
+	)
+	if err == nil || !strings.Contains(err.Error(), `issue "mem-deadbee" not found`) {
+		t.Fatalf("expected missing issue error from context start, got %v", err)
+	}
+
+	ctx := context.Background()
+	s, _, err := openInitializedStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open store after failed context start: %v", err)
+	}
+	defer s.Close()
+
+	if _, err := s.GetSession(ctx, "sess-missing-issue-start-1"); err == nil || !strings.Contains(err.Error(), `session "sess-missing-issue-start-1" not found`) {
+		t.Fatalf("expected failed context start to leave no session, got %v", err)
+	}
+}

@@ -886,3 +886,24 @@ func TestOpenSessionCountForIssueIncludesLegacyIssueSessions(t *testing.T) {
 		t.Fatalf("expected 2 open legacy issue sessions, got %d", openCount)
 	}
 }
+
+func TestCheckpointSessionRejectsUnknownIssueBeforePersistingSession(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	if _, _, err := s.CheckpointSession(ctx, CheckpointSessionParams{
+		SessionID: "sess-missing-issue-1",
+		IssueID:   "mem-deadbee",
+		Trigger:   "manual",
+		Actor:     "agent-1",
+		CommandID: "cmd-session-missing-issue-checkpoint-1",
+	}); err == nil || !strings.Contains(err.Error(), `issue "mem-deadbee" not found`) {
+		t.Fatalf("expected missing issue rejection, got %v", err)
+	}
+
+	if _, err := s.GetSession(ctx, "sess-missing-issue-1"); err == nil || !strings.Contains(err.Error(), `session "sess-missing-issue-1" not found`) {
+		t.Fatalf("expected rejected checkpoint to leave no persisted session, got %v", err)
+	}
+}

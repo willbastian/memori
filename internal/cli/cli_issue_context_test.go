@@ -1151,6 +1151,17 @@ func TestIssueUpdateContinuityModeAssistShowsExplicitBundleSteps(t *testing.T) {
 	); err != nil {
 		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
 	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-b22222a",
+		"--type", "task",
+		"--title", "Assist continuity mode explicit session",
+		"--command-id", "cmd-cli-assist-mode-create-2",
+		"--json",
+	); err != nil {
+		t.Fatalf("second issue create: %v\nstderr: %s", err, stderr)
+	}
 
 	stdout, stderr, err := runMemoriForTest(
 		"issue", "update",
@@ -1170,6 +1181,21 @@ func TestIssueUpdateContinuityModeAssistShowsExplicitBundleSteps(t *testing.T) {
 	if strings.Contains(stdout, "Continuity Started:") {
 		t.Fatalf("did not expect automatic continuity start in assist mode, got:\n%s", stdout)
 	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-b22222a",
+		"--status", "inprogress",
+		"--agent", "agent-assist-1",
+		"--session", "sess-assist-explicit-1",
+		"--continuity", "assist",
+		"--command-id", "cmd-cli-assist-mode-update-2",
+	)
+	if err != nil {
+		t.Fatalf("issue update assist mode with explicit session: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "memori context start --issue mem-b22222a --session sess-assist-explicit-1 --agent agent-assist-1")
 }
 
 func TestIssueUpdateContinuityModeAssistScopesSaveStepsToIssueSession(t *testing.T) {
@@ -1252,6 +1278,13 @@ func TestIssueUpdateContinuityModeAssistScopesSaveStepsToIssueSession(t *testing
 	}
 	if doneSteps[0] != "memori context save --session sess-assist-scope-c --close --note 'wrapped up' --reason merged" {
 		t.Fatalf("expected done assist guidance to scope close command to the issue session, got %#v", doneSteps)
+	}
+	inProgressSteps := issueUpdateContinuityAssistSteps("mem-b222227", "sess-assist-scope-d", "inprogress", "agent-assist-scope-3", "", "")
+	if len(inProgressSteps) != 1 {
+		t.Fatalf("expected one in-progress assist step, got %#v", inProgressSteps)
+	}
+	if inProgressSteps[0] != "memori context start --issue mem-b222227 --session sess-assist-scope-d --agent agent-assist-scope-3" {
+		t.Fatalf("expected in-progress assist guidance to preserve explicit session, got %#v", inProgressSteps)
 	}
 }
 

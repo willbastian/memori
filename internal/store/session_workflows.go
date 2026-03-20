@@ -41,6 +41,12 @@ func (s *Store) CheckpointSession(ctx context.Context, p CheckpointSessionParams
 	}
 	defer tx.Rollback()
 
+	if issueID != "" {
+		if _, err := getIssueTx(ctx, tx, issueID); err != nil {
+			return Session{}, false, err
+		}
+	}
+
 	existingSession, err := sessionByIDTx(ctx, tx, sessionID)
 	sessionExists := err == nil
 	if err != nil && !strings.Contains(err.Error(), "not found") {

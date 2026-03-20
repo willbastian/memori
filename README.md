@@ -275,7 +275,7 @@ Packets are useful in different ways:
 
 You can tune that behavior with continuity automation modes:
 - `auto`: the default. Start, pause, and close issue transitions bundle the continuity writes directly into the command.
-- `assist`: keep continuity explicit, but have `issue update` print the exact issue-scoped `context start`, `context save`, or `context save --close` command that matches the transition you just made.
+- `assist`: keep continuity explicit, but have `issue update` print the exact issue-scoped `context start`, `context save`, or `context save --close` command that matches the transition you just made, preserving an explicit `--session` when you pinned one.
 - `manual`: disable automatic continuity for the command and skip the extra assist bundle guidance.
 
 Choose a mode per command with `--continuity manual|assist|auto`, or set `MEMORI_CONTINUITY_MODE` to make it the default for your shell session.
