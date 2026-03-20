@@ -398,12 +398,15 @@ func resolveResumeFocusPacket(
 	actor string,
 	baseCommandID string,
 ) (store.RehydratePacket, error) {
-	session, err := s.GetSession(ctx, sessionID)
+	issueID, found, err := s.SessionIssueID(ctx, sessionID)
 	if err != nil {
 		return store.RehydratePacket{}, err
 	}
+	if !found {
+		return store.RehydratePacket{}, fmt.Errorf("session %q not found", sessionID)
+	}
 
-	if issueID := sessionIssueIDForCLI(session); issueID != "" {
+	if issueID != "" {
 		if strings.TrimSpace(resumePacket.PacketID) != "" &&
 			strings.EqualFold(strings.TrimSpace(resumePacket.Scope), "issue") &&
 			packetIssueIDForCLI(resumePacket) == issueID {
@@ -430,14 +433,6 @@ func resolveResumeFocusPacket(
 		Actor:     actor,
 		CommandID: derivedCompositeCommandID(baseCommandID, "packet"),
 	})
-}
-
-func sessionIssueIDForCLI(session store.Session) string {
-	issueID := strings.TrimSpace(fmt.Sprint(session.Checkpoint["issue_id"]))
-	if issueID == "" || issueID == "<nil>" {
-		return ""
-	}
-	return issueID
 }
 
 type contextCheckpointData struct {

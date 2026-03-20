@@ -443,20 +443,32 @@ func (s *Store) GetAgentFocus(ctx context.Context, agentID string) (AgentFocus, 
 	return agentFocusByAgentTx(ctx, tx, agentID)
 }
 
+func (s *Store) SessionIssueID(ctx context.Context, sessionID string) (string, bool, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", false, errors.New("--session is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	return sessionIssueIDTx(ctx, tx, sessionID)
+}
+
 func (s *Store) OpenSessionCountForIssue(ctx context.Context, issueID string) (int, error) {
 	normalizedIssueID, err := normalizeIssueKey(issueID)
 	if err != nil {
 		return 0, err
 	}
 
-	var count int
-	if err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(1)
-		FROM sessions
-		WHERE COALESCE(TRIM(ended_at), '') = ''
-		  AND TRIM(COALESCE(json_extract(checkpoint_json, '$.issue_id'), '')) = ?
-	`, normalizedIssueID).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count open sessions for issue %q: %w", normalizedIssueID, err)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
 	}
-	return count, nil
+	defer tx.Rollback()
+
+	return openSessionCountForIssueTx(ctx, tx, normalizedIssueID)
 }

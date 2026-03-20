@@ -229,12 +229,12 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	var continuityResult startIssueContinuityResult
 	if ranAutoStartedContinuity {
 		if strings.TrimSpace(*sessionID) != "" {
-			if session, err := s.GetSession(ctx, *sessionID); err != nil {
-				if !strings.Contains(err.Error(), "not found") {
-					return err
-				}
-			} else if boundIssue := sessionIssueIDForCLI(session); boundIssue != "" && !strings.EqualFold(boundIssue, issue.ID) {
-				return fmt.Errorf("session %s is tracking issue %s; pass a session for %s instead", session.SessionID, boundIssue, issue.ID)
+			boundIssue, found, err := s.SessionIssueID(ctx, *sessionID)
+			if err != nil {
+				return err
+			}
+			if found && boundIssue != "" && !strings.EqualFold(boundIssue, issue.ID) {
+				return fmt.Errorf("session %s is tracking issue %s; pass a session for %s instead", strings.TrimSpace(*sessionID), boundIssue, issue.ID)
 			}
 		}
 		continuityResult, err = startIssueContinuity(
@@ -261,6 +261,20 @@ func runIssueUpdate(args []string, out io.Writer) error {
 			}
 			if openCount > 1 {
 				return fmt.Errorf("automatic continuity capture is ambiguous for issue %s because %d open sessions are tracking it; pass --session <id> or --skip-continuity", issue.ID, openCount)
+			}
+		} else {
+			boundIssue, found, err := s.SessionIssueID(ctx, *sessionID)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return fmt.Errorf("session %s not found", strings.TrimSpace(*sessionID))
+			}
+			if boundIssue == "" {
+				return fmt.Errorf("session %s is not tracking issue %s; pass a session for %s instead", strings.TrimSpace(*sessionID), issue.ID, issue.ID)
+			}
+			if !strings.EqualFold(boundIssue, issue.ID) {
+				return fmt.Errorf("session %s is tracking issue %s; pass a session for %s instead", strings.TrimSpace(*sessionID), boundIssue, issue.ID)
 			}
 		}
 		savedContinuityResult, err = saveIssueContinuity(

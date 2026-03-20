@@ -790,3 +790,99 @@ func TestLegacyIssueSessionLookupFallsBackToCheckpointChunkMetadata(t *testing.T
 		t.Fatalf("expected legacy latest-session-issue source, got %+v", snapshot.Session)
 	}
 }
+
+func TestSessionIssueIDFallsBackToCheckpointChunkMetadata(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-a282828"
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Legacy session issue binding",
+		Actor:     "agent-1",
+		CommandID: "cmd-session-issue-id-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+
+	session, created, err := s.CheckpointSession(ctx, CheckpointSessionParams{
+		SessionID: "sess-legacy-binding-1",
+		IssueID:   issueID,
+		Trigger:   "manual",
+		Actor:     "agent-1",
+		CommandID: "cmd-session-issue-id-checkpoint-1",
+	})
+	if err != nil {
+		t.Fatalf("checkpoint issue session: %v", err)
+	}
+	if !created {
+		t.Fatal("expected first checkpoint to create the session")
+	}
+
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE sessions
+		SET checkpoint_json = json_remove(checkpoint_json, '$.issue_id')
+		WHERE session_id = ?
+	`, session.SessionID); err != nil {
+		t.Fatalf("strip checkpoint issue id: %v", err)
+	}
+
+	resolvedIssueID, found, err := s.SessionIssueID(ctx, session.SessionID)
+	if err != nil {
+		t.Fatalf("resolve legacy session issue id: %v", err)
+	}
+	if !found {
+		t.Fatal("expected session issue lookup to find the session")
+	}
+	if resolvedIssueID != issueID {
+		t.Fatalf("expected resolved issue id %q, got %q", issueID, resolvedIssueID)
+	}
+}
+
+func TestOpenSessionCountForIssueIncludesLegacyIssueSessions(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-a383838"
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Legacy session count",
+		Actor:     "agent-1",
+		CommandID: "cmd-session-count-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+
+	for _, sessionID := range []string{"sess-legacy-count-a", "sess-legacy-count-b"} {
+		if _, _, err := s.CheckpointSession(ctx, CheckpointSessionParams{
+			SessionID: sessionID,
+			IssueID:   issueID,
+			Trigger:   "manual",
+			Actor:     "agent-1",
+			CommandID: "cmd-" + sessionID + "-checkpoint-1",
+		}); err != nil {
+			t.Fatalf("checkpoint %s: %v", sessionID, err)
+		}
+		if _, err := s.db.ExecContext(ctx, `
+			UPDATE sessions
+			SET checkpoint_json = json_remove(checkpoint_json, '$.issue_id')
+			WHERE session_id = ?
+		`, sessionID); err != nil {
+			t.Fatalf("strip checkpoint issue id for %s: %v", sessionID, err)
+		}
+	}
+
+	openCount, err := s.OpenSessionCountForIssue(ctx, issueID)
+	if err != nil {
+		t.Fatalf("count open legacy issue sessions: %v", err)
+	}
+	if openCount != 2 {
+		t.Fatalf("expected 2 open legacy issue sessions, got %d", openCount)
+	}
+}

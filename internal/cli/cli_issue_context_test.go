@@ -528,6 +528,117 @@ func TestIssueUpdateBlockedUsesLegacyIssueSessionWithoutCheckpointIssueID(t *tes
 	mustContain(t, stdout, "Summarized session "+legacySession.SessionID+".")
 }
 
+func TestIssueUpdateBlockedRejectsExplicitSessionFromDifferentLegacyIssue(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-issue-update-blocked-explicit-legacy-mismatch.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	for _, args := range [][]string{
+		{
+			"issue", "create",
+			"--db", dbPath,
+			"--key", "mem-7777ffd",
+			"--type", "task",
+			"--title", "Target issue",
+			"--actor", "test",
+			"--command-id", "cmd-cli-explicit-legacy-create-a-1",
+			"--json",
+		},
+		{
+			"issue", "create",
+			"--db", dbPath,
+			"--key", "mem-7777ffe",
+			"--type", "task",
+			"--title", "Other issue",
+			"--actor", "test",
+			"--command-id", "cmd-cli-explicit-legacy-create-b-1",
+			"--json",
+		},
+		{
+			"issue", "update",
+			"--db", dbPath,
+			"--key", "mem-7777ffd",
+			"--status", "inprogress",
+			"--session", "sess-explicit-legacy-a",
+			"--actor", "test",
+			"--command-id", "cmd-cli-explicit-legacy-progress-a-1",
+			"--json",
+		},
+		{
+			"issue", "update",
+			"--db", dbPath,
+			"--key", "mem-7777ffe",
+			"--status", "inprogress",
+			"--session", "sess-explicit-legacy-b",
+			"--actor", "test",
+			"--command-id", "cmd-cli-explicit-legacy-progress-b-1",
+			"--json",
+		},
+	} {
+		if _, stderr, err := runMemoriForTest(args...); err != nil {
+			t.Fatalf("setup command %v: %v\nstderr: %s", args, err, stderr)
+		}
+	}
+
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `
+		UPDATE sessions
+		SET checkpoint_json = json_remove(checkpoint_json, '$.issue_id')
+		WHERE session_id = ?
+	`, "sess-explicit-legacy-b"); err != nil {
+		t.Fatalf("strip checkpoint issue id for mismatched session: %v", err)
+	}
+
+	_, _, err = runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-7777ffd",
+		"--status", "blocked",
+		"--session", "sess-explicit-legacy-b",
+		"--actor", "test",
+		"--command-id", "cmd-cli-explicit-legacy-blocked-1",
+	)
+	if err == nil || !strings.Contains(err.Error(), "session sess-explicit-legacy-b is tracking issue mem-7777ffe") {
+		t.Fatalf("expected explicit legacy session mismatch error, got %v", err)
+	}
+
+	stdout, stderr, err := runMemoriForTest("issue", "show", "--db", dbPath, "--key", "mem-7777ffd", "--json")
+	if err != nil {
+		t.Fatalf("issue show target issue: %v\nstderr: %s", err, stderr)
+	}
+	var shown issueEnvelope
+	if err := json.Unmarshal([]byte(stdout), &shown); err != nil {
+		t.Fatalf("decode issue show json: %v\nstdout: %s", err, stdout)
+	}
+	if shown.Data.Issue.Status != "InProgress" {
+		t.Fatalf("expected target issue status to remain in progress, got %+v", shown.Data.Issue)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"event", "log",
+		"--db", dbPath,
+		"--entity", "session:sess-explicit-legacy-b",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("event log mismatched session: %v\nstderr: %s", err, stderr)
+	}
+	var sessionEvents eventLogEnvelope
+	if err := json.Unmarshal([]byte(stdout), &sessionEvents); err != nil {
+		t.Fatalf("decode mismatched session log: %v\nstdout: %s", err, stdout)
+	}
+	if len(sessionEvents.Data.Events) != 1 || sessionEvents.Data.Events[0].EventType != "session.checkpointed" {
+		t.Fatalf("expected mismatched explicit session to stay untouched, got %+v", sessionEvents.Data.Events)
+	}
+}
+
 func TestIssueUpdateBlockedRequiresOpenSessionUnlessSkipped(t *testing.T) {
 	t.Parallel()
 
@@ -699,6 +810,89 @@ func TestIssueUpdateBlockedRequiresExplicitSessionWhenIssueHasParallelOpenSessio
 	mustContain(t, stdout, "Summarized session sess-parallel-a.")
 	if strings.Contains(stdout, "Summarized session sess-parallel-b.") {
 		t.Fatalf("expected explicit session routing to avoid summarizing sess-parallel-b, got:\n%s", stdout)
+	}
+}
+
+func TestIssueUpdateBlockedCountsLegacyIssueSessionsWhenCheckingAmbiguity(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-issue-update-blocked-legacy-ambiguity.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-8888aad",
+		"--type", "task",
+		"--title", "Legacy ambiguity",
+		"--actor", "test",
+		"--command-id", "cmd-cli-legacy-ambiguity-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-8888aad",
+		"--status", "inprogress",
+		"--session", "sess-legacy-ambiguity-a",
+		"--actor", "test",
+		"--command-id", "cmd-cli-legacy-ambiguity-progress-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue update inprogress with first session: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"context", "start",
+		"--db", dbPath,
+		"--issue", "mem-8888aad",
+		"--session", "sess-legacy-ambiguity-b",
+		"--command-id", "cmd-cli-legacy-ambiguity-start-2",
+		"--json",
+	); err != nil {
+		t.Fatalf("context start second session: %v\nstderr: %s", err, stderr)
+	}
+
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	defer db.Close()
+	for _, sessionID := range []string{"sess-legacy-ambiguity-a", "sess-legacy-ambiguity-b"} {
+		if _, err := db.ExecContext(ctx, `
+			UPDATE sessions
+			SET checkpoint_json = json_remove(checkpoint_json, '$.issue_id')
+			WHERE session_id = ?
+		`, sessionID); err != nil {
+			t.Fatalf("strip checkpoint issue id for %s: %v", sessionID, err)
+		}
+	}
+
+	_, _, err = runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-8888aad",
+		"--status", "blocked",
+		"--actor", "test",
+		"--command-id", "cmd-cli-legacy-ambiguity-blocked-1",
+	)
+	if err == nil || !strings.Contains(err.Error(), "automatic continuity capture is ambiguous") {
+		t.Fatalf("expected ambiguous legacy session selection error, got %v", err)
+	}
+
+	stdout, stderr, err := runMemoriForTest("issue", "show", "--db", dbPath, "--key", "mem-8888aad", "--json")
+	if err != nil {
+		t.Fatalf("issue show after ambiguous legacy blocked failure: %v\nstderr: %s", err, stderr)
+	}
+	var issueResp issueEnvelope
+	if err := json.Unmarshal([]byte(stdout), &issueResp); err != nil {
+		t.Fatalf("decode issue after ambiguous legacy blocked failure: %v\nstdout: %s", err, stdout)
+	}
+	if issueResp.Data.Issue.Status != "InProgress" {
+		t.Fatalf("expected ambiguous legacy auto-save failure to preserve in-progress status, got %+v", issueResp.Data.Issue)
 	}
 }
 

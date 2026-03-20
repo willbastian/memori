@@ -203,6 +203,59 @@ func latestCheckpointIssueIDForSessionTx(ctx context.Context, tx *sql.Tx, sessio
 	return strings.TrimSpace(issueID), nil
 }
 
+func sessionIssueIDTx(ctx context.Context, tx *sql.Tx, sessionID string) (string, bool, error) {
+	session, err := sessionByIDTx(ctx, tx, sessionID)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+
+	issueID := strings.TrimSpace(anyToString(session.Checkpoint["issue_id"]))
+	if issueID == "" {
+		issueID, err = latestCheckpointIssueIDForSessionTx(ctx, tx, sessionID)
+		if err != nil {
+			return "", true, fmt.Errorf("resolve issue binding for session %q: %w", sessionID, err)
+		}
+	}
+	if issueID == "" {
+		return "", true, nil
+	}
+
+	normalizedIssueID, err := normalizeIssueKey(issueID)
+	if err != nil {
+		return "", true, fmt.Errorf("resolve issue binding for session %q: %w", sessionID, err)
+	}
+	return normalizedIssueID, true, nil
+}
+
+func openSessionCountForIssueTx(ctx context.Context, tx *sql.Tx, issueID string) (int, error) {
+	var count int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(1)
+		FROM sessions s
+		WHERE COALESCE(TRIM(s.ended_at), '') = ''
+		  AND (
+			TRIM(COALESCE(json_extract(s.checkpoint_json, '$.issue_id'), '')) = ?
+			OR (
+				TRIM(COALESCE(json_extract(s.checkpoint_json, '$.issue_id'), '')) = ''
+				AND COALESCE((
+					SELECT TRIM(COALESCE(json_extract(c.metadata_json, '$.issue_id'), ''))
+					FROM context_chunks c
+					WHERE c.session_id = s.session_id
+					  AND c.kind = 'checkpoint'
+					ORDER BY c.created_at DESC, c.chunk_id DESC
+					LIMIT 1
+				), '') = ?
+			)
+		  )
+	`, issueID, issueID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count open sessions for issue %q: %w", issueID, err)
+	}
+	return count, nil
+}
+
 func sessionIDForQueryTx(ctx context.Context, tx *sql.Tx, query string, args ...any) (string, error) {
 	var sessionID string
 	if err := tx.QueryRowContext(ctx, query, args...).Scan(&sessionID); err != nil {

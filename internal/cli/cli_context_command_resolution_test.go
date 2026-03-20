@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -497,5 +499,85 @@ func TestContextResumeWithoutSessionHonorsAgentFocusBeforeLatestOpen(t *testing.
 	}
 	if resumed.Data.Focus.ActiveIssueID != "mem-a111113" {
 		t.Fatalf("expected focused resume to stay on issue A, got %+v", resumed)
+	}
+}
+
+func TestContextResumeBuildsIssuePacketForLegacyIssueSessionFocus(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-context-resume-legacy-issue-focus.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-a111115",
+		"--type", "task",
+		"--title", "Resume legacy issue target",
+		"--command-id", "cmd-cli-resume-legacy-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+
+	if _, stderr, err := runMemoriForTest(
+		"context", "start",
+		"--db", dbPath,
+		"--issue", "mem-a111115",
+		"--session", "sess-resume-legacy-1",
+		"--command-id", "cmd-cli-resume-legacy-start-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("context start: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"context", "save",
+		"--db", dbPath,
+		"--session", "sess-resume-legacy-1",
+		"--command-id", "cmd-cli-resume-legacy-save-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("context save: %v\nstderr: %s", err, stderr)
+	}
+
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `
+		UPDATE sessions
+		SET checkpoint_json = json_remove(checkpoint_json, '$.issue_id')
+		WHERE session_id = ?
+	`, "sess-resume-legacy-1"); err != nil {
+		t.Fatalf("strip checkpoint issue id for legacy session: %v", err)
+	}
+
+	stdout, stderr := "", ""
+	stdout, stderr, err = runMemoriForTest(
+		"context", "resume",
+		"--db", dbPath,
+		"--session", "sess-resume-legacy-1",
+		"--agent", "agent-resume-legacy-1",
+		"--command-id", "cmd-cli-resume-legacy-run-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context resume legacy focus: %v\nstderr: %s", err, stderr)
+	}
+	var resumed contextResumeEnvelope
+	if err := json.Unmarshal([]byte(stdout), &resumed); err != nil {
+		t.Fatalf("decode legacy-focused resume json: %v\nstdout: %s", err, stdout)
+	}
+	if resumed.Data.Packet.Scope != "issue" {
+		t.Fatalf("expected legacy issue session resume to rebuild an issue packet, got %+v", resumed)
+	}
+	if !resumed.Data.FocusUsed || resumed.Data.Focus.ActiveIssueID != "mem-a111115" {
+		t.Fatalf("expected legacy issue session focus to preserve issue scope, got %+v", resumed)
+	}
+	if resumed.Data.Focus.LastPacketID != resumed.Data.Packet.PacketID {
+		t.Fatalf("expected focused legacy resume to point at returned packet, got %+v", resumed)
 	}
 }
