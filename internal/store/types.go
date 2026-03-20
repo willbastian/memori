@@ -125,6 +125,7 @@ type GetGateStatusParams struct {
 
 type CheckpointSessionParams struct {
 	SessionID string
+	IssueID   string
 	Trigger   string
 	Actor     string
 	CommandID string
@@ -164,6 +165,11 @@ type UsePacketParams struct {
 	PacketID  string
 	Actor     string
 	CommandID string
+}
+
+type PreviewIssueUpdateResult struct {
+	Issue      Issue
+	Idempotent bool
 }
 
 type ListOpenLoopsParams struct {

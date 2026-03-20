@@ -91,7 +91,7 @@ func runIssueCreate(args []string, out io.Writer) error {
 		ui.field("Parent", issue.ParentID)
 	}
 	ui.field("Event", fmt.Sprintf("%s (%s #%d)", event.EventID, event.EventType, event.EventOrder))
-	if message, steps := issueContinuityGuidance(issue, "create"); message != "" {
+	if message, steps := issueContinuityGuidance(issue, "create", ""); message != "" {
 		ui.blank()
 		ui.section("Continuity")
 		ui.bullet(message)
@@ -121,6 +121,12 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	acceptance := fs.String("acceptance-criteria", "", "acceptance criteria")
 	var references stringSliceFlag
 	fs.Var(&references, "reference", "reference link/evidence (repeatable)")
+	agentID := fs.String("agent", "", "optional agent id to focus when moving work into progress")
+	sessionID := fs.String("session", "", "optional session id to use for automatic continuity")
+	continuity := fs.String("continuity", "", "continuity automation mode: manual|assist|auto")
+	note := fs.String("note", "", "optional continuity note when pausing or closing work")
+	reason := fs.String("reason", "", "optional continuity close reason when marking work done")
+	skipContinuity := fs.Bool("skip-continuity", false, "skip automatic continuity capture for blocked/done transitions")
 	actor := fs.String("actor", "", "actor id")
 	commandID := fs.String("command-id", "", "idempotency command id")
 	jsonOut := fs.Bool("json", false, "machine-readable output")
@@ -190,8 +196,16 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	continuityMode, err := resolveContinuityMode(*continuity)
+	if err != nil {
+		return err
+	}
 
-	issue, event, idempotent, err := s.UpdateIssue(ctx, store.UpdateIssueParams{
+	autoStartedContinuity := continuityMode == continuityModeAuto && statusProvided && strings.EqualFold(strings.TrimSpace(*status), "inprogress")
+	autoSavedContinuity := continuityMode == continuityModeAuto && statusProvided && (strings.EqualFold(strings.TrimSpace(*status), "blocked") || strings.EqualFold(strings.TrimSpace(*status), "done")) && !*skipContinuity
+	closeContinuitySession := statusProvided && strings.EqualFold(strings.TrimSpace(*status), "done")
+
+	updateParams := store.UpdateIssueParams{
 		IssueID:            issueKey,
 		Title:              titlePtr,
 		Status:             statusPtr,
@@ -202,9 +216,98 @@ func runIssueUpdate(args []string, out io.Writer) error {
 		References:         referencesPtr,
 		Actor:              identity.Actor,
 		CommandID:          identity.CommandID,
-	})
+	}
+	preview, err := s.PreviewIssueUpdate(ctx, updateParams)
 	if err != nil {
 		return err
+	}
+	issue := preview.Issue
+	idempotent := preview.Idempotent
+	ranAutoStartedContinuity := autoStartedContinuity && !idempotent
+	ranAutoSavedContinuity := autoSavedContinuity && !idempotent
+
+	var continuityResult startIssueContinuityResult
+	if ranAutoStartedContinuity {
+		if strings.TrimSpace(*sessionID) != "" {
+			boundIssue, found, err := s.SessionIssueID(ctx, *sessionID)
+			if err != nil {
+				return err
+			}
+			if found && boundIssue != "" && !strings.EqualFold(boundIssue, issue.ID) {
+				return fmt.Errorf("session %s is tracking issue %s; pass a session for %s instead", strings.TrimSpace(*sessionID), boundIssue, issue.ID)
+			}
+		}
+		continuityResult, err = startIssueContinuity(
+			ctx,
+			s,
+			issue.ID,
+			*agentID,
+			*sessionID,
+			"issue-update-inprogress",
+			identity.Actor,
+			identity.CommandID,
+		)
+		if err != nil {
+			return fmt.Errorf("automatic continuity start failed for issue %s before the status update was applied: %w", issue.ID, err)
+		}
+	}
+
+	var savedContinuityResult saveIssueContinuityResult
+	if ranAutoSavedContinuity {
+		if strings.TrimSpace(*sessionID) == "" {
+			openCount, err := s.OpenSessionCountForIssue(ctx, issue.ID)
+			if err != nil {
+				return err
+			}
+			if openCount > 1 {
+				return fmt.Errorf("automatic continuity capture is ambiguous for issue %s because %d open sessions are tracking it; pass --session <id> or --skip-continuity", issue.ID, openCount)
+			}
+		} else {
+			boundIssue, found, err := s.SessionIssueID(ctx, *sessionID)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return fmt.Errorf("session %s not found", strings.TrimSpace(*sessionID))
+			}
+			if boundIssue == "" {
+				return fmt.Errorf("session %s is not tracking issue %s; pass a session for %s instead", strings.TrimSpace(*sessionID), issue.ID, issue.ID)
+			}
+			if !strings.EqualFold(boundIssue, issue.ID) {
+				return fmt.Errorf("session %s is tracking issue %s; pass a session for %s instead", strings.TrimSpace(*sessionID), boundIssue, issue.ID)
+			}
+		}
+		savedContinuityResult, err = saveIssueContinuity(
+			ctx,
+			s,
+			*sessionID,
+			issue.ID,
+			*note,
+			closeContinuitySession,
+			*reason,
+			identity.Actor,
+			identity.CommandID,
+		)
+		if err != nil {
+			return fmt.Errorf("automatic continuity capture failed for issue %s before the status update was applied: %w", issue.ID, err)
+		}
+	}
+
+	issue, event, idempotent, err := s.UpdateIssue(ctx, updateParams)
+	if err != nil {
+		return err
+	}
+	if ranAutoStartedContinuity {
+		refreshedContinuity, err := refreshIssueContinuityPacket(ctx, s, issue.ID, *agentID, identity.Actor, identity.CommandID)
+		if err != nil {
+			return fmt.Errorf("issue %s is now %s, but automatic continuity packet refresh failed: %w", issue.ID, issue.Status, err)
+		}
+		continuityResult.Data.Packet = refreshedContinuity.Packet
+		if refreshedContinuity.FocusUsed {
+			continuityResult.Data.Focus = refreshedContinuity.Focus
+			continuityResult.Data.FocusUsed = true
+			continuityResult.Data.FocusIdempotent = refreshedContinuity.FocusIdempotent
+		}
 	}
 
 	if *jsonOut {
@@ -231,7 +334,65 @@ func runIssueUpdate(args []string, out io.Writer) error {
 		}
 	}
 	ui.field("Event", fmt.Sprintf("%s (%s #%d)", event.EventID, event.EventType, event.EventOrder))
-	if message, steps := issueContinuityGuidance(issue, "update"); message != "" {
+	if ranAutoStartedContinuity {
+		ui.blank()
+		ui.section("Continuity Started")
+		ui.bullet(issueLifecycleContinuityMessage("checkpoint", continuityResult.Resolution))
+		ui.bullet(fmt.Sprintf("Captured session %s for active work.", continuityResult.Data.Session.SessionID))
+		ui.bullet(fmt.Sprintf("Refreshed issue packet %s for %s.", continuityResult.Data.Packet.PacketID, issue.ID))
+		if continuityResult.Data.FocusUsed {
+			if continuityResult.Data.FocusIdempotent {
+				ui.bullet(fmt.Sprintf("Agent %s focus already pointed at %s via packet %s.", continuityResult.Data.Focus.AgentID, continuityResult.Data.Focus.ActiveIssueID, continuityResult.Data.Packet.PacketID))
+			} else {
+				ui.bullet(fmt.Sprintf("Updated agent %s focus to %s via packet %s.", continuityResult.Data.Focus.AgentID, continuityResult.Data.Focus.ActiveIssueID, continuityResult.Data.Packet.PacketID))
+			}
+		}
+	}
+	if ranAutoSavedContinuity {
+		ui.blank()
+		ui.section("Continuity Saved")
+		ui.bullet(issueLifecycleContinuityMessage("summarize", savedContinuityResult.Resolution))
+		ui.bullet(fmt.Sprintf("Summarized session %s.", savedContinuityResult.Data.Session.SessionID))
+		if savedContinuityResult.Data.Closed {
+			ui.bullet(fmt.Sprintf("Closed session %s.", savedContinuityResult.Data.Session.SessionID))
+		}
+		ui.bullet(fmt.Sprintf("Saved session packet %s for %s.", savedContinuityResult.Data.Packet.PacketID, issue.ID))
+	}
+	if continuityMode == continuityModeAssist && statusProvided {
+		assistSessionID := ""
+		if strings.TrimSpace(*sessionID) != "" {
+			assistSessionID = strings.TrimSpace(*sessionID)
+		} else if strings.EqualFold(strings.TrimSpace(*status), "blocked") || strings.EqualFold(strings.TrimSpace(*status), "done") {
+			issueSessionID, found, err := latestOpenSessionIDForIssue(ctx, s, issue.ID)
+			if err != nil {
+				return err
+			}
+			if found {
+				assistSessionID = issueSessionID
+			}
+		}
+		if steps := issueUpdateContinuityAssistSteps(issue.ID, assistSessionID, *status, *agentID, *note, *reason); len(steps) > 0 {
+			ui.blank()
+			ui.section("Continuity Assist")
+			ui.bullet("Continuity mode assist kept continuity explicit for this command.")
+			for _, step := range steps {
+				ui.bullet(step)
+			}
+		}
+	}
+	if continuityMode == continuityModeManual && statusProvided && strings.TrimSpace(*status) != "" {
+		ui.blank()
+		ui.section("Continuity Mode")
+		ui.bullet("Continuity mode manual disabled automatic continuity for this command.")
+	}
+	guidanceSessionID := ""
+	switch {
+	case ranAutoStartedContinuity:
+		guidanceSessionID = continuityResult.Data.Session.SessionID
+	case ranAutoSavedContinuity:
+		guidanceSessionID = savedContinuityResult.Data.Session.SessionID
+	}
+	if message, steps := issueContinuityGuidance(issue, "update", guidanceSessionID); message != "" {
 		ui.blank()
 		ui.section("Continuity")
 		ui.bullet(message)
@@ -244,6 +405,27 @@ func runIssueUpdate(args []string, out io.Writer) error {
 		fmt.Sprintf("memori event log --entity %s", issue.ID),
 	)
 	return nil
+}
+
+func issueLifecycleContinuityMessage(action string, resolution sessionResolution) string {
+	switch resolution.source {
+	case "command-replay":
+		return fmt.Sprintf("Command replay reused continuity session %s.", resolution.sessionID)
+	case "latest-open":
+		switch strings.TrimSpace(action) {
+		case "checkpoint":
+			return fmt.Sprintf("Continued open session %s.", resolution.sessionID)
+		case "summarize":
+			return fmt.Sprintf("Used open session %s for continuity capture.", resolution.sessionID)
+		}
+	case "latest-open-issue":
+		return fmt.Sprintf("Used the open session already tracking this issue (%s).", resolution.sessionID)
+	case "generated-new":
+		return fmt.Sprintf("Started new continuity session %s.", resolution.sessionID)
+	case "explicit":
+		return fmt.Sprintf("Used session %s for continuity.", resolution.sessionID)
+	}
+	return fmt.Sprintf("Used session %s for continuity.", resolution.sessionID)
 }
 
 func runIssueLink(args []string, out io.Writer) error {

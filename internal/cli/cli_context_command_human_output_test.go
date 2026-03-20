@@ -177,3 +177,115 @@ func TestContextStartAndSaveHumanOutputShowHappyPathGuidance(t *testing.T) {
 		mustContain(t, stdout, want)
 	}
 }
+
+func TestContextResumeHumanOutputCoversFallbackAndFocusedResume(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-context-human-resume.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"context", "checkpoint",
+		"--db", dbPath,
+		"--session", "sess-human-resume-1",
+		"--command-id", "cmd-cli-human-resume-checkpoint-1",
+	); err != nil {
+		t.Fatalf("context checkpoint: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"context", "resume",
+		"--db", dbPath,
+		"--session", "sess-human-resume-1",
+	)
+	if err != nil {
+		t.Fatalf("context resume fallback: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "OK Resumed session sess-human-resume-1 via relevant-chunks-fallback")
+	mustContain(t, stdout, "Note No saved session packet was available; synthesized resume context from recent session chunks.")
+
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-a222221",
+		"--type", "task",
+		"--title", "Fallback resume focus target",
+		"--command-id", "cmd-cli-human-resume-fallback-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create fallback target: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"context", "start",
+		"--db", dbPath,
+		"--issue", "mem-a222221",
+		"--session", "sess-human-resume-fallback-1",
+		"--command-id", "cmd-cli-human-resume-fallback-start-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("context start fallback target: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "resume",
+		"--db", dbPath,
+		"--session", "sess-human-resume-fallback-1",
+		"--agent", "agent-human-resume-fallback-1",
+		"--command-id", "cmd-cli-human-resume-fallback-run-1",
+	)
+	if err != nil {
+		t.Fatalf("context resume fallback focus: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "OK Resumed session sess-human-resume-fallback-1 via relevant-chunks-fallback and updated focus for agent-human-resume-fallback-1")
+	mustContain(t, stdout, "Issue: mem-a222221")
+	mustContain(t, stdout, "Agent: agent-human-resume-fallback-1")
+
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-a222222",
+		"--type", "task",
+		"--title", "Focused resume target",
+		"--command-id", "cmd-cli-human-resume-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"context", "start",
+		"--db", dbPath,
+		"--issue", "mem-a222222",
+		"--session", "sess-human-resume-2",
+		"--command-id", "cmd-cli-human-resume-start-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("context start: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"context", "save",
+		"--db", dbPath,
+		"--session", "sess-human-resume-2",
+		"--command-id", "cmd-cli-human-resume-save-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("context save: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "resume",
+		"--db", dbPath,
+		"--session", "sess-human-resume-2",
+		"--agent", "agent-human-resume-1",
+		"--command-id", "cmd-cli-human-resume-run-1",
+	)
+	if err != nil {
+		t.Fatalf("context resume focused: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "OK Resumed session sess-human-resume-2 via packet and updated focus for agent-human-resume-1")
+	mustContain(t, stdout, "Packet Scope: issue")
+	mustContain(t, stdout, "Issue: mem-a222222")
+	mustContain(t, stdout, "Agent: agent-human-resume-1")
+	mustContain(t, stdout, "memori issue next --agent agent-human-resume-1")
+	mustContain(t, stdout, "memori board --agent agent-human-resume-1")
+}

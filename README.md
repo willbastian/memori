@@ -4,19 +4,19 @@
 
 # memori
 
-**memori** is a local-first issue tracker and context bridge for human-and-agent workflows.
+**memori** is a local-first issue tracker and continuity bridge for human-and-agent workflows.
 
 It combines three ideas in one CLI:
 
 - an append-only event ledger for every mutation
 - issue lifecycle management with explicit completion gates
-- packet-based context handoff for resume and recovery
+- issue and session packets for handoff, resume, and recovery
 
 All state lives in a local SQLite database. The CLI is the product surface today: no server, no web UI, no remote control plane.
 
 ## Why memori exists
 
-Traditional issue trackers are good at coordination, but they are not designed for agent continuity, deterministic replay, or proof-backed completion. memori is aimed at workflows where you want:
+Traditional issue trackers are good at coordination, but they are not designed for agent continuity, deterministic replay, or proof-backed completion. memori is for workflows where you want:
 
 - local ownership of project state
 - immutable history for issue and gate changes
@@ -34,6 +34,13 @@ Traditional issue trackers are good at coordination, but they are not designed f
 | Context bridge | Captures checkpoints, builds reusable packets, tracks agent focus, and supports rehydration. |
 | Replay | Rebuilds projections from the event ledger with `memori db replay`. |
 | Provenance | Distinguishes human and LLM actors and applies stricter policy to executable gate criteria. |
+
+## Sessions, packets, and focus
+
+- A session is a working window for an issue. Checkpoints and summaries belong to the session.
+- An issue packet is the durable issue snapshot. It helps `issue show`, `issue next`, `board`, and agent focus answer "what matters on this ticket right now?"
+- A session packet is the handoff artifact for a specific working window. It helps `context resume` and `context rehydrate` answer "where did I leave off?"
+- Agent focus points a worker at the issue it should resume, usually from the latest issue packet.
 
 ## System architecture
 
@@ -77,7 +84,7 @@ The CLI is the only product surface today. It writes append-only events, rebuild
 - append-only event log with deterministic ordering and idempotent command handling
 - gate template creation, approval, instantiation, locking, evaluation, verification, and status inspection
 - close validation that requires a locked gate set, passing required gates, and closed child issues
-- session checkpoints, packet build/show/use flows, open-loop tracking, and rehydration
+- issue and session packet flows, open-loop tracking, session checkpoints, and rehydration
 - hierarchy-aware board snapshots plus an interactive TUI with parent/child navigation and `/` issue search
 - replay, migration, verification, and backup database operations
 - human password-based mutation auth and explicit LLM provenance for automation
@@ -229,7 +236,7 @@ flowchart LR
     Pick["Pick work<br/>issue next / board / issue show"]
     Start["Start or update issue<br/>issue create / issue update --status inprogress"]
     Work["Do the work<br/>human edits or agent execution"]
-    Context["Capture continuity<br/>context checkpoint / summarize / close / rehydrate"]
+    Context["Maintain session + packet state<br/>issue update / context save / context resume"]
     Template{"Approved gate template<br/>available for issue type?"}
     Review["Human reviews or approves<br/>gate template pending / approve"]
     Freeze["Freeze completion contract<br/>gate set instantiate + lock"]
@@ -250,7 +257,28 @@ flowchart LR
     Resume --> Pick
 ```
 
-Humans and agents operate against the same ledger. The usual loop is: pick tracked work, move it into progress, do the implementation, capture continuity as you go, freeze the close contract with a gate set, verify the required proof, and only then mark the issue `done`.
+Humans and agents operate against the same ledger. The shortest path is: pick tracked work, move it into progress, do the work, let memori keep continuity current, freeze the close contract, verify the required proof, and only then mark the issue `done`.
+
+By default, issue lifecycle commands now maintain the right continuity artifacts for you:
+
+- `issue update --status inprogress` starts or continues the session, refreshes the issue packet after the status write, and updates agent focus when you pass `--agent`.
+- `issue update --status blocked` summarizes the active session and saves a fresh session packet for handoff.
+- `issue update --status done` does the same and closes the session when the close transition succeeds.
+- `issue update --session <id>` lets you pin auto continuity to a specific session when the same issue has parallel work in flight.
+- If auto continuity cannot complete or session selection is ambiguous, the command now fails before the status write is applied.
+- `context resume` restores the latest session payload, and with `--agent` plus no `--session` it prefers the session associated with that agent's saved focus before falling back to the latest open session.
+
+Packets are useful in different ways:
+
+- Issue packets keep the ticket-level state fresh. They power ranked recommendations, issue inspection, board continuity signals, and focus updates.
+- Session packets keep the working-window state fresh. They power pause, resume, recovery, and handoff after a specific attempt or editing session.
+
+You can tune that behavior with continuity automation modes:
+- `auto`: the default. Start, pause, and close issue transitions bundle the continuity writes directly into the command.
+- `assist`: keep continuity explicit, but have `issue update` print the exact issue-scoped `context start`, `context save`, or `context save --close` command that matches the transition you just made, preserving an explicit `--session` when you pinned one.
+- `manual`: disable automatic continuity for the command and skip the extra assist bundle guidance.
+
+Choose a mode per command with `--continuity manual|assist|auto`, or set `MEMORI_CONTINUITY_MODE` to make it the default for your shell session.
 
 ### 1. Initialize project state
 
@@ -300,7 +328,7 @@ For humans:
 
 ```bash
 memori board --watch --interval 5s
-memori issue show --key acme-a1b2c3d --json
+memori issue show --key acme-a1b2c3d
 memori gate status --issue acme-a1b2c3d
 ```
 
@@ -308,9 +336,9 @@ For agents:
 
 ```bash
 memori issue next --agent writer-1 --json
-memori context checkpoint --json
-memori context rehydrate --json
-memori context summarize --json
+memori issue update --key acme-a1b2c3d --status inprogress --agent writer-1 --json
+memori context resume --agent writer-1 --json
+memori issue update --key acme-a1b2c3d --status blocked --note "waiting on review" --json
 ```
 
 New issues default to generated keys in `{prefix}-{shortSHA}` format when you omit `--key`. Mutation commands also generate command IDs automatically unless you explicitly opt into supplying your own with `MEMORI_ALLOW_MANUAL_COMMAND_ID=1`.
@@ -403,6 +431,7 @@ go run ./cmd/memori issue update \
   --db /tmp/memori-agent.db \
   --key mem-a222222 \
   --status inprogress \
+  --agent agent-demo-1 \
   --priority P1 \
   --command-id demo-agent-progress-01 \
   --json
@@ -467,77 +496,53 @@ The board surfaces:
 - likely next work, including continuity signals such as focus, packets, open loops, and gate state
 - completed and declined work through the all-work history view (`Done` and `WontDo`)
 - hierarchy context such as parent, child, depth, and sibling metadata for each issue
+- ambient continuity pressure for active, blocked, or resume-rich work when packets are stale, missing, or already helping
 
 For split panes, keep one shell running `board --watch` and do mutations in another. When stdout is attached to a real terminal, watch mode redraws in place instead of appending endless snapshots. Use `--agent` when you want the likely-next panel to reflect a specific worker's current focus and recovery packet state.
 
 ### 4. Resume and handoff flow
 
-memori’s context commands are built for “pick the work back up” scenarios.
+The default happy path is issue-driven:
 
 ```bash
-go run ./cmd/memori context start --issue mem-a111111 --agent writer-1 --json
+go run ./cmd/memori issue update \
+  --key mem-a111111 \
+  --status inprogress \
+  --agent writer-1 \
+  --json
 
-go run ./cmd/memori context save \
+go run ./cmd/memori issue show --key mem-a111111
+
+go run ./cmd/memori issue update \
+  --key mem-a111111 \
+  --status blocked \
   --note "paused after reproducing the gate failure" \
-  --close \
-  --reason "handoff captured for the next worker" \
   --json
 
-go run ./cmd/memori context checkpoint --trigger manual
-
-go run ./cmd/memori context summarize \
-  --note "paused after reproducing the gate failure" \
-  --json
-
-go run ./cmd/memori context close \
-  --reason "handoff captured for the next worker" \
-  --json
-
-go run ./cmd/memori context packet build \
-  --scope issue \
-  --id mem-a111111 \
-  --json
-
-go run ./cmd/memori context packet build \
-  --scope session \
-  --id sess-20260307-01 \
-  --json
-
-go run ./cmd/memori context packet show --packet <issue-packet-id> --json
-go run ./cmd/memori context packet use --agent writer-1 --packet <issue-packet-id> --json
-go run ./cmd/memori context rehydrate --json
+go run ./cmd/memori context resume --agent writer-1 --json
 go run ./cmd/memori context loops --issue mem-a111111 --json
 ```
 
-Use `context start` when you want the happy-path “begin work” flow to checkpoint a session, build an issue packet, and optionally update an agent’s focus in one command.
-Use `context save` when you want the happy-path “pause or hand off” flow to summarize the session, build a fresh session packet, and optionally close the session in one command.
-When you omit `--session`, memori keeps the continuity flow ergonomic:
-- `context checkpoint` continues the latest open session when one exists, or creates a fresh deterministic session id when one does not.
-- `context summarize` and `context close` target the latest open session.
-- `context rehydrate` prefers the latest open session and falls back to the latest session when everything is already closed.
-- Human output always tells you which session was used so you can copy it into explicit commands when you want tighter control.
+When you need lower-level control, the continuity commands are still available:
 
-Use an issue-scoped packet when you want to set agent focus around a specific work item. Use a session-scoped packet when you want `context rehydrate` to return the latest saved session payload directly.
-Use `context summarize` to persist a structured session summary without ending the working window, and `context close` to mark that working window as finished with `ended_at` and the current `summary_event_id`.
-When no saved active-session packet exists yet, `context rehydrate` falls back to recent session context chunks before using a raw event-only payload.
-For closed sessions, `context rehydrate` prefers a closure-aware packet; otherwise it returns a synthesized closed-session summary so an older active packet cannot masquerade as the latest state.
-Packet lookups keep the same JSON payload contract, but routing now uses normalized packet columns so replay and mixed historical data stay query-safe.
+```bash
+go run ./cmd/memori context start --issue mem-a111111 --agent writer-1 --json
+go run ./cmd/memori context save --session <session-id> --note "handoff" --close --reason "handoff captured" --json
+go run ./cmd/memori context packet build --scope issue --id mem-a111111 --json
+go run ./cmd/memori context packet build --scope session --id sess-20260307-01 --json
+go run ./cmd/memori context packet show --packet <packet-id> --json
+go run ./cmd/memori context packet use --agent writer-1 --packet <issue-packet-id> --json
+go run ./cmd/memori context rehydrate --session sess-20260307-01 --json
+```
 
-Issue packets currently include:
+- Use `context start`, `context save`, and `context resume` for the high-level continuity verbs.
+- Use `checkpoint`, `summarize`, `close`, `packet build`, `packet show`, `packet use`, and `rehydrate` when you want explicit control over the underlying pieces.
+- `context resume` prefers packet-backed session restore and falls back to recent session context or a closed-session summary when needed.
+- Human output tells you which session was used, and issue surfaces now point to issue-scoped resume commands when an open session already exists.
 
-- `goal`
-- `state`
-- `decision_summary`
-- `open_questions`
-- `linked_work_items`
-- `gates`
-- `open_loops`
-- `next_actions`
-- `risks`
-- `continuity` metadata, including compaction policy and recent relevant chunks
-- provenance metadata, including the event cursor used to build the packet
+Issue packets currently include goal, state, decision summary, open questions, linked work items, gates, open loops, next actions, risks, continuity metadata, and provenance metadata.
 
-`issue next` uses these continuity signals as part of triage, so an agent can prefer work that already has focus, packets, unresolved loops, or failing gates that need attention.
+`issue next` uses these continuity signals as part of triage, so an agent can prefer work that already has focus, a fresh issue packet, unresolved loops, or failing gates that need attention.
 
 ### 5. Replay and integrity checks
 
@@ -567,11 +572,14 @@ For day-to-day work, the shortest path is usually:
 
 1. `memori board` or `memori board --agent <id>` to see active, blocked, ready, and likely-next work.
 2. `memori issue next --agent <id> --json` when an agent needs a ranked continuity-aware recommendation.
-3. `memori context start --issue <issue> --agent <id>` when you want the CLI to checkpoint and focus the work in one step.
-4. `memori issue show --key <issue>` and `memori event log --entity <issue> --json` before editing.
-4. `memori version --json` when you need the binary build metadata and embedded schema head version.
-5. `memori gate template list --json` when you need to find a close template before locking gates for a cycle.
-6. `memori gate template pending --json` when you need to review executable templates that are still awaiting human approval.
+3. `memori issue update --key <issue> --status inprogress --agent <id>` to start work, refresh the issue packet, and align focus in one step.
+4. `memori issue show --key <issue>` before editing to inspect packet freshness, open sessions, and resume guidance.
+5. `memori issue update --key <issue> --status blocked --note "<handoff>"` or `--status done --note "<summary>" --reason "<close reason>"` to save a fresh session packet at pause or close.
+   If the same issue has multiple open sessions, add `--session <id>` so memori does not have to guess which session you are pausing or finishing.
+6. `memori context resume --agent <id>` when returning to paused work from the latest saved session packet.
+7. `memori gate template list --json` when you need to find a close template before locking gates for a cycle.
+8. `memori gate template pending --json` when you need to review executable templates that are still awaiting human approval.
+9. `memori version --json` when you need the binary build metadata and embedded schema head version.
 
 ## Command map
 
@@ -614,14 +622,16 @@ For day-to-day work, the shortest path is usually:
 - `memori context checkpoint`
 - `memori context summarize`
 - `memori context close`
+- `memori context resume`
 - `memori context packet build`
 - `memori context packet show`
 - `memori context packet use`
 - `memori context rehydrate`
 - `memori context loops`
 
-Human-readable `issue create`, `issue update`, `issue show`, and `issue next` now surface continuity guidance when the current work state makes it relevant. In practice that means `todo`, `inprogress`, and `blocked` work will point you toward `context checkpoint`, `context summarize`, `context packet build`, or `context loops` instead of treating continuity as a separate subsystem you have to remember on your own.
-Human-readable `issue show`, `issue next`, and `board` also surface continuity state at the point where work starts or resumes, including whether a saved issue packet is fresh or stale, whether an open session already exists, and whether an agent already has saved focus on the work.
+- `issue create`, `issue update`, `issue show`, and `issue next` surface continuity guidance when the work state makes it relevant.
+- `issue update --status inprogress` starts or continues continuity, refreshes the issue packet after the status write, and aligns focus when you pass `--agent <id>`.
+- `issue update --status blocked|done` saves continuity from the issue's active session; when the same issue has multiple open sessions, pass `--session <id>` to keep the save/close path explicit. `issue show`, `issue next`, and `board` surface packet freshness, session availability, focus, and scoped resume hints.
 
 ### Database operations
 
@@ -681,6 +691,6 @@ The main implementation lives in:
 
 ## Project status
 
-memori already demonstrates the core product shape: local issue tracking, immutable audit history, gate-backed completion, and packet-based continuity in one CLI.
+memori already demonstrates the core product shape: local issue tracking, immutable audit history, gate-backed completion, and issue-plus-session packet continuity in one CLI.
 
 It should be evaluated as an advanced local tool rather than a finished platform. If you want a public-cloud tracker, team collaboration features, or remote synchronization, this repository is not aiming there yet. If you want a rigorous local system for human-plus-agent execution, that is exactly what it is being built for.

@@ -91,6 +91,7 @@ func runIssueShow(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
+		issueSessionID := openSessionIDForContinuitySnapshot(snapshot)
 		if lines := continuityStatusLines(snapshot); len(lines) > 0 {
 			ui.blank()
 			ui.section("Continuity State")
@@ -98,13 +99,27 @@ func runIssueShow(args []string, out io.Writer) error {
 				ui.bullet(line)
 			}
 		}
-	}
-	if message, steps := issueContinuityGuidance(issue, "show"); message != "" {
-		ui.blank()
-		ui.section("Continuity")
-		ui.bullet(message)
-		for _, step := range steps {
-			ui.bullet(step)
+		if lines := continuityPressureLines(issue, snapshot, ""); len(lines) > 0 {
+			ui.blank()
+			ui.section("Continuity Pressure")
+			for _, line := range lines {
+				ui.bullet(line)
+			}
+		}
+		if steps := issueResumeSteps(issue, issueSessionID); len(steps) > 0 {
+			ui.blank()
+			ui.section("Resume")
+			for _, step := range steps {
+				ui.bullet(step)
+			}
+		}
+		if message, steps := issueContinuityGuidance(issue, "show", issueSessionID); message != "" {
+			ui.blank()
+			ui.section("Continuity")
+			ui.bullet(message)
+			for _, step := range steps {
+				ui.bullet(step)
+			}
 		}
 	}
 	return nil
@@ -168,9 +183,23 @@ func runIssueNext(args []string, out io.Writer) error {
 			ui.bullet(line)
 		}
 	}
+	if lines := continuityPressureLines(next.Candidate.Issue, snapshot, *agent); len(lines) > 0 {
+		ui.blank()
+		ui.section("Continuity Pressure")
+		for _, line := range lines {
+			ui.bullet(line)
+		}
+	}
 	steps := []string{
 		fmt.Sprintf("memori issue show --key %s", next.Candidate.Issue.ID),
 		fmt.Sprintf("memori issue update --key %s --status inprogress", next.Candidate.Issue.ID),
+	}
+	issueSessionID := openSessionIDForContinuitySnapshot(snapshot)
+	if strings.TrimSpace(*agent) != "" {
+		steps[1] = fmt.Sprintf("memori issue update --key %s --status inprogress --agent %s", next.Candidate.Issue.ID, *agent)
+		if continuitySignalsPresent(next.Candidate.Reasons) && issueSessionID != "" {
+			steps = append([]string{fmt.Sprintf("memori context resume --session %s --agent %s", issueSessionID, *agent)}, steps...)
+		}
 	}
 	if strings.TrimSpace(*agent) != "" && !continuitySignalsPresent(next.Candidate.Reasons) {
 		ui.blank()

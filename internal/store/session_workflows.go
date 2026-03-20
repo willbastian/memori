@@ -14,6 +14,14 @@ func (s *Store) CheckpointSession(ctx context.Context, p CheckpointSessionParams
 	if sessionID == "" {
 		return Session{}, false, errors.New("--session is required")
 	}
+	issueID := strings.TrimSpace(p.IssueID)
+	if issueID != "" {
+		normalizedIssueID, err := normalizeIssueKey(issueID)
+		if err != nil {
+			return Session{}, false, fmt.Errorf("invalid issue_id: %w", err)
+		}
+		issueID = normalizedIssueID
+	}
 	trigger := strings.TrimSpace(p.Trigger)
 	if trigger == "" {
 		trigger = "manual"
@@ -33,6 +41,12 @@ func (s *Store) CheckpointSession(ctx context.Context, p CheckpointSessionParams
 	}
 	defer tx.Rollback()
 
+	if issueID != "" {
+		if _, err := getIssueTx(ctx, tx, issueID); err != nil {
+			return Session{}, false, err
+		}
+	}
+
 	existingSession, err := sessionByIDTx(ctx, tx, sessionID)
 	sessionExists := err == nil
 	if err != nil && !strings.Contains(err.Error(), "not found") {
@@ -40,6 +54,22 @@ func (s *Store) CheckpointSession(ctx context.Context, p CheckpointSessionParams
 	}
 	if sessionExists && strings.TrimSpace(existingSession.EndedAt) != "" {
 		return Session{}, false, fmt.Errorf("session %q is closed; start a new session id to checkpoint more work", sessionID)
+	}
+	existingIssueID := ""
+	if sessionExists {
+		existingIssueID = strings.TrimSpace(anyToString(existingSession.Checkpoint["issue_id"]))
+		if existingIssueID == "" {
+			existingIssueID, err = latestCheckpointIssueIDForSessionTx(ctx, tx, sessionID)
+			if err != nil {
+				return Session{}, false, fmt.Errorf("resolve existing issue binding for session %q: %w", sessionID, err)
+			}
+		}
+	}
+	if sessionExists && issueID == "" && existingIssueID != "" {
+		issueID = existingIssueID
+	}
+	if sessionExists && issueID != "" && existingIssueID != "" && issueID != existingIssueID {
+		return Session{}, false, fmt.Errorf("session %q already tracks issue %q; start a new session to work on %q", sessionID, existingIssueID, issueID)
 	}
 
 	now := nowUTC()
@@ -51,6 +81,9 @@ func (s *Store) CheckpointSession(ctx context.Context, p CheckpointSessionParams
 		"session_id":  sessionID,
 		"trigger":     trigger,
 		"captured_at": now,
+	}
+	if issueID != "" {
+		checkpoint["issue_id"] = issueID
 	}
 	if latestEventID != "" {
 		checkpoint["latest_event_id"] = latestEventID
@@ -66,6 +99,9 @@ func (s *Store) CheckpointSession(ctx context.Context, p CheckpointSessionParams
 	chunkMetadata := map[string]any{
 		"trigger":         trigger,
 		"latest_event_id": latestEventID,
+	}
+	if issueID != "" {
+		chunkMetadata["issue_id"] = issueID
 	}
 	payloadBytes, err := json.Marshal(sessionCheckpointedPayload{
 		SessionID:           sessionID,
@@ -305,6 +341,28 @@ func (s *Store) LatestOpenSession(ctx context.Context) (Session, bool, error) {
 	return session, true, nil
 }
 
+func (s *Store) LatestOpenSessionForIssue(ctx context.Context, issueID string) (Session, bool, error) {
+	normalizedIssueID, err := normalizeIssueKey(issueID)
+	if err != nil {
+		return Session{}, false, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Session{}, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	session, err := latestOpenSessionForIssueTx(ctx, tx, normalizedIssueID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Session{}, false, nil
+		}
+		return Session{}, false, err
+	}
+	return session, true, nil
+}
+
 func (s *Store) LatestSession(ctx context.Context) (Session, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -313,6 +371,28 @@ func (s *Store) LatestSession(ctx context.Context) (Session, bool, error) {
 	defer tx.Rollback()
 
 	session, err := latestSessionTx(ctx, tx)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Session{}, false, nil
+		}
+		return Session{}, false, err
+	}
+	return session, true, nil
+}
+
+func (s *Store) LatestSessionForIssue(ctx context.Context, issueID string) (Session, bool, error) {
+	normalizedIssueID, err := normalizeIssueKey(issueID)
+	if err != nil {
+		return Session{}, false, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Session{}, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	session, err := latestSessionForIssueTx(ctx, tx, normalizedIssueID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, false, nil
@@ -342,4 +422,59 @@ func (s *Store) SessionForCommand(ctx context.Context, commandID string) (Sessio
 		return Session{}, false, err
 	}
 	return session, true, nil
+}
+
+func (s *Store) GetSession(ctx context.Context, sessionID string) (Session, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return Session{}, errors.New("--session is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Session{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	return sessionByIDTx(ctx, tx, sessionID)
+}
+
+func (s *Store) GetAgentFocus(ctx context.Context, agentID string) (AgentFocus, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return AgentFocus{}, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	return agentFocusByAgentTx(ctx, tx, agentID)
+}
+
+func (s *Store) SessionIssueID(ctx context.Context, sessionID string) (string, bool, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", false, errors.New("--session is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	return sessionIssueIDTx(ctx, tx, sessionID)
+}
+
+func (s *Store) OpenSessionCountForIssue(ctx context.Context, issueID string) (int, error) {
+	normalizedIssueID, err := normalizeIssueKey(issueID)
+	if err != nil {
+		return 0, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	return openSessionCountForIssueTx(ctx, tx, normalizedIssueID)
 }

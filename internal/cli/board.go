@@ -76,6 +76,7 @@ type boardRenderOptions struct {
 	Interval   time.Duration
 	Width      int
 	Continuity store.ContinuitySnapshot
+	Pressure   []string
 }
 
 type boardReasonRule struct {
@@ -159,6 +160,7 @@ func runBoard(args []string, out io.Writer) error {
 			Interval:   *interval,
 			Width:      boardRenderWidth(),
 			Continuity: continuity,
+			Pressure:   boardContinuityPressureLines(baseCtx, s, snapshot, *agent),
 		})
 		if err != nil {
 			return "", "", err
@@ -193,6 +195,49 @@ func runBoard(args []string, out io.Writer) error {
 	}
 
 	return runBoardLoop(baseCtx, out, *interval, renderFrame)
+}
+
+func boardContinuityPressureLines(ctx context.Context, s *store.Store, snapshot boardSnapshot, agent string) []string {
+	rows := make([]boardIssueRow, 0, 1+len(snapshot.Active)+len(snapshot.Blocked))
+	if len(snapshot.LikelyNext) > 0 {
+		rows = append(rows, snapshot.LikelyNext[0])
+	}
+	rows = append(rows, snapshot.Active...)
+	rows = append(rows, snapshot.Blocked...)
+
+	lines := make([]string, 0, 4)
+	seenIssues := make(map[string]struct{}, len(rows))
+	seenLines := make(map[string]struct{}, 4)
+	for _, row := range rows {
+		issueID := strings.TrimSpace(row.Issue.ID)
+		if issueID == "" {
+			continue
+		}
+		if _, ok := seenIssues[issueID]; ok {
+			continue
+		}
+		seenIssues[issueID] = struct{}{}
+
+		params := store.ContinuitySnapshotParams{IssueID: issueID}
+		if len(snapshot.LikelyNext) > 0 && snapshot.LikelyNext[0].Issue.ID == issueID {
+			params.AgentID = agent
+		}
+		continuity, err := s.ContinuitySnapshot(ctx, params)
+		if err != nil {
+			continue
+		}
+		for _, line := range continuityPressureLines(row.Issue, continuity, params.AgentID) {
+			if _, ok := seenLines[line]; ok {
+				continue
+			}
+			seenLines[line] = struct{}{}
+			lines = append(lines, line)
+			if len(lines) >= 4 {
+				return lines
+			}
+		}
+	}
+	return lines
 }
 
 func buildBoardSnapshot(ctx context.Context, s *store.Store, agent string, now time.Time) (boardSnapshot, error) {

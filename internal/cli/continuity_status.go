@@ -41,8 +41,13 @@ func continuitySessionStatusLine(snapshot store.SessionContinuitySnapshot) strin
 	}
 
 	label := "Latest open session"
-	if snapshot.Source == "latest-session" {
+	switch snapshot.Source {
+	case "latest-open-issue":
+		label = "Latest open session for this issue"
+	case "latest-session":
 		label = "Latest session"
+	case "latest-session-issue":
+		label = "Latest session for this issue"
 	}
 	state := "has no saved summary"
 	if strings.TrimSpace(snapshot.Session.SummaryEventID) != "" {
@@ -77,6 +82,108 @@ func continuityIssueStatusLines(snapshot store.IssueContinuitySnapshot) []string
 		lines = append(lines, fmt.Sprintf("%s has %d open loop(s)%s.", snapshot.IssueID, snapshot.OpenLoopCount, cycleLabel))
 	}
 	return lines
+}
+
+func continuityPressureLines(issue store.Issue, snapshot store.ContinuitySnapshot, agentID string) []string {
+	issueID := strings.TrimSpace(issue.ID)
+	status := strings.ToLower(strings.TrimSpace(issue.Status))
+	if issueID == "" || strings.EqualFold(strings.TrimSpace(issue.Type), "epic") {
+		return nil
+	}
+
+	lines := make([]string, 0, 3)
+	if snapshot.Issue.PacketStale {
+		lines = append(lines, fmt.Sprintf("%s is %s and its saved issue packet is stale; rebuild it before the next handoff.", issueID, continuityPressureStatusLabel(status)))
+	}
+	if shouldPressureMissingIssuePacket(status) && !snapshot.Issue.HasPacket {
+		lines = append(lines, fmt.Sprintf("%s is %s and has no saved issue packet yet; capture one before the next handoff.", issueID, continuityPressureStatusLabel(status)))
+	}
+	if shouldPressureOpenSession(status, snapshot.Session) {
+		lines = append(lines, fmt.Sprintf("Open session %s has no saved session packet yet; save continuity before you pause or close it.", snapshot.Session.Session.SessionID))
+	}
+	if shouldPressureMissingFocus(status, issueID, snapshot.Agent, agentID) {
+		lines = append(lines, fmt.Sprintf("Agent %s has no saved focus for %s yet; resume will stay broad until focus is refreshed.", strings.TrimSpace(agentID), issueID))
+	}
+	if len(lines) > 0 {
+		return filterNonEmpty(lines)
+	}
+
+	if helpful := continuityHelpfulLine(issueID, snapshot, agentID); helpful != "" {
+		lines = append(lines, helpful)
+	}
+	return filterNonEmpty(lines)
+}
+
+func continuityPressureStatusLabel(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "inprogress":
+		return "active"
+	case "blocked":
+		return "blocked"
+	case "todo":
+		return "ready to resume"
+	default:
+		return "open"
+	}
+}
+
+func shouldPressureMissingIssuePacket(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "inprogress", "blocked":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldPressureOpenSession(status string, snapshot store.SessionContinuitySnapshot) bool {
+	if strings.TrimSpace(snapshot.Session.EndedAt) != "" || !snapshot.HasSession || snapshot.HasPacket {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "inprogress", "blocked":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldPressureMissingFocus(status, issueID string, snapshot store.AgentContinuitySnapshot, agentID string) bool {
+	if strings.TrimSpace(agentID) == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "inprogress", "blocked":
+		if !snapshot.HasFocus {
+			return true
+		}
+		return strings.TrimSpace(snapshot.Focus.ActiveIssueID) != issueID
+	default:
+		return false
+	}
+}
+
+func continuityHelpfulLine(issueID string, snapshot store.ContinuitySnapshot, agentID string) string {
+	if !snapshot.Issue.HasPacket || !snapshot.Issue.PacketFresh {
+		return ""
+	}
+
+	line := fmt.Sprintf("%s is resume-ready with a fresh issue packet", issueID)
+	agentID = strings.TrimSpace(agentID)
+	if agentID != "" && snapshot.Agent.HasFocus && strings.TrimSpace(snapshot.Agent.Focus.ActiveIssueID) == issueID {
+		line += fmt.Sprintf(" and saved focus for %s", agentID)
+	}
+	if snapshot.Session.HasSession && snapshot.Session.HasPacket && strings.TrimSpace(snapshot.Session.Session.SessionID) != "" {
+		line += fmt.Sprintf("; session %s already has a saved packet too", snapshot.Session.Session.SessionID)
+	}
+	return line + "."
+}
+
+func openSessionIDForContinuitySnapshot(snapshot store.ContinuitySnapshot) string {
+	if !snapshot.Session.HasSession || strings.TrimSpace(snapshot.Session.Session.EndedAt) != "" {
+		return ""
+	}
+	return strings.TrimSpace(snapshot.Session.Session.SessionID)
 }
 
 func filterNonEmpty(lines []string) []string {

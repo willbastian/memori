@@ -43,8 +43,9 @@ func continuityBootstrapSteps(issueID string) []string {
 	}
 }
 
-func issueContinuityGuidance(issue store.Issue, command string) (string, []string) {
+func issueContinuityGuidance(issue store.Issue, command, issueSessionID string) (string, []string) {
 	command = strings.TrimSpace(command)
+	issueSessionID = strings.TrimSpace(issueSessionID)
 	issueType := strings.ToLower(strings.TrimSpace(issue.Type))
 	status := strings.ToLower(strings.TrimSpace(issue.Status))
 	issueID := strings.TrimSpace(issue.ID)
@@ -63,19 +64,58 @@ func issueContinuityGuidance(issue store.Issue, command string) (string, []strin
 			fmt.Sprintf("memori context packet build --scope issue --id %s", issueID),
 		}
 	case "inprogress":
-		return "This issue is active work; keep continuity current so pause, resume, and handoff stay lightweight.", []string{
-			"memori context checkpoint",
-			"memori context summarize",
+		steps := []string{
+			continuityCheckpointStep(issueSessionID),
+			continuitySummarizeStep(issueSessionID),
 			fmt.Sprintf("memori context packet build --scope issue --id %s", issueID),
 		}
+		if command == "show" && issueSessionID != "" {
+			steps = append([]string{fmt.Sprintf("memori context resume --session %s", issueSessionID)}, steps...)
+		}
+		return "This issue is active work; keep continuity current so pause, resume, and handoff stay lightweight.", steps
 	case "blocked":
-		return "This issue is blocked; preserve the current state before waiting or handing it off.", []string{
-			"memori context summarize",
+		steps := []string{
+			continuitySummarizeStep(issueSessionID),
 			fmt.Sprintf("memori context packet build --scope issue --id %s", issueID),
 			fmt.Sprintf("memori context loops --issue %s", issueID),
 		}
+		if command == "show" && issueSessionID != "" {
+			steps = append([]string{fmt.Sprintf("memori context resume --session %s", issueSessionID)}, steps...)
+		}
+		return "This issue is blocked; preserve the current state before waiting or handing it off.", steps
 	default:
 		return "", nil
+	}
+}
+
+func continuityCheckpointStep(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "memori context checkpoint"
+	}
+	return fmt.Sprintf("memori context checkpoint --session %s", sessionID)
+}
+
+func continuitySummarizeStep(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "memori context summarize"
+	}
+	return fmt.Sprintf("memori context summarize --session %s", sessionID)
+}
+
+func issueResumeSteps(issue store.Issue, issueSessionID string) []string {
+	status := strings.ToLower(strings.TrimSpace(issue.Status))
+	if status != "inprogress" && status != "blocked" {
+		return nil
+	}
+	issueSessionID = strings.TrimSpace(issueSessionID)
+	if issueSessionID == "" {
+		return nil
+	}
+	return []string{
+		fmt.Sprintf("memori context resume --session %s", issueSessionID),
+		fmt.Sprintf("memori context resume --session %s --agent <agent-id>", issueSessionID),
 	}
 }
 
@@ -127,7 +167,10 @@ func packetUseNextSteps(agentID, packetID, issueID, sessionID string) []string {
 		steps = append(steps, fmt.Sprintf("memori context rehydrate --session %s", sessionID))
 	}
 	if agentID != "" {
-		steps = append(steps, fmt.Sprintf("memori issue next --agent %s", agentID))
+		steps = append(steps,
+			fmt.Sprintf("memori issue next --agent %s", agentID),
+			fmt.Sprintf("memori board --agent %s", agentID),
+		)
 	}
 	if packetID != "" {
 		steps = append(steps, fmt.Sprintf("memori context packet show --packet %s", packetID))

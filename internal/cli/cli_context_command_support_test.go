@@ -101,6 +101,25 @@ type contextRehydrateEnvelope struct {
 	} `json:"data"`
 }
 
+type contextResumeEnvelope struct {
+	Command string `json:"command"`
+	Data    struct {
+		SessionID string `json:"session_id"`
+		Source    string `json:"source"`
+		Packet    struct {
+			PacketID string `json:"packet_id"`
+			Scope    string `json:"scope"`
+		} `json:"packet"`
+		Focus struct {
+			AgentID       string `json:"agent_id"`
+			ActiveIssueID string `json:"active_issue_id"`
+			LastPacketID  string `json:"last_packet_id"`
+		} `json:"focus"`
+		FocusUsed       bool `json:"focus_used"`
+		FocusIdempotent bool `json:"focus_idempotent"`
+	} `json:"data"`
+}
+
 type contextLoopsEnvelope struct {
 	Command string `json:"command"`
 	Data    struct {

@@ -115,6 +115,7 @@ func TestBoardCommandHumanOutputShowsSections(t *testing.T) {
 		"Summary:",
 		"Next:",
 		"Continuity State:",
+		"Continuity Pressure:",
 		"Active (1):",
 		"Blocked (1):",
 		"Ready (2):",
@@ -123,6 +124,8 @@ func TestBoardCommandHumanOutputShowsSections(t *testing.T) {
 		"mem-b343434 Continuity-heavy task [s300,focus,packet,loop,+5 more]",
 		"Agent agent-board-1 focus points to mem-b343434 cycle 1 via packet",
 		"Latest issue packet",
+		"mem-b343434 is ready to resume and its saved issue packet is stale; rebuild it before the next handoff.",
+		"mem-d454545 is blocked and has no saved issue packet yet; capture one before the next handoff.",
 		"Next:",
 		"memori board --watch",
 	} {

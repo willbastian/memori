@@ -88,7 +88,7 @@ func runHelp(args []string, out io.Writer) error {
 			"memori init [--db <path>] [--issue-prefix <prefix>] [--json]",
 			"memori issue create --type epic|story|task|bug --title <title> [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] [--command-id <id>] [--json]",
 			"memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] [--command-id <id>] [--json]",
-			"memori issue update --key <prefix-shortSHA> [--title <title>] [--status todo|inprogress|blocked|done|wontdo] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--actor <actor>] [--command-id <id>] [--json]",
+			"memori issue update --key <prefix-shortSHA> [--title <title>] [--status todo|inprogress|blocked|done|wontdo] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--agent <id>] [--session <id>] [--continuity manual|assist|auto] [--note <text>] [--reason <text>] [--skip-continuity] [--actor <actor>] [--command-id <id>] [--json]",
 			"memori issue show --key <prefix-shortSHA> [--json]",
 			"memori issue next [--agent <id>] [--json]",
 			"memori board [--db <path>] [--agent <id>] [--watch] [--interval <duration>] [--json]",
@@ -106,6 +106,7 @@ func runHelp(args []string, out io.Writer) error {
 			"memori context checkpoint [--session <id>] [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]",
 			"memori context summarize [--session <id>] [--note <text>] [--actor <actor>] [--command-id <id>] [--json]",
 			"memori context close [--session <id>] [--reason <text>] [--actor <actor>] [--command-id <id>] [--json]",
+			"memori context resume [--session <id>] [--agent <id>] [--actor <actor>] [--command-id <id>] [--json]",
 			"memori context rehydrate [--session <id>] [--json]",
 			"memori context packet build --scope issue|session --id <id> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori context packet show --packet <id> [--json]",
@@ -247,6 +248,7 @@ func printHelp(out io.Writer) {
 	ui.bullet("memori context checkpoint [--session <id>] [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori context summarize [--session <id>] [--note <text>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori context close [--session <id>] [--reason <text>] [--actor <actor>] [--command-id <id>] [--json]")
+	ui.bullet("memori context resume [--session <id>] [--agent <id>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori context packet build --scope issue|session --id <id> [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori context packet show --packet <id> [--json]")
 	ui.bullet("memori context packet use --agent <id> --packet <id> [--actor <actor>] [--command-id <id>] [--json]")
@@ -261,7 +263,7 @@ func printHelp(out io.Writer) {
 	ui.bullet("memori init [--db <path>] [--issue-prefix <prefix>] [--json]")
 	ui.bullet("memori issue create --type epic|story|task|bug --title <title> [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] [--command-id <id>] [--json]")
-	ui.bullet("memori issue update --key <prefix-shortSHA> [--title <title>] [--status todo|inprogress|blocked|done|wontdo] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--actor <actor>] [--command-id <id>] [--json]")
+	ui.bullet("memori issue update --key <prefix-shortSHA> [--title <title>] [--status todo|inprogress|blocked|done|wontdo] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--agent <id>] [--session <id>] [--continuity manual|assist|auto] [--note <text>] [--reason <text>] [--skip-continuity] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori gate template create --id <template-id> --version <n> --applies-to epic|story|task|bug [--applies-to ...] --file <path> [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori gate template approve --id <template-id> --version <n> [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori gate template list [--type epic|story|task|bug] [--json]")

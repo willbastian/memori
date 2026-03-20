@@ -74,6 +74,31 @@ func latestOpenSessionTx(ctx context.Context, tx *sql.Tx) (Session, error) {
 	return sessionByIDTx(ctx, tx, sessionID)
 }
 
+func latestOpenSessionForIssueTx(ctx context.Context, tx *sql.Tx, issueID string) (Session, error) {
+	sessionID, err := sessionIDForQueryTx(ctx, tx, `
+		SELECT s.session_id
+		FROM sessions s
+		JOIN events e
+		  ON e.entity_type = ?
+		 AND e.entity_id = s.session_id
+		WHERE COALESCE(TRIM(s.ended_at), '') = ''
+		  AND TRIM(COALESCE(json_extract(s.checkpoint_json, '$.issue_id'), '')) = ?
+		GROUP BY s.session_id
+		ORDER BY MAX(e.event_order) DESC, s.session_id DESC
+		LIMIT 1
+	`, entityTypeSession, issueID)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return Session{}, fmt.Errorf("query latest open session for issue %q: %w", issueID, err)
+		}
+		sessionID, err = legacySessionIDForIssueQueryTx(ctx, tx, issueID, true)
+		if err != nil {
+			return Session{}, fmt.Errorf("query latest open session for issue %q: %w", issueID, err)
+		}
+	}
+	return sessionByIDTx(ctx, tx, sessionID)
+}
+
 func latestSessionTx(ctx context.Context, tx *sql.Tx) (Session, error) {
 	sessionID, err := sessionIDForQueryTx(ctx, tx, `
 		SELECT s.session_id
@@ -91,6 +116,60 @@ func latestSessionTx(ctx context.Context, tx *sql.Tx) (Session, error) {
 	return sessionByIDTx(ctx, tx, sessionID)
 }
 
+func latestSessionForIssueTx(ctx context.Context, tx *sql.Tx, issueID string) (Session, error) {
+	sessionID, err := sessionIDForQueryTx(ctx, tx, `
+		SELECT s.session_id
+		FROM sessions s
+		JOIN events e
+		  ON e.entity_type = ?
+		 AND e.entity_id = s.session_id
+		WHERE TRIM(COALESCE(json_extract(s.checkpoint_json, '$.issue_id'), '')) = ?
+		GROUP BY s.session_id
+		ORDER BY MAX(e.event_order) DESC, s.session_id DESC
+		LIMIT 1
+	`, entityTypeSession, issueID)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return Session{}, fmt.Errorf("query latest session for issue %q: %w", issueID, err)
+		}
+		sessionID, err = legacySessionIDForIssueQueryTx(ctx, tx, issueID, false)
+		if err != nil {
+			return Session{}, fmt.Errorf("query latest session for issue %q: %w", issueID, err)
+		}
+	}
+	return sessionByIDTx(ctx, tx, sessionID)
+}
+
+func legacySessionIDForIssueQueryTx(ctx context.Context, tx *sql.Tx, issueID string, openOnly bool) (string, error) {
+	query := `
+		SELECT s.session_id
+		FROM sessions s
+		JOIN events e
+		  ON e.entity_type = ?
+		 AND e.entity_id = s.session_id
+		WHERE TRIM(COALESCE(json_extract(s.checkpoint_json, '$.issue_id'), '')) = ''
+		  AND COALESCE((
+			SELECT TRIM(COALESCE(json_extract(c.metadata_json, '$.issue_id'), ''))
+			FROM context_chunks c
+			WHERE c.session_id = s.session_id
+			  AND c.kind = 'checkpoint'
+			ORDER BY c.created_at DESC, c.chunk_id DESC
+			LIMIT 1
+		  ), '') = ?
+	`
+	if openOnly {
+		query += `
+		  AND COALESCE(TRIM(s.ended_at), '') = ''
+	`
+	}
+	query += `
+		GROUP BY s.session_id
+		ORDER BY MAX(e.event_order) DESC, s.session_id DESC
+		LIMIT 1
+	`
+	return sessionIDForQueryTx(ctx, tx, query, entityTypeSession, issueID)
+}
+
 func sessionForCommandIDTx(ctx context.Context, tx *sql.Tx, commandID string) (Session, error) {
 	sessionID, err := sessionIDForQueryTx(ctx, tx, `
 		SELECT entity_id
@@ -104,6 +183,77 @@ func sessionForCommandIDTx(ctx context.Context, tx *sql.Tx, commandID string) (S
 		return Session{}, fmt.Errorf("query session for command %q: %w", commandID, err)
 	}
 	return sessionByIDTx(ctx, tx, sessionID)
+}
+
+func latestCheckpointIssueIDForSessionTx(ctx context.Context, tx *sql.Tx, sessionID string) (string, error) {
+	var issueID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT TRIM(COALESCE(json_extract(metadata_json, '$.issue_id'), ''))
+		FROM context_chunks
+		WHERE session_id = ?
+		  AND kind = 'checkpoint'
+		ORDER BY created_at DESC, chunk_id DESC
+		LIMIT 1
+	`, sessionID).Scan(&issueID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(issueID), nil
+}
+
+func sessionIssueIDTx(ctx context.Context, tx *sql.Tx, sessionID string) (string, bool, error) {
+	session, err := sessionByIDTx(ctx, tx, sessionID)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+
+	issueID := strings.TrimSpace(anyToString(session.Checkpoint["issue_id"]))
+	if issueID == "" {
+		issueID, err = latestCheckpointIssueIDForSessionTx(ctx, tx, sessionID)
+		if err != nil {
+			return "", true, fmt.Errorf("resolve issue binding for session %q: %w", sessionID, err)
+		}
+	}
+	if issueID == "" {
+		return "", true, nil
+	}
+
+	normalizedIssueID, err := normalizeIssueKey(issueID)
+	if err != nil {
+		return "", true, fmt.Errorf("resolve issue binding for session %q: %w", sessionID, err)
+	}
+	return normalizedIssueID, true, nil
+}
+
+func openSessionCountForIssueTx(ctx context.Context, tx *sql.Tx, issueID string) (int, error) {
+	var count int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(1)
+		FROM sessions s
+		WHERE COALESCE(TRIM(s.ended_at), '') = ''
+		  AND (
+			TRIM(COALESCE(json_extract(s.checkpoint_json, '$.issue_id'), '')) = ?
+			OR (
+				TRIM(COALESCE(json_extract(s.checkpoint_json, '$.issue_id'), '')) = ''
+				AND COALESCE((
+					SELECT TRIM(COALESCE(json_extract(c.metadata_json, '$.issue_id'), ''))
+					FROM context_chunks c
+					WHERE c.session_id = s.session_id
+					  AND c.kind = 'checkpoint'
+					ORDER BY c.created_at DESC, c.chunk_id DESC
+					LIMIT 1
+				), '') = ?
+			)
+		  )
+	`, issueID, issueID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count open sessions for issue %q: %w", issueID, err)
+	}
+	return count, nil
 }
 
 func sessionIDForQueryTx(ctx context.Context, tx *sql.Tx, query string, args ...any) (string, error) {

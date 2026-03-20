@@ -143,6 +143,51 @@ func (s *Store) UpdateIssueStatus(ctx context.Context, p UpdateIssueStatusParams
 	})
 }
 
+func (s *Store) PreviewIssueUpdate(ctx context.Context, p UpdateIssueParams) (PreviewIssueUpdateResult, error) {
+	if p.Actor == "" {
+		p.Actor = defaultActor()
+	}
+	if strings.TrimSpace(p.CommandID) == "" {
+		return PreviewIssueUpdateResult{}, errors.New("--command-id is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PreviewIssueUpdateResult{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if existingEvent, found, err := findEventByActorCommandTx(ctx, tx, p.Actor, p.CommandID); err != nil {
+		return PreviewIssueUpdateResult{}, err
+	} else if found {
+		if existingEvent.EventType != eventTypeIssueUpdate {
+			return PreviewIssueUpdateResult{}, fmt.Errorf("command id already used by %q", existingEvent.EventType)
+		}
+		issue, err := getIssueTx(ctx, tx, existingEvent.EntityID)
+		if err != nil {
+			return PreviewIssueUpdateResult{}, err
+		}
+		return PreviewIssueUpdateResult{Issue: issue, Idempotent: true}, nil
+	}
+
+	issueID, err := normalizeIssueKey(p.IssueID)
+	if err != nil {
+		return PreviewIssueUpdateResult{}, err
+	}
+
+	currentIssue, err := getIssueTx(ctx, tx, issueID)
+	if err != nil {
+		return PreviewIssueUpdateResult{}, err
+	}
+
+	_, _, _, err = prepareIssueUpdateTx(ctx, tx, currentIssue, issueID, p)
+	if err != nil {
+		return PreviewIssueUpdateResult{}, err
+	}
+
+	return PreviewIssueUpdateResult{Issue: currentIssue, Idempotent: false}, nil
+}
+
 func (s *Store) UpdateIssue(ctx context.Context, p UpdateIssueParams) (Issue, Event, bool, error) {
 	if p.Actor == "" {
 		p.Actor = defaultActor()
@@ -182,19 +227,62 @@ func (s *Store) UpdateIssue(ctx context.Context, p UpdateIssueParams) (Issue, Ev
 	if err != nil {
 		return Issue{}, Event{}, false, err
 	}
+	payload, _, _, err := prepareIssueUpdateTx(ctx, tx, currentIssue, issueID, p)
+	if err != nil {
+		return Issue{}, Event{}, false, err
+	}
 
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return Issue{}, Event{}, false, fmt.Errorf("marshal payload: %w", err)
+	}
+
+	appendRes, err := s.appendEventTx(ctx, tx, appendEventRequest{
+		EntityType:          entityTypeIssue,
+		EntityID:            issueID,
+		EventType:           eventTypeIssueUpdate,
+		PayloadJSON:         string(payloadBytes),
+		Actor:               p.Actor,
+		CommandID:           p.CommandID,
+		EventPayloadVersion: 1,
+	})
+	if err != nil {
+		return Issue{}, Event{}, false, err
+	}
+	if appendRes.Event.EventType != eventTypeIssueUpdate {
+		return Issue{}, Event{}, false, fmt.Errorf("command id already used by %q", appendRes.Event.EventType)
+	}
+
+	if !appendRes.AlreadyExists {
+		if err := applyIssueUpdatedProjectionTx(ctx, tx, appendRes.Event); err != nil {
+			return Issue{}, Event{}, false, err
+		}
+	}
+
+	issue, err := getIssueTx(ctx, tx, issueID)
+	if err != nil {
+		return Issue{}, Event{}, false, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Issue{}, Event{}, false, fmt.Errorf("commit tx: %w", err)
+	}
+
+	return issue, appendRes.Event, appendRes.AlreadyExists, nil
+}
+
+func prepareIssueUpdateTx(ctx context.Context, tx *sql.Tx, currentIssue Issue, issueID string, p UpdateIssueParams) (issueUpdatedPayload, bool, string, error) {
 	payload := issueUpdatedPayload{
 		IssueID:   issueID,
 		UpdatedAt: nowUTC(),
 	}
 	changed := false
 	targetStatus := ""
-	var closeProof *IssueCloseAuthorization
 
 	if p.Title != nil {
 		titleTo := strings.TrimSpace(*p.Title)
 		if titleTo == "" {
-			return Issue{}, Event{}, false, errors.New("--title is required")
+			return issueUpdatedPayload{}, false, "", errors.New("--title is required")
 		}
 		if currentIssue.Title != titleTo {
 			titleFrom := currentIssue.Title
@@ -206,13 +294,13 @@ func (s *Store) UpdateIssue(ctx context.Context, p UpdateIssueParams) (Issue, Ev
 	if p.Status != nil {
 		statusTo, err := normalizeIssueStatus(*p.Status)
 		if err != nil {
-			return Issue{}, Event{}, false, err
+			return issueUpdatedPayload{}, false, "", err
 		}
 		if statusTo == "WontDo" && !actorIsHuman(p.Actor) {
-			return Issue{}, Event{}, false, errors.New("WontDo status requires a human actor")
+			return issueUpdatedPayload{}, false, "", errors.New("WontDo status requires a human actor")
 		}
 		if err := validateIssueStatusTransition(currentIssue.Status, statusTo); err != nil {
-			return Issue{}, Event{}, false, err
+			return issueUpdatedPayload{}, false, "", err
 		}
 		statusFrom := currentIssue.Status
 		payload.StatusFrom = &statusFrom
@@ -223,7 +311,7 @@ func (s *Store) UpdateIssue(ctx context.Context, p UpdateIssueParams) (Issue, Ev
 	if p.Priority != nil {
 		priorityTo, err := normalizePriority(*p.Priority)
 		if err != nil {
-			return Issue{}, Event{}, false, err
+			return issueUpdatedPayload{}, false, "", err
 		}
 		if currentIssue.Priority != priorityTo {
 			priorityFrom := currentIssue.Priority
@@ -272,55 +360,18 @@ func (s *Store) UpdateIssue(ctx context.Context, p UpdateIssueParams) (Issue, Ev
 	}
 
 	if !changed {
-		return Issue{}, Event{}, false, errors.New("--title, --status, --priority, --label, --description, --acceptance-criteria, or --reference is required")
+		return issueUpdatedPayload{}, false, "", errors.New("--title, --status, --priority, --label, --description, --acceptance-criteria, or --reference is required")
 	}
 
 	if targetStatus == "Done" {
 		closeProofValue, err := validateIssueCloseEligibilityTx(ctx, tx, issueID)
 		if err != nil {
-			return Issue{}, Event{}, false, err
+			return issueUpdatedPayload{}, false, "", err
 		}
-		closeProof = closeProofValue
-		payload.CloseProof = closeProof
+		payload.CloseProof = closeProofValue
 	}
 
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
-		return Issue{}, Event{}, false, fmt.Errorf("marshal payload: %w", err)
-	}
-
-	appendRes, err := s.appendEventTx(ctx, tx, appendEventRequest{
-		EntityType:          entityTypeIssue,
-		EntityID:            issueID,
-		EventType:           eventTypeIssueUpdate,
-		PayloadJSON:         string(payloadBytes),
-		Actor:               p.Actor,
-		CommandID:           p.CommandID,
-		EventPayloadVersion: 1,
-	})
-	if err != nil {
-		return Issue{}, Event{}, false, err
-	}
-	if appendRes.Event.EventType != eventTypeIssueUpdate {
-		return Issue{}, Event{}, false, fmt.Errorf("command id already used by %q", appendRes.Event.EventType)
-	}
-
-	if !appendRes.AlreadyExists {
-		if err := applyIssueUpdatedProjectionTx(ctx, tx, appendRes.Event); err != nil {
-			return Issue{}, Event{}, false, err
-		}
-	}
-
-	issue, err := getIssueTx(ctx, tx, issueID)
-	if err != nil {
-		return Issue{}, Event{}, false, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return Issue{}, Event{}, false, fmt.Errorf("commit tx: %w", err)
-	}
-
-	return issue, appendRes.Event, appendRes.AlreadyExists, nil
+	return payload, changed, targetStatus, nil
 }
 
 func (s *Store) LinkIssue(ctx context.Context, p LinkIssueParams) (Issue, Event, bool, error) {

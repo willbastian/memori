@@ -44,70 +44,27 @@ func runContextStart(args []string, out io.Writer) error {
 		return err
 	}
 
-	checkpointCommandID := derivedCompositeCommandID(identity.CommandID, "checkpoint")
-	packetCommandID := derivedCompositeCommandID(identity.CommandID, "packet")
-	focusCommandID := derivedCompositeCommandID(identity.CommandID, "focus")
-
-	resolution, err := resolveCheckpointSession(ctx, s, *sessionID, checkpointCommandID)
+	result, err := startIssueContinuity(ctx, s, *issueID, *agentID, *sessionID, *trigger, identity.Actor, identity.CommandID)
 	if err != nil {
 		return err
 	}
-	session, created, err := s.CheckpointSession(ctx, store.CheckpointSessionParams{
-		SessionID: resolution.sessionID,
-		Trigger:   *trigger,
-		Actor:     identity.Actor,
-		CommandID: checkpointCommandID,
-	})
-	if err != nil {
-		return err
-	}
-
-	packet, err := s.BuildRehydratePacket(ctx, store.BuildPacketParams{
-		Scope:     "issue",
-		ScopeID:   *issueID,
-		Actor:     identity.Actor,
-		CommandID: packetCommandID,
-	})
-	if err != nil {
-		return err
-	}
-
-	var (
-		focus           store.AgentFocus
-		focusUsed       bool
-		focusIdempotent bool
-	)
-	if strings.TrimSpace(*agentID) != "" {
-		focus, packet, focusIdempotent, err = s.UseRehydratePacket(ctx, store.UsePacketParams{
-			AgentID:   *agentID,
-			PacketID:  packet.PacketID,
-			Actor:     identity.Actor,
-			CommandID: focusCommandID,
-		})
-		if err != nil {
-			return err
-		}
-		focusUsed = true
-	}
+	session := result.Data.Session
+	packet := result.Data.Packet
+	focus := result.Data.Focus
+	focusUsed := result.Data.FocusUsed
+	focusIdempotent := result.Data.FocusIdempotent
 
 	if *jsonOut {
 		return printJSON(out, jsonEnvelope{
 			ResponseSchemaVersion: responseSchemaVersion,
 			DBSchemaVersion:       dbVersion,
 			Command:               "context start",
-			Data: contextStartData{
-				Session:         session,
-				Created:         created,
-				Packet:          packet,
-				Focus:           focus,
-				FocusUsed:       focusUsed,
-				FocusIdempotent: focusIdempotent,
-			},
+			Data:                  result.Data,
 		})
 	}
 
 	ui := newTextUI(out)
-	if msg := sessionResolutionMessage("checkpoint", resolution); msg != "" {
+	if msg := sessionResolutionMessage("checkpoint", result.Resolution); msg != "" {
 		ui.note(msg)
 	}
 	if focusUsed {
@@ -142,6 +99,120 @@ func runContextStart(args []string, out io.Writer) error {
 	return nil
 }
 
+type startIssueContinuityResult struct {
+	Resolution sessionResolution
+	Data       contextStartData
+}
+
+func startIssueContinuity(
+	ctx context.Context,
+	s *store.Store,
+	issueID string,
+	agentID string,
+	sessionID string,
+	trigger string,
+	actor string,
+	baseCommandID string,
+) (startIssueContinuityResult, error) {
+	checkpointCommandID := derivedCompositeCommandID(baseCommandID, "checkpoint")
+	packetCommandID := derivedCompositeCommandID(baseCommandID, "packet")
+	focusCommandID := derivedCompositeCommandID(baseCommandID, "focus")
+
+	resolution, err := resolveCheckpointSessionForIssue(ctx, s, sessionID, issueID, checkpointCommandID)
+	if err != nil {
+		return startIssueContinuityResult{}, err
+	}
+	session, created, err := s.CheckpointSession(ctx, store.CheckpointSessionParams{
+		SessionID: resolution.sessionID,
+		IssueID:   issueID,
+		Trigger:   trigger,
+		Actor:     actor,
+		CommandID: checkpointCommandID,
+	})
+	if err != nil {
+		return startIssueContinuityResult{}, err
+	}
+
+	packet, err := s.BuildRehydratePacket(ctx, store.BuildPacketParams{
+		Scope:     "issue",
+		ScopeID:   issueID,
+		Actor:     actor,
+		CommandID: packetCommandID,
+	})
+	if err != nil {
+		return startIssueContinuityResult{}, err
+	}
+
+	result := startIssueContinuityResult{
+		Resolution: resolution,
+		Data: contextStartData{
+			Session: session,
+			Created: created,
+			Packet:  packet,
+		},
+	}
+	if strings.TrimSpace(agentID) == "" {
+		return result, nil
+	}
+
+	focus, packet, focusIdempotent, err := s.UseRehydratePacket(ctx, store.UsePacketParams{
+		AgentID:   agentID,
+		PacketID:  packet.PacketID,
+		Actor:     actor,
+		CommandID: focusCommandID,
+	})
+	if err != nil {
+		return startIssueContinuityResult{}, err
+	}
+	result.Data.Packet = packet
+	result.Data.Focus = focus
+	result.Data.FocusUsed = true
+	result.Data.FocusIdempotent = focusIdempotent
+	return result, nil
+}
+
+func refreshIssueContinuityPacket(
+	ctx context.Context,
+	s *store.Store,
+	issueID string,
+	agentID string,
+	actor string,
+	baseCommandID string,
+) (contextStartData, error) {
+	packetCommandID := derivedCompositeCommandID(baseCommandID, "post-update-packet")
+	focusCommandID := derivedCompositeCommandID(baseCommandID, "post-update-focus")
+
+	packet, err := s.BuildRehydratePacket(ctx, store.BuildPacketParams{
+		Scope:     "issue",
+		ScopeID:   issueID,
+		Actor:     actor,
+		CommandID: packetCommandID,
+	})
+	if err != nil {
+		return contextStartData{}, err
+	}
+
+	data := contextStartData{Packet: packet}
+	if strings.TrimSpace(agentID) == "" {
+		return data, nil
+	}
+
+	focus, packet, focusIdempotent, err := s.UseRehydratePacket(ctx, store.UsePacketParams{
+		AgentID:   agentID,
+		PacketID:  packet.PacketID,
+		Actor:     actor,
+		CommandID: focusCommandID,
+	})
+	if err != nil {
+		return contextStartData{}, err
+	}
+	data.Packet = packet
+	data.Focus = focus
+	data.FocusUsed = true
+	data.FocusIdempotent = focusIdempotent
+	return data, nil
+}
+
 func runContextSave(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("context save", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -171,61 +242,24 @@ func runContextSave(args []string, out io.Writer) error {
 		return err
 	}
 
-	summarizeCommandID := derivedCompositeCommandID(identity.CommandID, "summarize")
-	closeCommandID := derivedCompositeCommandID(identity.CommandID, "close")
-	packetCommandID := derivedCompositeCommandID(identity.CommandID, "packet")
-
-	resolution, err := resolveOpenSessionForMutation(ctx, s, *sessionID, summarizeCommandID)
+	result, err := saveIssueContinuity(ctx, s, *sessionID, "", *note, *closeSession, *reason, identity.Actor, identity.CommandID)
 	if err != nil {
 		return err
 	}
-	session, err := s.SummarizeSession(ctx, store.SummarizeSessionParams{
-		SessionID: resolution.sessionID,
-		Note:      *note,
-		Actor:     identity.Actor,
-		CommandID: summarizeCommandID,
-	})
-	if err != nil {
-		return err
-	}
-
-	if *closeSession {
-		session, err = s.CloseSession(ctx, store.CloseSessionParams{
-			SessionID: resolution.sessionID,
-			Reason:    *reason,
-			Actor:     identity.Actor,
-			CommandID: closeCommandID,
-		})
-		if err != nil {
-			return err
-		}
-	}
-
-	packet, err := s.BuildRehydratePacket(ctx, store.BuildPacketParams{
-		Scope:     "session",
-		ScopeID:   resolution.sessionID,
-		Actor:     identity.Actor,
-		CommandID: packetCommandID,
-	})
-	if err != nil {
-		return err
-	}
+	session := result.Data.Session
+	packet := result.Data.Packet
 
 	if *jsonOut {
 		return printJSON(out, jsonEnvelope{
 			ResponseSchemaVersion: responseSchemaVersion,
 			DBSchemaVersion:       dbVersion,
 			Command:               "context save",
-			Data: contextSaveData{
-				Session: session,
-				Packet:  packet,
-				Closed:  *closeSession,
-			},
+			Data:                  result.Data,
 		})
 	}
 
 	ui := newTextUI(out)
-	if msg := sessionResolutionMessage("summarize", resolution); msg != "" {
+	if msg := sessionResolutionMessage("summarize", result.Resolution); msg != "" {
 		ui.note(msg)
 	}
 	if *closeSession {
@@ -248,6 +282,72 @@ func runContextSave(args []string, out io.Writer) error {
 	}
 	ui.nextSteps(steps...)
 	return nil
+}
+
+type saveIssueContinuityResult struct {
+	Resolution sessionResolution
+	Data       contextSaveData
+}
+
+func saveIssueContinuity(
+	ctx context.Context,
+	s *store.Store,
+	sessionID string,
+	issueID string,
+	note string,
+	closeSession bool,
+	reason string,
+	actor string,
+	baseCommandID string,
+) (saveIssueContinuityResult, error) {
+	summarizeCommandID := derivedCompositeCommandID(baseCommandID, "summarize")
+	closeCommandID := derivedCompositeCommandID(baseCommandID, "close")
+	packetCommandID := derivedCompositeCommandID(baseCommandID, "packet")
+
+	resolution, err := resolveSessionForContinuitySave(ctx, s, sessionID, issueID, summarizeCommandID)
+	if err != nil {
+		return saveIssueContinuityResult{}, err
+	}
+	session, err := s.SummarizeSession(ctx, store.SummarizeSessionParams{
+		SessionID: resolution.sessionID,
+		Note:      note,
+		Actor:     actor,
+		CommandID: summarizeCommandID,
+	})
+	if err != nil {
+		return saveIssueContinuityResult{}, err
+	}
+
+	if closeSession {
+		session, err = s.CloseSession(ctx, store.CloseSessionParams{
+			SessionID: resolution.sessionID,
+			Reason:    reason,
+			Actor:     actor,
+			CommandID: closeCommandID,
+		})
+		if err != nil {
+			return saveIssueContinuityResult{}, err
+		}
+	}
+
+	packet, err := s.BuildRehydratePacket(ctx, store.BuildPacketParams{
+		Scope:     "session",
+		ScopeID:   resolution.sessionID,
+		Actor:     actor,
+		CommandID: packetCommandID,
+	})
+	if err != nil {
+		return saveIssueContinuityResult{}, err
+	}
+
+	return saveIssueContinuityResult{
+		Resolution: resolution,
+		Data: contextSaveData{
+			Session: session,
+			Packet:  packet,
+			Closed:  closeSession,
+		},
+	}, nil
 }
 
 func derivedCompositeCommandID(base, suffix string) string {

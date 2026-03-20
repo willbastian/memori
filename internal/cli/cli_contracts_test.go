@@ -320,6 +320,280 @@ func TestIssueDoneRequiresChildIssuesClosed(t *testing.T) {
 	}
 }
 
+func TestDefaultContinuityLoopHumanContract(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-default-loop-human.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-c111111",
+		"--type", "task",
+		"--title", "Default continuity loop",
+		"--command-id", "cmd-cli-default-loop-human-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-c111111",
+		"--status", "inprogress",
+		"--agent", "agent-loop-1",
+		"--command-id", "cmd-cli-default-loop-human-progress-1",
+	)
+	if err != nil {
+		t.Fatalf("issue update inprogress: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Continuity Started:")
+	mustContain(t, stdout, "Captured session ")
+	mustContain(t, stdout, "Refreshed issue packet ")
+	mustContain(t, stdout, "Updated agent agent-loop-1 focus to mem-c111111 via packet ")
+
+	stdout, stderr, err = runMemoriForTest("issue", "show", "--db", dbPath, "--key", "mem-c111111")
+	if err != nil {
+		t.Fatalf("issue show active: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Continuity State:")
+	mustContain(t, stdout, "Continuity Pressure:")
+	mustContain(t, stdout, "Open session sess_")
+	mustContain(t, stdout, "Resume:")
+	mustContain(t, stdout, "memori context resume --session sess_")
+
+	stdout, stderr, err = runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-c111111",
+		"--status", "blocked",
+		"--note", "waiting on review",
+		"--command-id", "cmd-cli-default-loop-human-blocked-1",
+	)
+	if err != nil {
+		t.Fatalf("issue update blocked: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Continuity Saved:")
+	mustContain(t, stdout, "Summarized session ")
+	mustContain(t, stdout, "Saved session packet ")
+
+	stdout, stderr, err = runMemoriForTest("issue", "show", "--db", dbPath, "--key", "mem-c111111")
+	if err != nil {
+		t.Fatalf("issue show blocked: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Continuity State:")
+	mustContain(t, stdout, "Continuity Pressure:")
+	mustContain(t, stdout, "mem-c111111 is blocked and its saved issue packet is stale; rebuild it before the next handoff.")
+	mustContain(t, stdout, "Resume:")
+	mustContain(t, stdout, "memori context resume --session sess_")
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "resume",
+		"--db", dbPath,
+		"--agent", "agent-loop-1",
+		"--command-id", "cmd-cli-default-loop-human-resume-1",
+	)
+	if err != nil {
+		t.Fatalf("context resume: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "OK Resumed session ")
+	mustContain(t, stdout, "via packet and updated focus for agent-loop-1")
+
+	stdout, stderr, err = runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-c111111",
+		"--status", "inprogress",
+		"--agent", "agent-loop-1",
+		"--command-id", "cmd-cli-default-loop-human-progress-2",
+	)
+	if err != nil {
+		t.Fatalf("issue update back to inprogress: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Continuity Started:")
+
+	seedManualCloseProofForContractTest(t, dbPath, "mem-c111111", "cmd-cli-default-loop-human-closeproof")
+
+	stdout, stderr, err = runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-c111111",
+		"--status", "done",
+		"--note", "completed implementation",
+		"--reason", "ready for close",
+		"--command-id", "cmd-cli-default-loop-human-done-1",
+	)
+	if err != nil {
+		t.Fatalf("issue update done: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Continuity Saved:")
+	mustContain(t, stdout, "Closed session ")
+	mustContain(t, stdout, "Saved session packet ")
+}
+
+func TestDefaultContinuityLoopJSONContract(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-default-loop-json.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-c111111",
+		"--type", "task",
+		"--title", "Default continuity loop json",
+		"--command-id", "cmd-cli-default-loop-json-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-c111111",
+		"--status", "inprogress",
+		"--agent", "agent-loop-json-1",
+		"--command-id", "cmd-cli-default-loop-json-progress-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("issue update inprogress: %v\nstderr: %s", err, stderr)
+	}
+	var updated issueEnvelope
+	if err := json.Unmarshal([]byte(stdout), &updated); err != nil {
+		t.Fatalf("decode issue update json: %v\nstdout: %s", err, stdout)
+	}
+	if updated.Command != "issue update" || updated.Data.Issue.Status != "InProgress" {
+		t.Fatalf("unexpected inprogress update response: %+v", updated)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"issue", "show",
+		"--db", dbPath,
+		"--key", "mem-c111111",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("issue show json: %v\nstderr: %s", err, stderr)
+	}
+	var shown issueEnvelope
+	if err := json.Unmarshal([]byte(stdout), &shown); err != nil {
+		t.Fatalf("decode issue show json: %v\nstdout: %s", err, stdout)
+	}
+	if shown.Command != "issue show" || shown.Data.Issue.Status != "InProgress" {
+		t.Fatalf("unexpected issue show response: %+v", shown)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-c111111",
+		"--status", "blocked",
+		"--note", "waiting on review",
+		"--command-id", "cmd-cli-default-loop-json-blocked-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("issue update blocked: %v\nstderr: %s", err, stderr)
+	}
+	if err := json.Unmarshal([]byte(stdout), &updated); err != nil {
+		t.Fatalf("decode blocked update json: %v\nstdout: %s", err, stdout)
+	}
+	if updated.Data.Issue.Status != "Blocked" {
+		t.Fatalf("expected blocked issue status, got %+v", updated)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "resume",
+		"--db", dbPath,
+		"--agent", "agent-loop-json-1",
+		"--command-id", "cmd-cli-default-loop-json-resume-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context resume: %v\nstderr: %s", err, stderr)
+	}
+	var resumed contextResumeEnvelope
+	if err := json.Unmarshal([]byte(stdout), &resumed); err != nil {
+		t.Fatalf("decode context resume json: %v\nstdout: %s", err, stdout)
+	}
+	if resumed.Command != "context resume" || resumed.Data.Source != "packet" || !resumed.Data.FocusUsed {
+		t.Fatalf("unexpected context resume response: %+v", resumed)
+	}
+	if resumed.Data.Packet.Scope != "issue" {
+		t.Fatalf("expected issue-scoped packet for focused resume, got %+v", resumed)
+	}
+	if resumed.Data.Focus.AgentID != "agent-loop-json-1" ||
+		resumed.Data.Focus.ActiveIssueID != "mem-c111111" ||
+		resumed.Data.Focus.LastPacketID == "" {
+		t.Fatalf("expected focused resume packet for agent-loop-json-1, got %+v", resumed)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-c111111",
+		"--status", "inprogress",
+		"--agent", "agent-loop-json-1",
+		"--command-id", "cmd-cli-default-loop-json-progress-2",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("issue update back to inprogress: %v\nstderr: %s", err, stderr)
+	}
+	if err := json.Unmarshal([]byte(stdout), &updated); err != nil {
+		t.Fatalf("decode second inprogress update json: %v\nstdout: %s", err, stdout)
+	}
+	if updated.Data.Issue.Status != "InProgress" {
+		t.Fatalf("expected issue to return to InProgress, got %+v", updated)
+	}
+
+	seedManualCloseProofForContractTest(t, dbPath, "mem-c111111", "cmd-cli-default-loop-json-closeproof")
+
+	stdout, stderr, err = runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-c111111",
+		"--status", "done",
+		"--note", "completed implementation",
+		"--reason", "ready for close",
+		"--command-id", "cmd-cli-default-loop-json-done-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("issue update done: %v\nstderr: %s", err, stderr)
+	}
+	if err := json.Unmarshal([]byte(stdout), &updated); err != nil {
+		t.Fatalf("decode done update json: %v\nstdout: %s", err, stdout)
+	}
+	if updated.Data.Issue.Status != "Done" {
+		t.Fatalf("expected done issue status, got %+v", updated)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "resume",
+		"--db", dbPath,
+		"--session", resumed.Data.SessionID,
+		"--command-id", "cmd-cli-default-loop-json-resume-2",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context resume after done: %v\nstderr: %s", err, stderr)
+	}
+	if err := json.Unmarshal([]byte(stdout), &resumed); err != nil {
+		t.Fatalf("decode post-done context resume json: %v\nstdout: %s", err, stdout)
+	}
+	if resumed.Data.Source != "packet" || resumed.Data.SessionID == "" {
+		t.Fatalf("expected packet-first resume contract after done, got %+v", resumed)
+	}
+}
+
 func TestEventLogRejectsUnknownEntityType(t *testing.T) {
 	t.Parallel()
 
@@ -438,5 +712,54 @@ func assertEnvelopeMetadata(t *testing.T, gotResponseSchemaVersion, gotDBSchemaV
 	}
 	if gotDBSchemaVersion < 0 {
 		t.Fatalf("expected non-negative db_schema_version, got %d", gotDBSchemaVersion)
+	}
+}
+
+func seedManualCloseProofForContractTest(t *testing.T, dbPath, issueID, commandPrefix string) {
+	t.Helper()
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	if _, _, err := s.CreateGateTemplate(ctx, store.CreateGateTemplateParams{
+		TemplateID:     strings.ReplaceAll(issueID, "-", "") + "-close",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"ref":"manual-validation"}}]}`,
+		Actor:          "human:alice",
+		CommandID:      commandPrefix + "-template-1",
+	}); err != nil {
+		t.Fatalf("create gate template: %v", err)
+	}
+	if _, _, err := s.InstantiateGateSet(ctx, store.InstantiateGateSetParams{
+		IssueID:      issueID,
+		TemplateRefs: []string{strings.ReplaceAll(issueID, "-", "") + "-close@1"},
+		Actor:        "test",
+		CommandID:    commandPrefix + "-instantiate-1",
+	}); err != nil {
+		t.Fatalf("instantiate gate set: %v", err)
+	}
+	if _, _, err := s.LockGateSet(ctx, store.LockGateSetParams{
+		IssueID:   issueID,
+		Actor:     "test",
+		CommandID: commandPrefix + "-lock-1",
+	}); err != nil {
+		t.Fatalf("lock gate set: %v", err)
+	}
+	if _, _, _, err := s.EvaluateGate(ctx, store.EvaluateGateParams{
+		IssueID: issueID,
+		GateID:  "build",
+		Result:  "PASS",
+		EvidenceRefs: []string{
+			"test://default-continuity-loop",
+		},
+		Actor:     "test",
+		CommandID: commandPrefix + "-evaluate-1",
+	}); err != nil {
+		t.Fatalf("evaluate gate: %v", err)
 	}
 }
