@@ -190,3 +190,40 @@ func TestContinuitySnapshotScopesSessionStateToRequestedIssue(t *testing.T) {
 		t.Fatalf("expected latest-open-issue source, got %+v", snapshot.Session)
 	}
 }
+
+func TestContinuitySnapshotNormalizesIssueKeyForSessionLookup(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   "mem-8181818",
+		Type:      "task",
+		Title:     "Normalized issue snapshot",
+		Actor:     "agent-1",
+		CommandID: "cmd-snapshot-normalized-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	if _, _, err := s.CheckpointSession(ctx, CheckpointSessionParams{
+		SessionID: "sess-snapshot-normalized-1",
+		IssueID:   "mem-8181818",
+		Trigger:   "manual",
+		Actor:     "agent-1",
+		CommandID: "cmd-snapshot-normalized-checkpoint-1",
+	}); err != nil {
+		t.Fatalf("checkpoint session: %v", err)
+	}
+
+	snapshot, err := s.ContinuitySnapshot(ctx, ContinuitySnapshotParams{IssueID: " MEM-8181818 "})
+	if err != nil {
+		t.Fatalf("continuity snapshot with normalized issue key: %v", err)
+	}
+	if !snapshot.Session.HasSession {
+		t.Fatalf("expected normalized issue key to resolve session snapshot, got %+v", snapshot.Session)
+	}
+	if snapshot.Session.Session.SessionID != "sess-snapshot-normalized-1" {
+		t.Fatalf("expected normalized issue key to resolve sess-snapshot-normalized-1, got %+v", snapshot.Session)
+	}
+}

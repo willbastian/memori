@@ -337,6 +337,12 @@ func runContextResume(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
+		if focusIdempotent && strings.TrimSpace(focus.LastPacketID) != "" && focus.LastPacketID != packet.PacketID {
+			packet, err = s.GetRehydratePacket(ctx, store.GetPacketParams{PacketID: focus.LastPacketID})
+			if err != nil {
+				return err
+			}
+		}
 		data.Packet = packet
 		data.Focus = focus
 		data.FocusUsed = true

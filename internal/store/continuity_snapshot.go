@@ -17,8 +17,9 @@ func (s *Store) ContinuitySnapshot(ctx context.Context, p ContinuitySnapshotPara
 
 	snapshot := ContinuitySnapshot{}
 
+	normalizedIssueID := ""
 	if issueID := strings.TrimSpace(p.IssueID); issueID != "" {
-		normalizedIssueID, err := normalizeIssueKey(issueID)
+		normalizedIssueID, err = normalizeIssueKey(issueID)
 		if err != nil {
 			return ContinuitySnapshot{}, err
 		}
@@ -37,7 +38,7 @@ func (s *Store) ContinuitySnapshot(ctx context.Context, p ContinuitySnapshotPara
 		snapshot.Agent = agentSnapshot
 	}
 
-	sessionSnapshot, err := continuitySessionSnapshotTx(ctx, tx, strings.TrimSpace(p.IssueID))
+	sessionSnapshot, err := continuitySessionSnapshotTx(ctx, tx, normalizedIssueID)
 	if err != nil {
 		return ContinuitySnapshot{}, err
 	}

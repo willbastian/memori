@@ -350,3 +350,81 @@ func TestContextResumeBuildsFocusedPacketWhenOnlyFallbackContextExists(t *testin
 		t.Fatalf("expected issue-focused resume, got %+v", resumed)
 	}
 }
+
+func TestContextResumeReplayKeepsFocusedPacketStable(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-context-resume-replay-stable.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"context", "checkpoint",
+		"--db", dbPath,
+		"--session", "sess-resume-replay-stable-1",
+		"--command-id", "cmd-cli-resume-replay-checkpoint-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context checkpoint: %v\nstderr: %s", err, stderr)
+	}
+	var checkpoint contextCheckpointEnvelope
+	if err := json.Unmarshal([]byte(stdout), &checkpoint); err != nil {
+		t.Fatalf("decode checkpoint json: %v\nstdout: %s", err, stdout)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "resume",
+		"--db", dbPath,
+		"--session", checkpoint.Data.Session.SessionID,
+		"--agent", "agent-resume-replay-stable-1",
+		"--command-id", "cmd-cli-resume-replay-run-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("first context resume: %v\nstderr: %s", err, stderr)
+	}
+	var firstResume contextResumeEnvelope
+	if err := json.Unmarshal([]byte(stdout), &firstResume); err != nil {
+		t.Fatalf("decode first resume json: %v\nstdout: %s", err, stdout)
+	}
+	if !firstResume.Data.FocusUsed || firstResume.Data.Packet.PacketID == "" {
+		t.Fatalf("expected first resume to focus a packet, got %+v", firstResume)
+	}
+
+	if _, stderr, err := runMemoriForTest(
+		"context", "checkpoint",
+		"--db", dbPath,
+		"--session", checkpoint.Data.Session.SessionID,
+		"--command-id", "cmd-cli-resume-replay-checkpoint-2",
+		"--json",
+	); err != nil {
+		t.Fatalf("later checkpoint on same session: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "resume",
+		"--db", dbPath,
+		"--session", checkpoint.Data.Session.SessionID,
+		"--agent", "agent-resume-replay-stable-1",
+		"--command-id", "cmd-cli-resume-replay-run-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("replayed context resume: %v\nstderr: %s", err, stderr)
+	}
+	var replayedResume contextResumeEnvelope
+	if err := json.Unmarshal([]byte(stdout), &replayedResume); err != nil {
+		t.Fatalf("decode replayed resume json: %v\nstdout: %s", err, stdout)
+	}
+	if !replayedResume.Data.FocusIdempotent {
+		t.Fatalf("expected replayed resume to be idempotent, got %+v", replayedResume)
+	}
+	if replayedResume.Data.Packet.PacketID != firstResume.Data.Packet.PacketID {
+		t.Fatalf("expected replayed resume packet %q to stay stable, got %+v", firstResume.Data.Packet.PacketID, replayedResume)
+	}
+	if replayedResume.Data.Focus.LastPacketID != firstResume.Data.Packet.PacketID {
+		t.Fatalf("expected replayed focus to keep last packet %q, got %+v", firstResume.Data.Packet.PacketID, replayedResume)
+	}
+}
