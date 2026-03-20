@@ -21,7 +21,7 @@ func TestHelpHumanOutputSeparatesHumanAndAgentWorkflows(t *testing.T) {
 	mustContain(t, stdout, "Agent Workflows:")
 	mustContain(t, stdout, "Create And Update Work:")
 	mustContain(t, stdout, "memori board [--db <path>] [--agent <id>] [--watch] [--interval <duration>] [--json]")
-	mustContain(t, stdout, "memori issue update --key <prefix-shortSHA> [--title <title>] [--status todo|inprogress|blocked|done|wontdo] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--agent <id>] [--continuity manual|assist|auto] [--note <text>] [--reason <text>] [--skip-continuity] [--actor <actor>] [--command-id <id>] [--json]")
+	mustContain(t, stdout, "memori issue update --key <prefix-shortSHA> [--title <title>] [--status todo|inprogress|blocked|done|wontdo] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--agent <id>] [--session <id>] [--continuity manual|assist|auto] [--note <text>] [--reason <text>] [--skip-continuity] [--actor <actor>] [--command-id <id>] [--json]")
 	mustContain(t, stdout, "memori context start --issue <prefix-shortSHA> [--agent <id>] [--session <id>] [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]")
 	mustContain(t, stdout, "memori context save [--session <id>] [--note <text>] [--close] [--reason <text>] [--actor <actor>] [--command-id <id>] [--json]")
 	mustContain(t, stdout, "memori context checkpoint [--session <id>] [--trigger <trigger>] [--actor <actor>] [--command-id <id>] [--json]")

@@ -171,6 +171,48 @@ func startIssueContinuity(
 	return result, nil
 }
 
+func refreshIssueContinuityPacket(
+	ctx context.Context,
+	s *store.Store,
+	issueID string,
+	agentID string,
+	actor string,
+	baseCommandID string,
+) (contextStartData, error) {
+	packetCommandID := derivedCompositeCommandID(baseCommandID, "post-update-packet")
+	focusCommandID := derivedCompositeCommandID(baseCommandID, "post-update-focus")
+
+	packet, err := s.BuildRehydratePacket(ctx, store.BuildPacketParams{
+		Scope:     "issue",
+		ScopeID:   issueID,
+		Actor:     actor,
+		CommandID: packetCommandID,
+	})
+	if err != nil {
+		return contextStartData{}, err
+	}
+
+	data := contextStartData{Packet: packet}
+	if strings.TrimSpace(agentID) == "" {
+		return data, nil
+	}
+
+	focus, packet, focusIdempotent, err := s.UseRehydratePacket(ctx, store.UsePacketParams{
+		AgentID:   agentID,
+		PacketID:  packet.PacketID,
+		Actor:     actor,
+		CommandID: focusCommandID,
+	})
+	if err != nil {
+		return contextStartData{}, err
+	}
+	data.Packet = packet
+	data.Focus = focus
+	data.FocusUsed = true
+	data.FocusIdempotent = focusIdempotent
+	return data, nil
+}
+
 func runContextSave(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("context save", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)

@@ -167,6 +167,11 @@ type UsePacketParams struct {
 	CommandID string
 }
 
+type PreviewIssueUpdateResult struct {
+	Issue      Issue
+	Idempotent bool
+}
+
 type ListOpenLoopsParams struct {
 	IssueID string
 	CycleNo *int

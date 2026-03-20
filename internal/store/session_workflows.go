@@ -374,6 +374,28 @@ func (s *Store) LatestSession(ctx context.Context) (Session, bool, error) {
 	return session, true, nil
 }
 
+func (s *Store) LatestSessionForIssue(ctx context.Context, issueID string) (Session, bool, error) {
+	normalizedIssueID, err := normalizeIssueKey(issueID)
+	if err != nil {
+		return Session{}, false, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Session{}, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	session, err := latestSessionForIssueTx(ctx, tx, normalizedIssueID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Session{}, false, nil
+		}
+		return Session{}, false, err
+	}
+	return session, true, nil
+}
+
 func (s *Store) SessionForCommand(ctx context.Context, commandID string) (Session, bool, error) {
 	commandID = strings.TrimSpace(commandID)
 	if commandID == "" {
@@ -409,4 +431,32 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (Session, erro
 	defer tx.Rollback()
 
 	return sessionByIDTx(ctx, tx, sessionID)
+}
+
+func (s *Store) GetAgentFocus(ctx context.Context, agentID string) (AgentFocus, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return AgentFocus{}, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	return agentFocusByAgentTx(ctx, tx, agentID)
+}
+
+func (s *Store) OpenSessionCountForIssue(ctx context.Context, issueID string) (int, error) {
+	normalizedIssueID, err := normalizeIssueKey(issueID)
+	if err != nil {
+		return 0, err
+	}
+
+	var count int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(1)
+		FROM sessions
+		WHERE COALESCE(TRIM(ended_at), '') = ''
+		  AND TRIM(COALESCE(json_extract(checkpoint_json, '$.issue_id'), '')) = ?
+	`, normalizedIssueID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count open sessions for issue %q: %w", normalizedIssueID, err)
+	}
+	return count, nil
 }

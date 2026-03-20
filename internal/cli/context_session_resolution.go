@@ -128,6 +128,70 @@ func resolveSessionForRehydrate(ctx context.Context, s *store.Store, explicitSes
 	return sessionResolution{}, fmt.Errorf("no session found; start one with `memori context checkpoint` or pass --session <id>")
 }
 
+func resolveSessionForResume(ctx context.Context, s *store.Store, explicitSessionID, agentID string) (sessionResolution, error) {
+	if sessionID := strings.TrimSpace(explicitSessionID); sessionID != "" {
+		return sessionResolution{sessionID: sessionID, source: "explicit"}, nil
+	}
+	if resolution, found, err := resolveSessionFromAgentFocus(ctx, s, agentID); err != nil {
+		return sessionResolution{}, err
+	} else if found {
+		return resolution, nil
+	}
+	return resolveSessionForRehydrate(ctx, s, "")
+}
+
+func resolveSessionFromAgentFocus(ctx context.Context, s *store.Store, agentID string) (sessionResolution, bool, error) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return sessionResolution{}, false, nil
+	}
+
+	focus, found, err := s.GetAgentFocus(ctx, agentID)
+	if err != nil {
+		return sessionResolution{}, false, err
+	}
+	if !found {
+		return sessionResolution{}, false, nil
+	}
+
+	if packetID := strings.TrimSpace(focus.LastPacketID); packetID != "" {
+		packet, err := s.GetRehydratePacket(ctx, store.GetPacketParams{PacketID: packetID})
+		if err != nil {
+			return sessionResolution{}, false, err
+		}
+		if sessionID := strings.TrimSpace(packet.SessionID); sessionID != "" {
+			return sessionResolution{sessionID: sessionID, source: "agent-focus-session"}, true, nil
+		}
+		if issueID := strings.TrimSpace(packet.IssueID); issueID != "" {
+			if session, found, err := s.LatestOpenSessionForIssue(ctx, issueID); err != nil {
+				return sessionResolution{}, false, err
+			} else if found {
+				return sessionResolution{sessionID: session.SessionID, source: "agent-focus-issue-open"}, true, nil
+			}
+			if session, found, err := s.LatestSessionForIssue(ctx, issueID); err != nil {
+				return sessionResolution{}, false, err
+			} else if found {
+				return sessionResolution{sessionID: session.SessionID, source: "agent-focus-issue-latest"}, true, nil
+			}
+		}
+	}
+
+	if issueID := strings.TrimSpace(focus.ActiveIssueID); issueID != "" {
+		if session, found, err := s.LatestOpenSessionForIssue(ctx, issueID); err != nil {
+			return sessionResolution{}, false, err
+		} else if found {
+			return sessionResolution{sessionID: session.SessionID, source: "agent-focus-issue-open"}, true, nil
+		}
+		if session, found, err := s.LatestSessionForIssue(ctx, issueID); err != nil {
+			return sessionResolution{}, false, err
+		} else if found {
+			return sessionResolution{sessionID: session.SessionID, source: "agent-focus-issue-latest"}, true, nil
+		}
+	}
+
+	return sessionResolution{}, false, nil
+}
+
 func generatedSessionIDForCommand(commandID string) string {
 	commandID = strings.TrimSpace(commandID)
 	if commandID == "" {
@@ -160,6 +224,12 @@ func sessionResolutionMessage(action string, resolution sessionResolution) strin
 		if action == "summarize" {
 			return fmt.Sprintf("No --session supplied; summarizing the latest open session for this issue (%s).", resolution.sessionID)
 		}
+	case "agent-focus-session":
+		return fmt.Sprintf("No --session supplied; rehydrating the session currently associated with this agent's saved focus (%s).", resolution.sessionID)
+	case "agent-focus-issue-open":
+		return fmt.Sprintf("No --session supplied; rehydrating the latest open session for this agent's focused issue (%s).", resolution.sessionID)
+	case "agent-focus-issue-latest":
+		return fmt.Sprintf("No --session supplied; rehydrating the latest session for this agent's focused issue (%s).", resolution.sessionID)
 	case "latest-session":
 		return fmt.Sprintf("No --session supplied; rehydrating latest session %s.", resolution.sessionID)
 	case "generated-new":

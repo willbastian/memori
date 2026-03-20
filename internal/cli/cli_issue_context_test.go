@@ -255,11 +255,14 @@ func TestIssueUpdateInProgressStartsContinuityAndFocusForAgent(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &focusEvents); err != nil {
 		t.Fatalf("decode focus event log json: %v\nstdout: %s", err, stdout)
 	}
-	if len(focusEvents.Data.Events) != 1 || focusEvents.Data.Events[0].EventType != "focus.used" {
+	if len(focusEvents.Data.Events) != 2 || focusEvents.Data.Events[0].EventType != "focus.used" || focusEvents.Data.Events[1].EventType != "focus.used" {
 		t.Fatalf("expected focus.used event, got %+v", focusEvents.Data.Events)
 	}
 	if focusEvents.Data.Events[0].CommandID != "cmd-cli-start-continuity-update-1-focus" {
 		t.Fatalf("expected focus command id, got %+v", focusEvents.Data.Events[0])
+	}
+	if focusEvents.Data.Events[1].CommandID != "cmd-cli-start-continuity-update-1-post-update-focus" {
+		t.Fatalf("expected post-update focus command id, got %+v", focusEvents.Data.Events[1])
 	}
 
 	stdout, stderr, err = runMemoriForTest("issue", "show", "--db", dbPath, "--key", "mem-6666eee")
@@ -419,8 +422,8 @@ func TestIssueUpdateBlockedRejectsDifferentIssueOpenSession(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &shown); err != nil {
 		t.Fatalf("decode unaffected issue json: %v\nstdout: %s", err, stdout)
 	}
-	if shown.Data.Issue.Status != "Blocked" {
-		t.Fatalf("expected target issue status update to stick before continuity failure, got %+v", shown.Data.Issue)
+	if shown.Data.Issue.Status != "Todo" {
+		t.Fatalf("expected target issue status to remain unchanged after pre-update continuity failure, got %+v", shown.Data.Issue)
 	}
 
 	stdout, stderr, err = runMemoriForTest("context", "rehydrate", "--db", dbPath, "--json")
@@ -565,7 +568,7 @@ func TestIssueUpdateBlockedRequiresOpenSessionUnlessSkipped(t *testing.T) {
 		"--actor", "test",
 		"--command-id", "cmd-cli-blocked-requires-session-blocked-1",
 	)
-	if err == nil || !strings.Contains(err.Error(), "issue mem-8888aaa is now Blocked, but automatic continuity capture needs an open session") {
+	if err == nil || !strings.Contains(err.Error(), "automatic continuity capture failed for issue mem-8888aaa before the status update was applied") {
 		t.Fatalf("expected blocked continuity session error, got %v", err)
 	}
 	stdout, stderr, err := runMemoriForTest("issue", "show", "--db", dbPath, "--key", "mem-8888aaa", "--json")
@@ -576,8 +579,8 @@ func TestIssueUpdateBlockedRequiresOpenSessionUnlessSkipped(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &blocked); err != nil {
 		t.Fatalf("decode blocked issue json: %v\nstdout: %s", err, stdout)
 	}
-	if blocked.Data.Issue.Status != "Blocked" {
-		t.Fatalf("expected blocked status to persist after continuity failure, got %+v", blocked.Data.Issue)
+	if blocked.Data.Issue.Status != "InProgress" {
+		t.Fatalf("expected blocked status not to persist after continuity failure, got %+v", blocked.Data.Issue)
 	}
 	if _, _, _, err := s.CreateIssue(ctx, store.CreateIssueParams{
 		IssueID:   "mem-8888aab",
@@ -611,6 +614,91 @@ func TestIssueUpdateBlockedRequiresOpenSessionUnlessSkipped(t *testing.T) {
 	}
 	if strings.Contains(stdout, "Continuity Saved:") {
 		t.Fatalf("did not expect continuity save section when skip flag is set, got:\n%s", stdout)
+	}
+}
+
+func TestIssueUpdateBlockedRequiresExplicitSessionWhenIssueHasParallelOpenSessions(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-issue-update-blocked-parallel-sessions.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-8888aac",
+		"--type", "task",
+		"--title", "Parallel continuity session selection",
+		"--actor", "test",
+		"--command-id", "cmd-cli-blocked-parallel-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-8888aac",
+		"--status", "inprogress",
+		"--session", "sess-parallel-a",
+		"--actor", "test",
+		"--command-id", "cmd-cli-blocked-parallel-progress-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue update inprogress with first session: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"context", "start",
+		"--db", dbPath,
+		"--issue", "mem-8888aac",
+		"--session", "sess-parallel-b",
+		"--command-id", "cmd-cli-blocked-parallel-start-2",
+		"--json",
+	); err != nil {
+		t.Fatalf("context start second session: %v\nstderr: %s", err, stderr)
+	}
+
+	_, _, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-8888aac",
+		"--status", "blocked",
+		"--actor", "test",
+		"--command-id", "cmd-cli-blocked-parallel-blocked-1",
+	)
+	if err == nil || !strings.Contains(err.Error(), "automatic continuity capture is ambiguous") {
+		t.Fatalf("expected ambiguous session selection error, got %v", err)
+	}
+
+	stdout, stderr, err := runMemoriForTest("issue", "show", "--db", dbPath, "--key", "mem-8888aac", "--json")
+	if err != nil {
+		t.Fatalf("issue show after ambiguous blocked failure: %v\nstderr: %s", err, stderr)
+	}
+	var issueResp issueEnvelope
+	if err := json.Unmarshal([]byte(stdout), &issueResp); err != nil {
+		t.Fatalf("decode issue after ambiguous blocked failure: %v\nstdout: %s", err, stdout)
+	}
+	if issueResp.Data.Issue.Status != "InProgress" {
+		t.Fatalf("expected ambiguous auto-save failure to preserve in-progress status, got %+v", issueResp.Data.Issue)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-8888aac",
+		"--status", "blocked",
+		"--session", "sess-parallel-a",
+		"--note", "waiting on explicit review",
+		"--actor", "test",
+		"--command-id", "cmd-cli-blocked-parallel-blocked-2",
+	)
+	if err != nil {
+		t.Fatalf("issue update blocked with explicit session: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Summarized session sess-parallel-a.")
+	if strings.Contains(stdout, "Summarized session sess-parallel-b.") {
+		t.Fatalf("expected explicit session routing to avoid summarizing sess-parallel-b, got:\n%s", stdout)
 	}
 }
 

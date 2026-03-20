@@ -261,10 +261,12 @@ Humans and agents operate against the same ledger. The shortest path is: pick tr
 
 By default, issue lifecycle commands now maintain the right continuity artifacts for you:
 
-- `issue update --status inprogress` starts or continues the session, refreshes the issue packet, and updates agent focus when you pass `--agent`.
+- `issue update --status inprogress` starts or continues the session, refreshes the issue packet after the status write, and updates agent focus when you pass `--agent`.
 - `issue update --status blocked` summarizes the active session and saves a fresh session packet for handoff.
 - `issue update --status done` does the same and closes the session when the close transition succeeds.
-- `context resume` restores the latest session payload, and `--agent` refreshes focus in the same command.
+- `issue update --session <id>` lets you pin auto continuity to a specific session when the same issue has parallel work in flight.
+- If auto continuity cannot complete or session selection is ambiguous, the command now fails before the status write is applied.
+- `context resume` restores the latest session payload, and with `--agent` plus no `--session` it prefers the session associated with that agent's saved focus before falling back to the latest open session.
 
 Packets are useful in different ways:
 
@@ -573,6 +575,7 @@ For day-to-day work, the shortest path is usually:
 3. `memori issue update --key <issue> --status inprogress --agent <id>` to start work, refresh the issue packet, and align focus in one step.
 4. `memori issue show --key <issue>` before editing to inspect packet freshness, open sessions, and resume guidance.
 5. `memori issue update --key <issue> --status blocked --note "<handoff>"` or `--status done --note "<summary>" --reason "<close reason>"` to save a fresh session packet at pause or close.
+   If the same issue has multiple open sessions, add `--session <id>` so memori does not have to guess which session you are pausing or finishing.
 6. `memori context resume --agent <id>` when returning to paused work from the latest saved session packet.
 7. `memori gate template list --json` when you need to find a close template before locking gates for a cycle.
 8. `memori gate template pending --json` when you need to review executable templates that are still awaiting human approval.
@@ -627,8 +630,8 @@ For day-to-day work, the shortest path is usually:
 - `memori context loops`
 
 - `issue create`, `issue update`, `issue show`, and `issue next` surface continuity guidance when the work state makes it relevant.
-- `issue update --status inprogress` starts or continues continuity, refreshes the issue packet, and aligns focus when you pass `--agent <id>`.
-- `issue update --status blocked|done` saves continuity from the issue's active session; `issue show`, `issue next`, and `board` surface packet freshness, session availability, focus, and scoped resume hints.
+- `issue update --status inprogress` starts or continues continuity, refreshes the issue packet after the status write, and aligns focus when you pass `--agent <id>`.
+- `issue update --status blocked|done` saves continuity from the issue's active session; when the same issue has multiple open sessions, pass `--session <id>` to keep the save/close path explicit. `issue show`, `issue next`, and `board` surface packet freshness, session availability, focus, and scoped resume hints.
 
 ### Database operations
 

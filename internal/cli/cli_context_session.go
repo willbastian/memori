@@ -302,7 +302,7 @@ func runContextResume(args []string, out io.Writer) error {
 	}
 	defer s.Close()
 
-	resolution, err := resolveSessionForRehydrate(ctx, s, *sessionID)
+	resolution, err := resolveSessionForResume(ctx, s, *sessionID, *agentID)
 	if err != nil {
 		return err
 	}

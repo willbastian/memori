@@ -428,3 +428,74 @@ func TestContextResumeReplayKeepsFocusedPacketStable(t *testing.T) {
 		t.Fatalf("expected replayed focus to keep last packet %q, got %+v", firstResume.Data.Packet.PacketID, replayedResume)
 	}
 }
+
+func TestContextResumeWithoutSessionHonorsAgentFocusBeforeLatestOpen(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-context-resume-agent-focus.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	for _, issueKey := range []string{"mem-a111113", "mem-a111114"} {
+		if _, stderr, err := runMemoriForTest(
+			"issue", "create",
+			"--db", dbPath,
+			"--key", issueKey,
+			"--type", "task",
+			"--title", "Resume agent focus target",
+			"--command-id", "cmd-"+issueKey+"-create-1",
+			"--json",
+		); err != nil {
+			t.Fatalf("issue create %s: %v\nstderr: %s", issueKey, err, stderr)
+		}
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"context", "start",
+		"--db", dbPath,
+		"--issue", "mem-a111113",
+		"--session", "sess-agent-focus-a",
+		"--agent", "agent-focus-resume-1",
+		"--command-id", "cmd-cli-resume-agent-focus-start-a-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context start issue A: %v\nstderr: %s", err, stderr)
+	}
+	var startedA contextStartEnvelope
+	if err := json.Unmarshal([]byte(stdout), &startedA); err != nil {
+		t.Fatalf("decode issue A context start json: %v\nstdout: %s", err, stdout)
+	}
+
+	if _, stderr, err := runMemoriForTest(
+		"context", "start",
+		"--db", dbPath,
+		"--issue", "mem-a111114",
+		"--session", "sess-agent-focus-b",
+		"--command-id", "cmd-cli-resume-agent-focus-start-b-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("context start issue B: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"context", "resume",
+		"--db", dbPath,
+		"--agent", "agent-focus-resume-1",
+		"--command-id", "cmd-cli-resume-agent-focus-run-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("context resume via agent focus: %v\nstderr: %s", err, stderr)
+	}
+	var resumed contextResumeEnvelope
+	if err := json.Unmarshal([]byte(stdout), &resumed); err != nil {
+		t.Fatalf("decode agent-focus resume json: %v\nstdout: %s", err, stdout)
+	}
+	if resumed.Data.SessionID != startedA.Data.Session.SessionID {
+		t.Fatalf("expected resume without --session to honor focused session %q, got %+v", startedA.Data.Session.SessionID, resumed)
+	}
+	if resumed.Data.Focus.ActiveIssueID != "mem-a111113" {
+		t.Fatalf("expected focused resume to stay on issue A, got %+v", resumed)
+	}
+}
