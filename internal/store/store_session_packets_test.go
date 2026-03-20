@@ -907,3 +907,72 @@ func TestCheckpointSessionRejectsUnknownIssueBeforePersistingSession(t *testing.
 		t.Fatalf("expected rejected checkpoint to leave no persisted session, got %v", err)
 	}
 }
+
+func TestLatestSessionForIssueAndGetAgentFocus(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-a484848"
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Latest session and focus coverage",
+		Actor:     "agent-1",
+		CommandID: "cmd-latest-session-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+
+	session, created, err := s.CheckpointSession(ctx, CheckpointSessionParams{
+		SessionID: "sess-latest-session-1",
+		IssueID:   issueID,
+		Trigger:   "manual",
+		Actor:     "agent-1",
+		CommandID: "cmd-latest-session-checkpoint-1",
+	})
+	if err != nil {
+		t.Fatalf("checkpoint issue session: %v", err)
+	}
+	if !created {
+		t.Fatal("expected checkpoint to create the session")
+	}
+
+	packet, err := s.BuildRehydratePacket(ctx, BuildPacketParams{
+		Scope:     "issue",
+		ScopeID:   issueID,
+		Actor:     "agent-1",
+		CommandID: "cmd-latest-session-packet-1",
+	})
+	if err != nil {
+		t.Fatalf("build issue packet: %v", err)
+	}
+	if _, _, _, err := s.UseRehydratePacket(ctx, UsePacketParams{
+		AgentID:   "agent-focus-coverage-1",
+		PacketID:  packet.PacketID,
+		Actor:     "agent-1",
+		CommandID: "cmd-latest-session-focus-1",
+	}); err != nil {
+		t.Fatalf("use issue packet: %v", err)
+	}
+
+	latestSession, found, err := s.LatestSessionForIssue(ctx, issueID)
+	if err != nil {
+		t.Fatalf("latest session for issue: %v", err)
+	}
+	if !found || latestSession.SessionID != session.SessionID {
+		t.Fatalf("expected latest session %q, got found=%v session=%+v", session.SessionID, found, latestSession)
+	}
+
+	focus, found, err := s.GetAgentFocus(ctx, "agent-focus-coverage-1")
+	if err != nil {
+		t.Fatalf("get agent focus: %v", err)
+	}
+	if !found {
+		t.Fatal("expected agent focus to be present")
+	}
+	if focus.ActiveIssueID != issueID || focus.LastPacketID != packet.PacketID {
+		t.Fatalf("unexpected agent focus: %+v", focus)
+	}
+}
