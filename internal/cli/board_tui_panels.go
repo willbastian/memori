@@ -15,7 +15,7 @@ func boardListPanel(model boardTUIModel, theme boardTheme, width, height int) []
 		subtitle = fmt.Sprintf(" %d/%d ", visibleCount, totalCount)
 	}
 	header := theme.paintLine(theme.accentFG, theme.panelBG, true, padRight(title, width))
-	header = replaceSegment(header, maxInt(width-len(subtitle), len(title)), theme.paintLine(theme.mutedFG, theme.panelAltBG, false, subtitle))
+	header = replaceSegment(header, maxInt(width-visualWidth(subtitle), visualWidth(title)), theme.paintLine(theme.mutedFG, theme.panelAltBG, false, subtitle))
 	lines = append(lines, header)
 
 	rows := model.rows()
@@ -39,6 +39,7 @@ func boardListPanel(model boardTUIModel, theme boardTheme, width, height int) []
 	for idx := start; idx < end; idx++ {
 		row := rows[idx]
 		line := boardRenderListRow(model, row, model.lane == boardLaneNext, width)
+		line = padRight(line, width)
 		if idx == model.index {
 			line = theme.paintLine(theme.selectedFG, theme.selectedBG, true, line)
 		} else {
@@ -76,11 +77,15 @@ func boardRenderListRow(model boardTUIModel, row boardIssueRow, showScore bool, 
 	if trimmed := strings.TrimSpace(toggle); trimmed != "" {
 		lead += trimmed + " "
 	}
+	compactLead := boardCompactHierarchyLead(model, row)
+	if compactLead != "" {
+		compactLead += " "
+	}
 	switch {
 	case width < 28:
-		return truncateBoardLine(fmt.Sprintf(" %s %s %s%s%s", laneMarker, chip, prefix, row.Issue.Title, toggle), width)
+		return truncateBoardLine(fmt.Sprintf(" %s %s %s%s %s", laneMarker, chip, compactLead, issueID, row.Issue.Title), width)
 	case width < 40:
-		return truncateBoardLine(fmt.Sprintf(" %s %s %s%s", laneMarker, chip, lead, row.Issue.Title), width)
+		return truncateBoardLine(fmt.Sprintf(" %s %s %s%-8s %s", laneMarker, chip, compactLead, issueID, row.Issue.Title), width)
 	case showScore && row.Score > 0 && width >= 52:
 		return truncateBoardLine(fmt.Sprintf(" %s %-3s %s%-8s %s · s%d", laneMarker, chip, lead, issueID, row.Issue.Title, row.Score), width)
 	default:
@@ -173,6 +178,7 @@ func boardSearchPanel(model boardTUIModel, theme boardTheme, width, height int) 
 			fmt.Sprintf(" %-7s %-8s %s", strings.ToUpper(boardLaneTitle(result.lane)), boardDisplayIssueID(result.row.Issue.ID, width), result.row.Issue.Title),
 			width,
 		)
+		line = padRight(line, width)
 		if idx == model.searchIndex {
 			line = theme.paintLine(theme.selectedFG, theme.selectedBG, true, line)
 		} else {
@@ -216,4 +222,21 @@ func boardStatusPalette(theme boardTheme, status string) string {
 	default:
 		return theme.nextBG
 	}
+}
+
+func boardCompactHierarchyLead(model boardTUIModel, row boardIssueRow) string {
+	if !boardLaneSupportsHierarchy(model.lane) {
+		return ""
+	}
+
+	parts := make([]string, 0, 2)
+	if row.Hierarchy.HasChildren {
+		if toggle := strings.TrimSpace(boardHierarchyToggleToken(model.expanded[row.Issue.ID])); toggle != "" {
+			parts = append(parts, toggle)
+		}
+	}
+	if branch := strings.TrimSpace(boardListHierarchyPrefix(model, row)); branch != "" {
+		parts = append(parts, branch)
+	}
+	return strings.Join(parts, " ")
 }

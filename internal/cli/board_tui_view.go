@@ -147,17 +147,17 @@ func boardHeaderLine(model boardTUIModel, theme boardTheme, width int) string {
 	} else {
 		meta += " "
 	}
-	if len(meta) > width/2 {
+	if visualWidth(meta) > width/2 {
 		meta = truncateBoardLine(meta, width/2)
 	}
 	left := theme.paintLine(theme.titleFG, theme.titleBG, true, padRight(title, width))
-	rightStart := maxInt(width-len(meta), len(title))
+	rightStart := maxInt(width-visualWidth(meta), visualWidth(title))
 	return replaceSegment(left, rightStart, theme.paintLine(theme.accentFG, theme.titleMetaBG, true, meta))
 }
 
 func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
 	if width < 56 {
-		line := formatBoardTabsCompact(model)
+		line := formatBoardTabsCompact(model, width)
 		return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(line, width), width))
 	}
 	tabs := make([]string, 0, len(model.availableLanes()))
@@ -195,8 +195,8 @@ func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
 	}
 	help := theme.paintLine(theme.mutedFG, "", false, " h/l lanes  j/k move  f history  / search  [] tree  {} fold  enter detail  ? help  q quit ")
 	line := strings.Join(tabs, " ")
-	if len(stripANSI(line))+len(stripANSI(help))+1 <= width {
-		line += padRight("", width-len(stripANSI(line))-len(stripANSI(help))) + help
+	if visualWidth(line)+visualWidth(help)+1 <= width {
+		line += padRight("", width-visualWidth(line)-visualWidth(help)) + help
 	}
 	return padVisual(line, width)
 }
@@ -215,7 +215,7 @@ func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
 		return theme.paintLine(theme.mutedFG, "", false, padRight("No selectable issues", width))
 	}
 	if width < 40 {
-		footer := fmt.Sprintf(" %s %s ", boardDisplayIssueID(row.Issue.ID, width), truncateBoardLine(row.Issue.Title, maxInt(width-12, 8)))
+		footer := fmt.Sprintf(" %s %s %s ", boardDisplayIssueID(row.Issue.ID, width), boardCompactStatusLabel(row.Issue.Status), row.Issue.Title)
 		return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
 	}
 	scope := "ACTIONABLE"
@@ -300,7 +300,7 @@ func formatBoardSummaryCompact(summary boardSummary) string {
 	return strings.Join(parts, " ")
 }
 
-func formatBoardTabsCompact(model boardTUIModel) string {
+func formatBoardTabsCompact(model boardTUIModel, width int) string {
 	parts := []string{
 		fmt.Sprintf("N%d", model.issueCountForLane(boardLaneNext)),
 		fmt.Sprintf("A%d", model.issueCountForLane(boardLaneActive)),
@@ -318,7 +318,25 @@ func formatBoardTabsCompact(model boardTUIModel) string {
 	if model.showHistory {
 		scope = "all"
 	}
+	if width < 32 {
+		return fmt.Sprintf("%s %d | %s", strings.ToUpper(boardLaneTitle(model.lane)), model.issueCountForLane(model.lane), strings.Join(parts, " "))
+	}
 	return boardLaneTitle(model.lane) + " | " + scope + " | " + line
+}
+
+func boardCompactStatusLabel(status string) string {
+	switch status {
+	case "InProgress":
+		return "IP"
+	case "Blocked":
+		return "BLK"
+	case "Done":
+		return "DONE"
+	case "WontDo":
+		return "NO"
+	default:
+		return "TODO"
+	}
 }
 
 func boardHierarchyToggleToken(expanded bool) string {

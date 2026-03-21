@@ -43,13 +43,13 @@ func boardLikelyNextLimit(width int) int {
 
 func truncateBoardLine(value string, width int) string {
 	value = strings.TrimSpace(value)
-	if width <= 0 || len(value) <= width {
+	if width <= 0 || visualWidth(value) <= width {
 		return value
 	}
 	if width <= 3 {
-		return value[:width]
+		return trimVisual(value, width)
 	}
-	return value[:width-3] + "..."
+	return trimVisual(value, width-3) + "..."
 }
 
 func boardSnapshotSignature(snapshot boardSnapshot) string {

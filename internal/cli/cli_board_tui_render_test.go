@@ -58,6 +58,119 @@ func TestRenderBoardTUINarrowShowsSinglePaneAndHelp(t *testing.T) {
 	}
 }
 
+func TestBoardListPanelPadsColoredRowsToPanelWidth(t *testing.T) {
+	t.Parallel()
+
+	theme := boardTheme{
+		colors:     true,
+		accentFG:   "1;2;3",
+		panelBG:    "4;5;6",
+		mutedFG:    "7;8;9",
+		panelAltBG: "10;11;12",
+		selectedFG: "13;14;15",
+		selectedBG: "16;17;18",
+		taskFG:     "19;20;21",
+		detailFG:   "22;23;24",
+	}
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "First row")},
+			{Issue: boardTestIssue("mem-b222222", "Task", "Todo", "Second row")},
+		},
+	}, 32, 12)
+	model.lane = boardLaneReady
+	model = boardNormalizeModel(model)
+
+	lines := boardListPanel(model, theme, 32, 4)
+	for _, idx := range []int{1, 2} {
+		if got := len(stripANSI(lines[idx])); got != 32 {
+			t.Fatalf("expected rendered row %d to be padded to width 32, got %d (%q)", idx, got, stripANSI(lines[idx]))
+		}
+	}
+}
+
+func TestBoardSearchPanelPadsColoredRowsToPanelWidth(t *testing.T) {
+	t.Parallel()
+
+	theme := boardTheme{
+		colors:     true,
+		accentFG:   "1;2;3",
+		panelBG:    "4;5;6",
+		mutedFG:    "7;8;9",
+		panelAltBG: "10;11;12",
+		selectedFG: "13;14;15",
+		selectedBG: "16;17;18",
+		detailFG:   "19;20;21",
+	}
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Ready one")},
+		},
+		Blocked: []boardIssueRow{
+			{Issue: boardTestIssue("mem-b222222", "Bug", "Blocked", "Blocked match")},
+		},
+	}, 32, 12)
+	model.lane = boardLaneReady
+	model = boardNormalizeModel(model)
+
+	var quit bool
+	model, quit = boardHandleInput(model, boardKeyInput{action: boardActionSearchOpen})
+	if quit {
+		t.Fatalf("did not expect search open to quit")
+	}
+	model, quit = boardHandleInput(model, boardKeyInput{text: "b22"})
+	if quit {
+		t.Fatalf("did not expect text entry to quit")
+	}
+
+	lines := boardSearchPanel(model, theme, 32, 4)
+	if got := len(stripANSI(lines[2])); got != 32 {
+		t.Fatalf("expected rendered search row to be padded to width 32, got %d (%q)", got, stripANSI(lines[2]))
+	}
+}
+
+func TestBoardDetailPanelPadsColoredSectionLinesToPanelWidth(t *testing.T) {
+	t.Parallel()
+
+	theme := boardTheme{
+		colors:      true,
+		accentFG:    "1;2;3",
+		panelBG:     "4;5;6",
+		mutedFG:     "7;8;9",
+		panelAltBG:  "10;11;12",
+		detailFG:    "13;14;15",
+		metaFG:      "16;17;18",
+		titleMetaBG: "19;20;21",
+		readyFG:     "22;23;24",
+		readyBG:     "25;26;27",
+		keyFG:       "28;29;30",
+		nextBG:      "31;32;33",
+	}
+	issue := boardTestIssue("mem-a111111", "Task", "Todo", "Detail title")
+	issue.Description = "Description text for a narrow detail pane."
+	issue.Acceptance = "Acceptance text should not leave stale content behind."
+	issue.References = []string{"internal/cli/board_tui_detail_panel.go"}
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{
+			{
+				Issue:   issue,
+				Reasons: []string{"implementation-ready", "todo work is actionable"},
+			},
+		},
+	}, 40, 16)
+	model.lane = boardLaneReady
+	model.detailOpen = true
+	model = boardNormalizeModel(model)
+
+	lines := boardDetailPanel(model, theme, 40, 12)
+	for _, idx := range []int{5, 7, 9} {
+		if got := len(stripANSI(lines[idx])); got != 40 {
+			t.Fatalf("expected detail line %d to be padded to width 40, got %d (%q)", idx, got, stripANSI(lines[idx]))
+		}
+	}
+}
+
 func TestRenderBoardTUIShowsHierarchyCuesInListAndDetail(t *testing.T) {
 	t.Parallel()
 
@@ -330,11 +443,31 @@ func TestRenderBoardTUIVeryNarrowStillShowsTickets(t *testing.T) {
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
 		"BOARD",
-		"Ready |",
-		"a11111 A narrow pane",
+		"READY 1 |",
+		"a11111",
+		"A narrow pa",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected very narrow render to contain %q, got:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestRenderBoardTUIVeryNarrowFooterKeepsStatusAndIssueID(t *testing.T) {
+	t.Parallel()
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "A narrow pane should still show footer priority")},
+		},
+	}, 28, 14)
+
+	rendered := renderBoardTUI(model, false)
+	for _, want := range []string{
+		"a11111 TODO",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected very narrow footer to contain %q, got:\n%s", want, rendered)
 		}
 	}
 }
@@ -378,6 +511,54 @@ func TestRenderBoardTUINarrowDetailPrefersFullIssueContent(t *testing.T) {
 	}
 	if reasonsIndex != -1 && acceptanceIndex != -1 && reasonsIndex < acceptanceIndex {
 		t.Fatalf("expected reasons to come after acceptance details in narrow mode, got:\n%s", rendered)
+	}
+}
+
+func TestRenderBoardTUINarrowDetailPrioritizesCompactMetaAndHierarchy(t *testing.T) {
+	t.Parallel()
+
+	issue := boardTestIssue("mem-2f488f2", "Task", "Todo", "Add Darwin password prompt seams for deterministic auth coverage")
+	issue.Priority = "P2"
+	issue.Description = "Detail should keep compact metadata and hierarchy readable."
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{
+			{
+				Issue: issue,
+				Hierarchy: boardIssueHierarchy{
+					Depth:           2,
+					Path:            []string{"mem-127b139", "mem-c5cc217", "mem-2f488f2"},
+					AncestorIDs:     []string{"mem-127b139", "mem-c5cc217"},
+					ParentID:        "mem-c5cc217",
+					ParentTitle:     "Strengthen regression coverage",
+					ChildIDs:        []string{"mem-a111111", "mem-b222222", "mem-c333333"},
+					ChildCount:      3,
+					DescendantCount: 3,
+				},
+			},
+		},
+	}, 40, 18)
+	model.lane = boardLaneReady
+	model.detailOpen = true
+	model = boardNormalizeModel(model)
+
+	rendered := renderBoardTUI(model, false)
+	for _, want := range []string{
+		"2f488f2",
+		"Task",
+		"Todo",
+		"P2",
+		"p:c5cc217",
+		"path: ... > mem-2f488f2",
+		"children: 3",
+		"shape: d2 desc3",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected narrow detail render to contain %q, got:\n%s", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, "mem-a111111, mem-b222222") {
+		t.Fatalf("expected narrow hierarchy to avoid dumping full child id list, got:\n%s", rendered)
 	}
 }
 

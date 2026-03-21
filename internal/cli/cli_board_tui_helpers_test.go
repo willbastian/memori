@@ -36,12 +36,12 @@ func TestBoardStatusHelpersMapStatusesToCodesAndPalette(t *testing.T) {
 	t.Parallel()
 
 	theme := boardTheme{
-		activeBG:   "1;2;3",
-		blockedBG:  "4;5;6",
-		readyBG:    "7;8;9",
-		doneBG:     "10;11;12",
-		wontDoBG:   "13;14;15",
-		nextBG:     "16;17;18",
+		activeBG:  "1;2;3",
+		blockedBG: "4;5;6",
+		readyBG:   "7;8;9",
+		doneBG:    "10;11;12",
+		wontDoBG:  "13;14;15",
+		nextBG:    "16;17;18",
 	}
 
 	cases := []struct {
@@ -82,6 +82,25 @@ func TestBoardListRowShowsIssueIDAndScoreOnWideRows(t *testing.T) {
 	for _, want := range []string{">>", "mem-abcd123", "Refactor the giant file", "s7"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected wide board row to contain %q, got %q", want, got)
+		}
+	}
+}
+
+func TestBoardListRowKeepsIssueIDVisibleOnNarrowRows(t *testing.T) {
+	t.Parallel()
+
+	row := boardIssueRow{
+		Issue: store.Issue{
+			ID:     "mem-abcd123",
+			Status: "Todo",
+			Title:  "A narrow pane should still keep the issue id visible",
+		},
+	}
+
+	for _, width := range []int{24, 32} {
+		got := boardListRow(row, false, width)
+		if !strings.Contains(got, "abcd12") {
+			t.Fatalf("width %d: expected narrow row to keep short issue id visible, got %q", width, got)
 		}
 	}
 }
@@ -151,6 +170,48 @@ func TestBoardThemePaintLineHonorsColorMode(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "hello\x1b[0m") {
 		t.Fatalf("expected ANSI suffix, got %q", got)
+	}
+}
+
+func TestBoardVisualHelpersUseRenderedWidthInsteadOfBytes(t *testing.T) {
+	t.Parallel()
+
+	if got := visualWidth("éé"); got != 2 {
+		t.Fatalf("expected unicode width 2, got %d", got)
+	}
+	if got := visualWidth("\x1b[31méé\x1b[0m"); got != 2 {
+		t.Fatalf("expected ANSI-stripped unicode width 2, got %d", got)
+	}
+	if got := padRight("é", 3); visualWidth(got) != 3 {
+		t.Fatalf("expected padded unicode width 3, got %d (%q)", visualWidth(got), got)
+	}
+	if got := truncateBoardLine("éééééé", 5); got != "éé..." {
+		t.Fatalf("expected unicode truncation to respect rendered width, got %q", got)
+	}
+	if got := wrapText("éééé é", 10); len(got) != 1 || got[0] != "éééé é" {
+		t.Fatalf("expected unicode text to stay on one rendered-width line, got %#v", got)
+	}
+}
+
+func TestReplaceSegmentPreservesOuterANSIWrapper(t *testing.T) {
+	t.Parallel()
+
+	theme := boardTheme{colors: true}
+	line := theme.paintLine("1;2;3", "4;5;6", true, padRight(" HEADER ", 20))
+	segment := theme.paintLine("7;8;9", "10;11;12", true, " META ")
+
+	got := replaceSegment(line, 10, segment)
+	if visualWidth(got) != 20 {
+		t.Fatalf("expected replaced line to preserve rendered width 20, got %d (%q)", visualWidth(got), got)
+	}
+	if !strings.HasPrefix(got, "\x1b[1;38;2;1;2;3;48;2;4;5;6m") {
+		t.Fatalf("expected replaced line to retain outer style prefix, got %q", got)
+	}
+	if strings.Count(got, "\x1b[0m") < 3 {
+		t.Fatalf("expected replaced line to restyle prefix, segment, and suffix, got %q", got)
+	}
+	if !strings.Contains(stripANSI(got), "META") {
+		t.Fatalf("expected replaced line to include inserted meta text, got %q", stripANSI(got))
 	}
 }
 
