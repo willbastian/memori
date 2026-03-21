@@ -237,6 +237,7 @@ flowchart LR
     Start["Start or update issue<br/>issue create / issue update --status inprogress"]
     Work["Do the work<br/>human edits or agent execution"]
     Context["Maintain session + packet state<br/>issue update / context save / context resume"]
+    Contract{"Need an immutable<br/>close contract<br/>for this cycle?"}
     Template{"Approved gate template<br/>available for issue type?"}
     Review["Human reviews or approves<br/>gate template pending / approve"]
     Freeze["Freeze completion contract<br/>gate set instantiate + lock"]
@@ -247,7 +248,9 @@ flowchart LR
     Pick --> Start
     Start --> Work
     Work --> Context
-    Context --> Template
+    Context --> Contract
+    Contract -- no --> Close
+    Contract -- yes --> Template
     Template -- no --> Review
     Review --> Freeze
     Template -- yes --> Freeze

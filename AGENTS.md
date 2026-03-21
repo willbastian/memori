@@ -108,8 +108,9 @@ Before closing a task, run this checklist in order:
 8. Verify remote push succeeded and local branch is clean:
    - `git status --short`
    - `git log -1 --oneline`
-9. Satisfy close gates for the current cycle before marking `done`:
-   - Inspect available template versions when needed.
+9. Decide whether the current cycle should close ungated or under an immutable close contract:
+   - Ungated close is the default path. If the work does not need an immutable contract for this cycle, close it directly after validation and push.
+   - If the cycle should close under an immutable contract, inspect available template versions when needed.
    - `memori gate template list --json`
    - Instantiate the close gate set for the issue type.
    - `memori gate set instantiate --issue <issue_key> --command-id "<unique-id>" --json`
@@ -119,7 +120,8 @@ Before closing a task, run this checklist in order:
    - `memori gate set lock --issue <issue_key> --command-id "<unique-id>" --json`
    - Verify required gates.
    - `memori gate verify --issue <issue_key> --gate <gate_id> --command-id "<unique-id>" --json`
-10. Mark task `done` in memori only after push is successful and the close gates pass:
+   - If you later decide a previously closed issue now needs an immutable close contract, reopen it first so the contract applies to a new cycle instead of retroactively changing the earlier close.
+10. Mark task `done` in memori only after push is successful and, when gated, after the close gates pass:
    - `memori issue update --key <issue_key> --status done --command-id "<unique-id>" --json`
 11. Share closeout summary with:
    - Issue key, commit SHA, push target branch, validation run, and any follow-up tasks.
