@@ -7,16 +7,13 @@ import (
 
 func boardListPanel(model boardTUIModel, theme boardTheme, width, height int) []string {
 	lines := make([]string, 0, height)
-	title := fmt.Sprintf(" %s ", strings.ToUpper(boardLaneTitle(model.lane)))
 	visibleCount := len(model.rows())
 	totalCount := model.issueCountForLane(model.lane)
-	subtitle := fmt.Sprintf(" %d ", totalCount)
+	subtitle := fmt.Sprintf("%d visible", totalCount)
 	if visibleCount != totalCount {
-		subtitle = fmt.Sprintf(" %d/%d ", visibleCount, totalCount)
+		subtitle = fmt.Sprintf("%d/%d visible", visibleCount, totalCount)
 	}
-	header := theme.paintLine(theme.accentFG, theme.panelBG, true, padRight(title, width))
-	header = replaceSegment(header, maxInt(width-visualWidth(subtitle), visualWidth(title)), theme.paintLine(theme.mutedFG, theme.panelAltBG, false, subtitle))
-	lines = append(lines, header)
+	lines = append(lines, boardPanelHeader(theme, boardLaneTitle(model.lane), subtitle, width))
 
 	rows := model.rows()
 	if len(rows) == 0 {
@@ -127,7 +124,7 @@ func boardRowForeground(theme boardTheme, row boardIssueRow) string {
 
 func boardHelpPanel(theme boardTheme, width, height int) []string {
 	lines := []string{
-		theme.paintLine(theme.helpFG, theme.helpBG, true, padRight(" KEYBOARD ", width)),
+		boardPanelHeader(theme, "Keyboard", "Quick reference", width),
 		boardHelpLine(theme, "j / k", "move selection", width),
 		boardHelpLine(theme, "h / l", "switch lanes", width),
 		boardHelpLine(theme, "f", "toggle actionable/all work", width),
@@ -147,7 +144,7 @@ func boardHelpPanel(theme boardTheme, width, height int) []string {
 
 func boardSearchPanel(model boardTUIModel, theme boardTheme, width, height int) []string {
 	lines := make([]string, 0, height)
-	lines = append(lines, theme.paintLine(theme.accentFG, theme.panelBG, true, padRight(" SEARCH ", width)))
+	lines = append(lines, boardPanelHeader(theme, "Search", "Issue ids", width))
 	prompt := "/"
 	if model.searchQuery != "" {
 		prompt += model.searchQuery

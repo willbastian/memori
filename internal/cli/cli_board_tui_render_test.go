@@ -25,6 +25,7 @@ func TestRenderBoardTUIWideShowsDetailPane(t *testing.T) {
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
 		"MEMORI BOARD",
+		"SIGNAL DECK",
 		"NEXT 1",
 		"ISSUE DETAIL",
 		"mem-a111111 · Next one",
@@ -34,6 +35,24 @@ func TestRenderBoardTUIWideShowsDetailPane(t *testing.T) {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected wide render to contain %q, got:\n%s", want, rendered)
 		}
+	}
+}
+
+func TestRenderBoardSnapshotAddsIssueSignalsToHumanRows(t *testing.T) {
+	t.Parallel()
+
+	snapshot := boardSnapshot{
+		Ready: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Ready one")},
+		},
+	}
+
+	rendered, err := renderBoardSnapshot(snapshot, boardRenderOptions{Width: 80})
+	if err != nil {
+		t.Fatalf("render board snapshot: %v", err)
+	}
+	if !strings.Contains(rendered, "mem-a111111 Ready one [task/todo]") {
+		t.Fatalf("expected human board row to show issue signal, got:\n%s", rendered)
 	}
 }
 

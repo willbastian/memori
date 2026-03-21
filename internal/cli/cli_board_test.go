@@ -35,7 +35,7 @@ func TestBoardCommandHumanOutputShowsWorkBucketsAndLikelyNext(t *testing.T) {
 		"Ready (2):",
 		"mem-a111111 Active implementation",
 		"mem-b222222 Waiting on external fix",
-		"mem-c333333 Continuity-rich task [s300,focus,packet,loop,+5 more]",
+		"mem-c333333 Continuity-rich task [task/todo] [s300,focus,packet,loop,+5 more]",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("expected board output to contain %q, got:\n%s", want, stdout)

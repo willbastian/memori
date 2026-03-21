@@ -7,16 +7,23 @@ import (
 
 type boardTheme struct {
 	colors      bool
+	name        string
 	titleFG     string
 	titleBG     string
+	titleAltBG  string
 	titleMetaBG string
 	accentFG    string
+	accentBG    string
 	mutedFG     string
 	borderFG    string
 	selectedFG  string
 	selectedBG  string
 	panelBG     string
 	panelAltBG  string
+	panelHeadFG string
+	panelHeadBG string
+	panelMetaFG string
+	panelMetaBG string
 	helpBG      string
 	helpFG      string
 	detailFG    string
@@ -47,19 +54,26 @@ type boardDetailSection struct {
 	muted bool
 }
 
-func renderBoardTUI(model boardTUIModel, colors bool) string {
-	theme := boardTheme{
+func defaultBoardTheme(colors bool) boardTheme {
+	return boardTheme{
 		colors:      colors,
-		titleFG:     "241;245;249",
-		titleBG:     "15;23;42",
-		titleMetaBG: "30;41;59",
+		name:        "signal deck",
+		titleFG:     "248;250;252",
+		titleBG:     "12;18;32",
+		titleAltBG:  "18;27;46",
+		titleMetaBG: "31;41;72",
 		accentFG:    "103;232;249",
+		accentBG:    "10;36;58",
 		mutedFG:     "148;163;184",
 		borderFG:    "71;85;105",
 		selectedFG:  "248;250;252",
 		selectedBG:  "37;99;235",
-		panelBG:     "15;23;42",
+		panelBG:     "12;18;32",
 		panelAltBG:  "17;24;39",
+		panelHeadFG: "248;250;252",
+		panelHeadBG: "23;37;84",
+		panelMetaFG: "186;230;253",
+		panelMetaBG: "14;52;84",
 		helpBG:      "30;41;59",
 		helpFG:      "226;232;240",
 		detailFG:    "226;232;240",
@@ -83,6 +97,10 @@ func renderBoardTUI(model boardTUIModel, colors bool) string {
 		keyFG:       "251;191;36",
 		chromeFG:    "30;41;59",
 	}
+}
+
+func renderBoardTUI(model boardTUIModel, colors bool) string {
+	theme := defaultBoardTheme(colors)
 
 	width := maxInt(model.width, 24)
 	height := maxInt(model.height, 10)
@@ -137,22 +155,12 @@ func boardHeaderLine(model boardTUIModel, theme boardTheme, width int) string {
 		return theme.paintLine(theme.titleFG, theme.titleBG, true, padRight(truncateBoardLine(" BOARD "+formatBoardSummaryCompact(model.snapshot.Summary), width), width))
 	}
 	title := " MEMORI BOARD "
-	scope := " ACTIONABLE "
-	if model.showHistory {
-		scope = " ALL WORK "
-	}
-	meta := fmt.Sprintf(" %s%s", formatBoardSummary(model.snapshot.Summary, false), scope)
-	if model.snapshot.Agent != "" {
-		meta += fmt.Sprintf(" AGENT %s ", strings.ToUpper(model.snapshot.Agent))
-	} else {
-		meta += " "
-	}
-	if visualWidth(meta) > width/2 {
-		meta = truncateBoardLine(meta, width/2)
-	}
 	left := theme.paintLine(theme.titleFG, theme.titleBG, true, padRight(title, width))
-	rightStart := maxInt(width-visualWidth(meta), visualWidth(title))
-	return replaceSegment(left, rightStart, theme.paintLine(theme.accentFG, theme.titleMetaBG, true, meta))
+	accent := theme.paintLine(theme.keyFG, theme.titleAltBG, true, " SIGNAL DECK ")
+	left = replaceSegment(left, visualWidth(title), accent)
+	meta := boardHeaderMeta(model, theme, width)
+	rightStart := maxInt(width-visualWidth(meta), visualWidth(title)+visualWidth(accent))
+	return replaceSegment(left, rightStart, meta)
 }
 
 func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
@@ -224,6 +232,54 @@ func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
 	}
 	footer := fmt.Sprintf(" Selected %s  |  %s  |  %s  |  f:%s ", row.Issue.ID, row.Issue.Status, truncateBoardLine(row.Issue.Title, maxInt(width/2, 20)), scope)
 	return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
+}
+
+func boardHeaderMeta(model boardTUIModel, theme boardTheme, width int) string {
+	mode := " ACTIONABLE "
+	if model.showHistory {
+		mode = " ALL WORK "
+	}
+	parts := []string{
+		theme.paintLine(theme.accentFG, theme.titleMetaBG, true, " "+formatBoardHeaderSummary(model.snapshot.Summary)+" "),
+		theme.paintLine(theme.panelHeadFG, theme.accentBG, true, mode),
+	}
+	if model.snapshot.Agent != "" {
+		agent := " AGENT " + strings.ToUpper(model.snapshot.Agent) + " "
+		parts = append(parts, theme.paintLine(theme.keyFG, theme.titleAltBG, true, truncateBoardLine(agent, maxInt(width/3, 14))))
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatBoardHeaderSummary(summary boardSummary) string {
+	parts := []string{
+		fmt.Sprintf("T%d", summary.Total),
+		fmt.Sprintf("IP%d", summary.InProgress),
+		fmt.Sprintf("BLK%d", summary.Blocked),
+		fmt.Sprintf("RDY%d", summary.Todo),
+	}
+	if summary.Done > 0 {
+		parts = append(parts, fmt.Sprintf("D%d", summary.Done))
+	}
+	if summary.WontDo > 0 {
+		parts = append(parts, fmt.Sprintf("W%d", summary.WontDo))
+	}
+	return strings.Join(parts, " ")
+}
+
+func boardPanelHeader(theme boardTheme, label, subtitle string, width int) string {
+	label = strings.ToUpper(strings.TrimSpace(label))
+	if label == "" {
+		return padRight("", width)
+	}
+	base := theme.paintLine(theme.detailFG, theme.panelBG, false, padRight("", width))
+	head := theme.paintLine(theme.panelHeadFG, theme.panelHeadBG, true, " "+label+" ")
+	line := replaceSegment(base, 0, head)
+	if subtitle != "" {
+		meta := theme.paintLine(theme.panelMetaFG, theme.panelMetaBG, false, " "+strings.TrimSpace(subtitle)+" ")
+		start := maxInt(width-visualWidth(meta), visualWidth(head))
+		line = replaceSegment(line, start, meta)
+	}
+	return line
 }
 
 func boardJoinColumns(left, right []string, leftWidth, rightWidth int) []string {

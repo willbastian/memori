@@ -8,7 +8,7 @@ import (
 func boardDetailPanel(model boardTUIModel, theme boardTheme, width, height int) []string {
 	lines := make([]string, 0, height)
 	if !model.detailOpen {
-		lines = append(lines, theme.paintLine(theme.accentFG, theme.panelBG, true, padRight(" ISSUE DETAIL ", width)))
+		lines = append(lines, boardPanelHeader(theme, "Issue Detail", "Context", width))
 		lines = append(lines, theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(" press <enter> to expand the selected issue ", width)))
 		for len(lines) < height {
 			lines = append(lines, padRight("", width))
@@ -25,7 +25,7 @@ func boardDetailPanel(model boardTUIModel, theme boardTheme, width, height int) 
 		return lines
 	}
 
-	lines = append(lines, theme.paintLine(theme.accentFG, theme.panelBG, true, padRight(" ISSUE DETAIL ", width)))
+	lines = append(lines, boardPanelHeader(theme, "Issue Detail", "Context", width))
 	for _, line := range boardDetailIntroLines(row, theme, width) {
 		lines = append(lines, line)
 	}

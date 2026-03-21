@@ -487,6 +487,34 @@ In the interactive TUI:
 - `/` opens issue-id search and `enter` jumps to the selected result
 - `space` toggles the detail pane, `?` opens help, and `q` exits
 
+The current terminal visual direction is a "signal deck":
+
+- deep midnight panels carry the layout so issue text can stay calm and readable
+- high-contrast lane chips and badges carry status meaning instead of flooding the whole screen with color
+- hierarchy, continuity, and close-state signals are rendered as compact tokens that still survive plain ASCII fallbacks
+- the non-interactive board stays quieter than the full-screen TUI, but now uses the same tag language so both surfaces feel related
+
+Example wide-layout mockup:
+
+```text
+ MEMORI BOARD  SIGNAL DECK                                 T12 IP2 BLK1 RDY7  ACTIONABLE  AGENT WRITER-1
+ > NEXT 1 <   ACTIVE 2   BLOCKED 1   READY 7
+ READY                                            ISSUE DETAIL
+ .. task/todo  mem-a111111  Refresh stale packet  mem-a111111 · Refresh stale packet
+ .. story/todo mem-b222222  Tighten close gates   [ HIERARCHY ] .....
+ A  task/ip    mem-c333333  Ship replay fix         parent: mem-fffffff (Gate Ergonomics)
+                                                   [ REASONS ] .......
+                                                     matches the agent's active focus
+                                                     agent already holds the latest recovery packet
+```
+
+Tradeoffs and constraints behind that direction:
+
+- expressiveness lives mostly in chrome, badges, and headers so dense descriptions and acceptance criteria remain low-friction to scan
+- every visual cue keeps an ASCII/text equivalent; color improves speed but never carries the only meaning
+- the TUI gets the strongest treatment because it owns more screen area, while `board` output stays compatible with terminal history, logs, and copy/paste workflows
+- the palette intentionally avoids subtle low-contrast gradients that look good in screenshots but become muddy across common terminal themes and remoting setups
+
 The board surfaces:
 
 - active work (`InProgress`)

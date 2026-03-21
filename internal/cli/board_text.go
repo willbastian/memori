@@ -15,7 +15,7 @@ func renderBoardSnapshot(snapshot boardSnapshot, opts boardRenderOptions) (strin
 		width = 80
 	}
 
-	header := "memori board"
+	header := "memori board // signal deck"
 	if opts.Watch {
 		header = fmt.Sprintf("%s [%s]", header, snapshot.GeneratedAt)
 	}
@@ -106,7 +106,11 @@ func renderBoardSection(ui textUI, label string, rows []boardIssueRow, limit, wi
 }
 
 func formatBoardIssueRow(row boardIssueRow) string {
-	return fmt.Sprintf("%s %s", row.Issue.ID, row.Issue.Title)
+	line := fmt.Sprintf("%s %s", row.Issue.ID, row.Issue.Title)
+	if signal := boardIssueSignal(row, false); signal != "" {
+		line += " " + signal
+	}
+	return line
 }
 
 func formatBoardNextRow(row boardIssueRow) string {
@@ -119,6 +123,34 @@ func formatBoardNextRow(row boardIssueRow) string {
 		line += " [" + strings.Join(tags, ",") + "]"
 	}
 	return line
+}
+
+func boardIssueSignal(row boardIssueRow, colors bool) string {
+	typeLabel := strings.ToLower(strings.TrimSpace(row.Issue.Type))
+	if typeLabel == "" {
+		typeLabel = "issue"
+	}
+	statusLabel := boardStatusSignal(row.Issue.Status)
+	if colors {
+		typeLabel = colorize(true, colorForType(row.Issue.Type), typeLabel)
+		statusLabel = colorize(true, colorForStatus(row.Issue.Status), statusLabel)
+	}
+	return "[" + typeLabel + "/" + statusLabel + "]"
+}
+
+func boardStatusSignal(status string) string {
+	switch status {
+	case "InProgress":
+		return "ip"
+	case "Blocked":
+		return "blk"
+	case "Done":
+		return "done"
+	case "WontDo":
+		return "no"
+	default:
+		return "todo"
+	}
 }
 
 func compactReasons(reasons []string, limit int) []string {

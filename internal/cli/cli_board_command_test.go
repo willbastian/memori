@@ -121,7 +121,7 @@ func TestBoardCommandHumanOutputShowsSections(t *testing.T) {
 		"Ready (2):",
 		"mem-a121212 Baseline active task",
 		"mem-d454545 Blocked bug",
-		"mem-b343434 Continuity-heavy task [s300,focus,packet,loop,+5 more]",
+		"mem-b343434 Continuity-heavy task [task/todo] [s300,focus,packet,loop,+5 more]",
 		"Agent agent-board-1 focus points to mem-b343434 cycle 1 via packet",
 		"Latest issue packet",
 		"mem-b343434 is ready to resume and its saved issue packet is stale; rebuild it before the next handoff.",
