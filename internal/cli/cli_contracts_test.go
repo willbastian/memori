@@ -248,6 +248,84 @@ func TestIssueDoneAllowsUngatedClose(t *testing.T) {
 	}
 }
 
+func TestIssueDoneStillRequiresPassingLockedContract(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-done-locked-contract.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-a2a2a2a",
+		"--type", "task",
+		"--title", "Done locked contract test",
+		"--command-id", "cmd-cli-done-contract-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-a2a2a2a",
+		"--status", "inprogress",
+		"--command-id", "cmd-cli-done-contract-progress-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue update inprogress: %v\nstderr: %s", err, stderr)
+	}
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := s.CreateGateTemplate(context.Background(), store.CreateGateTemplateParams{
+		TemplateID:     "task-contract",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"review","kind":"check","required":true,"criteria":{"command":"echo verified"}}]}`,
+		Actor:          "human:alice",
+		CommandID:      "cmd-cli-done-contract-template-1",
+	}); err != nil {
+		t.Fatalf("create gate template via store: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	if _, stderr, err := runMemoriForTest(
+		"gate", "set", "instantiate",
+		"--db", dbPath,
+		"--issue", "mem-a2a2a2a",
+		"--template", "task-contract@1",
+		"--json",
+	); err != nil {
+		t.Fatalf("gate set instantiate: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"gate", "set", "lock",
+		"--db", dbPath,
+		"--issue", "mem-a2a2a2a",
+		"--json",
+	); err != nil {
+		t.Fatalf("gate set lock: %v\nstderr: %s", err, stderr)
+	}
+
+	_, _, err = runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-a2a2a2a",
+		"--status", "done",
+		"--command-id", "cmd-cli-done-contract-done-1",
+		"--json",
+	)
+	if err == nil || !strings.Contains(err.Error(), "required gates not PASS: review=MISSING") {
+		t.Fatalf("expected locked-contract failure, got: %v", err)
+	}
+}
+
 func TestIssueDoneRequiresChildIssuesClosed(t *testing.T) {
 	t.Parallel()
 
