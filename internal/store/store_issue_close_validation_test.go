@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestUpdateIssueStatusDoneRequiresLockedGateSet(t *testing.T) {
+func TestUpdateIssueStatusDoneAllowsUngatedClose(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -34,14 +34,33 @@ func TestUpdateIssueStatusDoneRequiresLockedGateSet(t *testing.T) {
 		t.Fatalf("move issue to inprogress: %v", err)
 	}
 
-	_, _, _, err = s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+	closed, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
 		IssueID:   issueID,
 		Status:    "done",
 		Actor:     "agent-1",
 		CommandID: "cmd-close-requires-lock-done-1",
 	})
-	if err == nil || !strings.Contains(err.Error(), "no locked gate set for current cycle") {
-		t.Fatalf("expected locked gate set requirement error, got: %v", err)
+	if err != nil {
+		t.Fatalf("expected ungated close to succeed: %v", err)
+	}
+	if closed.Status != "Done" {
+		t.Fatalf("expected issue status Done, got %s", closed.Status)
+	}
+
+	events, err := s.ListEventsForEntity(ctx, entityTypeIssue, issueID)
+	if err != nil {
+		t.Fatalf("list issue events: %v", err)
+	}
+	lastEvent := events[len(events)-1]
+	if lastEvent.EventType != eventTypeIssueUpdate {
+		t.Fatalf("expected last event %q, got %q", eventTypeIssueUpdate, lastEvent.EventType)
+	}
+	var payload issueUpdatedPayload
+	if err := json.Unmarshal([]byte(lastEvent.PayloadJSON), &payload); err != nil {
+		t.Fatalf("decode final issue.updated payload: %v", err)
+	}
+	if payload.CloseProof != nil {
+		t.Fatalf("expected ungated close to omit close proof, got %#v", payload.CloseProof)
 	}
 }
 

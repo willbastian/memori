@@ -119,7 +119,7 @@ func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID st
 		return nil, fmt.Errorf("close validation %w", err)
 	}
 	if !found {
-		return nil, fmt.Errorf("close validation failed for issue %q: no locked gate set for current cycle", issueID)
+		return nil, nil
 	}
 
 	rows, err := tx.QueryContext(ctx, `
