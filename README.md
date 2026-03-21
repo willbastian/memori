@@ -114,6 +114,7 @@ Stability expectations:
 - the CLI is usable today, but the product is still early and evolving
 - database migrations are supported forward through `memori db migrate`, but older binaries may not understand newer schema versions
 - automation should prefer JSON output and explicit command IDs where reproducibility matters
+- if you are working inside a checked-out `memori` repository, prefer `go run ./cmd/memori ...` over an installed `memori` binary so commands match the code and schema in your current branch
 
 Support expectations:
 
@@ -139,6 +140,13 @@ Install the CLI from source without cloning the repository:
 go install github.com/willbastian/memori/cmd/memori@latest
 memori version
 memori help
+```
+
+When you are developing or testing inside a checked-out `memori` repository, prefer the repo-local entrypoint instead of any installed binary:
+
+```bash
+go run ./cmd/memori version
+go run ./cmd/memori help
 ```
 
 If you want the current branch directly instead of the latest resolved module version, use:

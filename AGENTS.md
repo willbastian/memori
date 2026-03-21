@@ -10,8 +10,8 @@ Use `memori` for issue tracking in this repository.
 ## Default Setup
 - Default DB path: `.memori/memori.db`
 - You may override with `MEMORI_DB_PATH` when needed.
-- Run `memori init` before first use in a fresh clone/worktree.
-- If `memori` is not on `PATH`, use `go run ./cmd/memori` from the repo root for the same commands.
+- When working inside this repository, prefer `go run ./cmd/memori` from the repo root even if an installed `memori` binary is available. This keeps commands aligned with the checked-out code and current schema expectations.
+- Run `go run ./cmd/memori init` before first use in a fresh clone/worktree.
 - In sandboxed agent sessions, set `GOCACHE` to a writable temp or workspace path before `go run ./cmd/memori` so Go's build cache does not fail on restricted default cache locations. Prefer `GOCACHE=/tmp/memori-gocache`.
 
 ## Non-Interactive Agent Setup
@@ -25,7 +25,7 @@ export MEMORI_LLM_MODEL=gpt-5
 export MEMORI_ALLOW_MANUAL_COMMAND_ID=1
 ```
 
-Use the same environment for `go run ./cmd/memori ...` if the binary is not installed locally. Example:
+Use the same environment for repo-local `go run ./cmd/memori ...` commands. Example:
 
 ```bash
 env GOCACHE=/tmp/memori-gocache \
@@ -37,8 +37,10 @@ env GOCACHE=/tmp/memori-gocache \
 ```
 
 ## Required Agent Workflow
+Use `go run ./cmd/memori ...` for the commands below when you are operating inside this repository.
+
 1. Confirm DB is initialized.
-   - `memori init --issue-prefix <project-prefix> --json`
+   - `go run ./cmd/memori init --issue-prefix <project-prefix> --json`
 2. Check for existing tracked work before creating something new.
    - `memori issue next --agent <agent_id> --json`
    - `memori board --agent <agent_id> --json`
