@@ -35,7 +35,7 @@ func (s *Store) InstantiateGateSet(ctx context.Context, p InstantiateGateSetPara
 		if err != nil {
 			return GateSet{}, false, err
 		}
-		gateSet, err := replayInstantiatedGateSetTx(ctx, tx, existingEvent, payload.GateSetID)
+		gateSet, err := replayInstantiatedGateSetTx(ctx, tx, payload)
 		if err != nil {
 			return GateSet{}, false, err
 		}
@@ -67,6 +67,18 @@ func (s *Store) InstantiateGateSet(ctx context.Context, p InstantiateGateSetPara
 	existing, found, err := gateSetForIssueCycleTx(ctx, tx, issueID, cycleNo)
 	if err != nil {
 		return GateSet{}, false, err
+	}
+	if !found || len(existing.Items) == 0 {
+		repaired, err := repairGateSetProjectionForIssueCycleTx(ctx, tx, issueID, cycleNo, false)
+		if err != nil {
+			return GateSet{}, false, err
+		}
+		if repaired {
+			existing, found, err = gateSetForIssueCycleTx(ctx, tx, issueID, cycleNo)
+			if err != nil {
+				return GateSet{}, false, err
+			}
+		}
 	}
 	if found {
 		existingRefs := normalizeReferences(existing.TemplateRefs)
@@ -178,7 +190,7 @@ func (s *Store) LockGateSet(ctx context.Context, p LockGateSetParams) (GateSet, 
 		if err != nil {
 			return GateSet{}, false, err
 		}
-		gateSet, err := replayLockedGateSetTx(ctx, tx, existingEvent, payload.GateSetID)
+		gateSet, err := replayLockedGateSetTx(ctx, tx, payload)
 		if err != nil {
 			return GateSet{}, false, err
 		}
@@ -212,6 +224,18 @@ func (s *Store) LockGateSet(ctx context.Context, p LockGateSetParams) (GateSet, 
 	gateSet, found, err := gateSetForIssueCycleTx(ctx, tx, issueID, cycleNo)
 	if err != nil {
 		return GateSet{}, false, err
+	}
+	if !found || len(gateSet.Items) == 0 {
+		repaired, err := repairGateSetProjectionForIssueCycleTx(ctx, tx, issueID, cycleNo, false)
+		if err != nil {
+			return GateSet{}, false, err
+		}
+		if repaired {
+			gateSet, found, err = gateSetForIssueCycleTx(ctx, tx, issueID, cycleNo)
+			if err != nil {
+				return GateSet{}, false, err
+			}
+		}
 	}
 	if !found {
 		return GateSet{}, false, fmt.Errorf("no gate set found for issue %q cycle %d", issueID, cycleNo)
@@ -272,42 +296,33 @@ func (s *Store) LockGateSet(ctx context.Context, p LockGateSetParams) (GateSet, 
 	return gateSet, lockedNow, nil
 }
 
-func replayInstantiatedGateSetTx(ctx context.Context, tx *sql.Tx, existingEvent Event, gateSetID string) (GateSet, error) {
-	gateSet, found, err := gateSetByIDTx(ctx, tx, gateSetID)
+func replayInstantiatedGateSetTx(ctx context.Context, tx *sql.Tx, payload gateSetInstantiatedPayload) (GateSet, error) {
+	if _, err := repairGateSetProjectionForIssueCycleTx(ctx, tx, payload.IssueID, payload.CycleNo, false); err != nil {
+		return GateSet{}, err
+	}
+	gateSet, found, err := gateSetByIDTx(ctx, tx, payload.GateSetID)
 	if err != nil {
 		return GateSet{}, err
 	}
 	if !found {
-		if err := applyGateSetInstantiatedProjectionTx(ctx, tx, existingEvent); err != nil {
-			return GateSet{}, err
-		}
-		gateSet, found, err = gateSetByIDTx(ctx, tx, gateSetID)
-		if err != nil {
-			return GateSet{}, err
-		}
-		if !found {
-			return GateSet{}, fmt.Errorf("gate set %q not found after replaying event %s", gateSetID, existingEvent.EventID)
-		}
+		return GateSet{}, fmt.Errorf("gate set %q not found after replaying instantiate projection", payload.GateSetID)
 	}
 	return gateSet, nil
 }
 
-func replayLockedGateSetTx(ctx context.Context, tx *sql.Tx, existingEvent Event, gateSetID string) (GateSet, error) {
-	gateSet, found, err := gateSetByIDTx(ctx, tx, gateSetID)
+func replayLockedGateSetTx(ctx context.Context, tx *sql.Tx, payload gateSetLockedPayload) (GateSet, error) {
+	if _, err := repairGateSetProjectionForIssueCycleTx(ctx, tx, payload.IssueID, payload.CycleNo, true); err != nil {
+		return GateSet{}, err
+	}
+	gateSet, found, err := gateSetByIDTx(ctx, tx, payload.GateSetID)
 	if err != nil {
 		return GateSet{}, err
 	}
 	if !found {
-		if err := applyGateSetLockedProjectionTx(ctx, tx, existingEvent); err != nil {
-			return GateSet{}, err
-		}
-		gateSet, found, err = gateSetByIDTx(ctx, tx, gateSetID)
-		if err != nil {
-			return GateSet{}, err
-		}
-		if !found {
-			return GateSet{}, fmt.Errorf("gate set %q not found after replaying event %s", gateSetID, existingEvent.EventID)
-		}
+		return GateSet{}, fmt.Errorf("gate set %q not found after replaying lock projection", payload.GateSetID)
+	}
+	if strings.TrimSpace(gateSet.LockedAt) == "" {
+		return GateSet{}, fmt.Errorf("gate set %q was not locked after replaying lock projection", payload.GateSetID)
 	}
 	return gateSet, nil
 }

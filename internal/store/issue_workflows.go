@@ -43,43 +43,62 @@ type lockedGateSet struct {
 }
 
 func lockedGateSetForIssueTx(ctx context.Context, tx *sql.Tx, issueID string) (lockedGateSet, bool, error) {
-	var gateSet lockedGateSet
+	var cycleNo int
 	err := tx.QueryRowContext(ctx, `
-		SELECT gs.gate_set_id, gs.gate_set_hash, gs.cycle_no, gs.locked_at
-		FROM gate_sets gs
-		INNER JOIN work_items wi
-			ON wi.id = gs.issue_id
-			AND wi.current_cycle_no = gs.cycle_no
-		WHERE gs.issue_id = ?
-			AND gs.locked_at IS NOT NULL
-		ORDER BY gs.cycle_no DESC
-		LIMIT 1
-	`, issueID).Scan(&gateSet.GateSetID, &gateSet.GateSetHash, &gateSet.CycleNo, &gateSet.LockedAt)
+		SELECT current_cycle_no
+		FROM work_items
+		WHERE id = ?
+	`, issueID).Scan(&cycleNo)
 	if errors.Is(err, sql.ErrNoRows) {
 		return lockedGateSet{}, false, nil
 	}
 	if err != nil {
-		return lockedGateSet{}, false, fmt.Errorf("query locked gate set for issue %q: %w", issueID, err)
+		return lockedGateSet{}, false, fmt.Errorf("query current cycle for issue %q: %w", issueID, err)
 	}
-	return gateSet, true, nil
+	return lockedGateSetForIssueCycleTx(ctx, tx, issueID, cycleNo)
 }
 
 func lockedGateSetForIssueCycleTx(ctx context.Context, tx *sql.Tx, issueID string, cycleNo int) (lockedGateSet, bool, error) {
-	var gateSet lockedGateSet
-	err := tx.QueryRowContext(ctx, `
+	queryLockedGateSet := func() (lockedGateSet, bool, error) {
+		var gateSet lockedGateSet
+		err := tx.QueryRowContext(ctx, `
 		SELECT gate_set_id, gate_set_hash, cycle_no, locked_at
 		FROM gate_sets
 		WHERE issue_id = ?
 			AND cycle_no = ?
 			AND locked_at IS NOT NULL
 	`, issueID, cycleNo).Scan(&gateSet.GateSetID, &gateSet.GateSetHash, &gateSet.CycleNo, &gateSet.LockedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return lockedGateSet{}, false, nil
+		if errors.Is(err, sql.ErrNoRows) {
+			return lockedGateSet{}, false, nil
+		}
+		if err != nil {
+			return lockedGateSet{}, false, fmt.Errorf("query locked gate set for issue %q cycle %d: %w", issueID, cycleNo, err)
+		}
+		return gateSet, true, nil
 	}
+
+	gateSet, found, err := queryLockedGateSet()
 	if err != nil {
-		return lockedGateSet{}, false, fmt.Errorf("query locked gate set for issue %q cycle %d: %w", issueID, cycleNo, err)
+		return lockedGateSet{}, false, err
 	}
-	return gateSet, true, nil
+	if found {
+		var itemCount int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(1)
+			FROM gate_set_items
+			WHERE gate_set_id = ?
+		`, gateSet.GateSetID).Scan(&itemCount); err != nil {
+			return lockedGateSet{}, false, fmt.Errorf("query gate items for gate set %q: %w", gateSet.GateSetID, err)
+		}
+		if itemCount > 0 {
+			return gateSet, true, nil
+		}
+	}
+
+	if _, err := repairGateSetProjectionForIssueCycleTx(ctx, tx, issueID, cycleNo, true); err != nil {
+		return lockedGateSet{}, false, err
+	}
+	return queryLockedGateSet()
 }
 
 func validateIssueCloseEligibilityTx(ctx context.Context, tx *sql.Tx, issueID string) (*IssueCloseAuthorization, error) {

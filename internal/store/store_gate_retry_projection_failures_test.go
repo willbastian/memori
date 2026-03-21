@@ -63,7 +63,7 @@ func TestApproveGateTemplateRetryFailsWhenTemplateProjectionIsMissing(t *testing
 	}
 }
 
-func TestLockGateSetRetryFailsWhenGateSetProjectionIsMissing(t *testing.T) {
+func TestLockGateSetRetryRepairsMissingGateSetProjection(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -132,12 +132,19 @@ func TestLockGateSetRetryFailsWhenGateSetProjectionIsMissing(t *testing.T) {
 		t.Fatalf("commit gate set cleanup tx: %v", err)
 	}
 
-	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{
+	locked, lockedNow, err := s.LockGateSet(ctx, LockGateSetParams{
 		IssueID:   "mem-c0ffee1",
 		Actor:     "agent-1",
 		CommandID: "cmd-lock-missing-projection-lock-1",
-	}); err == nil || !strings.Contains(err.Error(), `gate set "`+gateSet.GateSetID+`" not found`) {
-		t.Fatalf("expected lock replay to fail without gate set projection, got %v", err)
+	})
+	if err != nil {
+		t.Fatalf("expected lock retry to repair missing gate set projection, got %v", err)
+	}
+	if lockedNow {
+		t.Fatal("expected repaired lock retry to report existing lock state")
+	}
+	if locked.GateSetID != gateSet.GateSetID || strings.TrimSpace(locked.LockedAt) == "" || len(locked.Items) != 1 {
+		t.Fatalf("expected repaired locked gate set projection, got %#v", locked)
 	}
 }
 

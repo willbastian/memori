@@ -327,8 +327,11 @@ func TestGateCommandRetriesReapplyMissingProjectionsFromEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retry lock gate set: %v", err)
 	}
-	if lockedNow || strings.TrimSpace(locked.LockedAt) != "" || locked.GateSetID != gateSetID {
-		t.Fatalf("expected existing-event retry to return unlocked projected gate set, got %#v lockedNow=%v", locked, lockedNow)
+	if lockedNow {
+		t.Fatal("expected existing-event retry to report idempotent lock replay")
+	}
+	if strings.TrimSpace(locked.LockedAt) == "" || locked.GateSetID != gateSetID || len(locked.Items) != 1 {
+		t.Fatalf("expected existing-event retry to restore locked gate set projection, got %#v", locked)
 	}
 }
 

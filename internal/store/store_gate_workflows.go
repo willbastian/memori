@@ -50,6 +50,12 @@ func (s *Store) EvaluateGate(ctx context.Context, p EvaluateGateParams) (GateEva
 		if err != nil {
 			return GateEvaluation{}, Event{}, false, err
 		}
+		if _, err := repairGateSetProjectionByIDTx(ctx, tx, payload.IssueID, payload.GateSetID, true); err != nil {
+			return GateEvaluation{}, Event{}, false, err
+		}
+		if err := repairGateEvaluationProjectionThroughEventTx(ctx, tx, existingEvent, payload); err != nil {
+			return GateEvaluation{}, Event{}, false, err
+		}
 		if err := tx.Commit(); err != nil {
 			return GateEvaluation{}, Event{}, false, fmt.Errorf("commit tx: %w", err)
 		}

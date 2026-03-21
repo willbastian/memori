@@ -123,12 +123,35 @@ func (s *Store) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Ev
 }
 
 func (s *Store) GetIssue(ctx context.Context, id string) (Issue, error) {
-	issue, err := getIssueQueryable(ctx, s.db, id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Issue{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	issue, err := getIssueTx(ctx, tx, id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Issue{}, fmt.Errorf("issue %q not found", id)
 		}
 		return Issue{}, err
+	}
+
+	latestEvent, found, err := latestIssueProjectionEventTx(ctx, tx, issue.ID)
+	if err != nil {
+		return Issue{}, err
+	}
+	if found && strings.TrimSpace(issue.LastEventID) != latestEvent.EventID {
+		if err := repairIssueProjectionThroughEventTx(ctx, tx, issue.ID, latestEvent); err != nil {
+			return Issue{}, err
+		}
+		issue, err = getIssueTx(ctx, tx, issue.ID)
+		if err != nil {
+			return Issue{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return Issue{}, fmt.Errorf("commit tx: %w", err)
 	}
 	return issue, nil
 }
@@ -162,6 +185,9 @@ func (s *Store) PreviewIssueUpdate(ctx context.Context, p UpdateIssueParams) (Pr
 	} else if found {
 		if existingEvent.EventType != eventTypeIssueUpdate {
 			return PreviewIssueUpdateResult{}, fmt.Errorf("command id already used by %q", existingEvent.EventType)
+		}
+		if err := repairIssueProjectionThroughEventTx(ctx, tx, existingEvent.EntityID, existingEvent); err != nil {
+			return PreviewIssueUpdateResult{}, err
 		}
 		issue, err := getIssueTx(ctx, tx, existingEvent.EntityID)
 		if err != nil {
@@ -207,6 +233,9 @@ func (s *Store) UpdateIssue(ctx context.Context, p UpdateIssueParams) (Issue, Ev
 	} else if found {
 		if existingEvent.EventType != eventTypeIssueUpdate {
 			return Issue{}, Event{}, false, fmt.Errorf("command id already used by %q", existingEvent.EventType)
+		}
+		if err := repairIssueProjectionThroughEventTx(ctx, tx, existingEvent.EntityID, existingEvent); err != nil {
+			return Issue{}, Event{}, false, err
 		}
 		issue, err := getIssueTx(ctx, tx, existingEvent.EntityID)
 		if err != nil {

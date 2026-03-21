@@ -30,6 +30,30 @@ func findEventByActorCommandTx(ctx context.Context, tx *sql.Tx, actor, commandID
 	return Event{}, false, fmt.Errorf("check command idempotency: %w", err)
 }
 
+func eventByIDTx(ctx context.Context, tx *sql.Tx, eventID string) (Event, bool, error) {
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" {
+		return Event{}, false, nil
+	}
+
+	row := tx.QueryRowContext(ctx, `
+		SELECT
+			event_id, event_order, entity_type, entity_id, entity_seq,
+			event_type, payload_json, actor, command_id, causation_id,
+			correlation_id, created_at, hash, prev_hash, event_payload_version
+		FROM events
+		WHERE event_id = ?
+	`, eventID)
+	event, err := scanEvent(row)
+	if err == nil {
+		return event, true, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return Event{}, false, nil
+	}
+	return Event{}, false, fmt.Errorf("query event %q: %w", eventID, err)
+}
+
 func latestEventForEntityTx(ctx context.Context, tx *sql.Tx, entityType, entityID string) (Event, bool, error) {
 	row := tx.QueryRowContext(ctx, `
 		SELECT
