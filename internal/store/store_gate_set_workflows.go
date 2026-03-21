@@ -11,6 +11,19 @@ import (
 	"strings"
 )
 
+func rejectClosedCycleGateContract(issue Issue, cycleNo int, action string) error {
+	if issue.Status != "Done" && issue.Status != "WontDo" {
+		return nil
+	}
+	return fmt.Errorf(
+		"issue %q cycle %d is already %s; reopen it before %s",
+		issue.ID,
+		cycleNo,
+		issue.Status,
+		action,
+	)
+}
+
 func (s *Store) InstantiateGateSet(ctx context.Context, p InstantiateGateSetParams) (GateSet, bool, error) {
 	if p.Actor == "" {
 		p.Actor = defaultActor()
@@ -62,6 +75,9 @@ func (s *Store) InstantiateGateSet(ctx context.Context, p InstantiateGateSetPara
 	var cycleNo int
 	if err := tx.QueryRowContext(ctx, `SELECT current_cycle_no FROM work_items WHERE id = ?`, issueID).Scan(&cycleNo); err != nil {
 		return GateSet{}, false, fmt.Errorf("read current cycle for issue %q: %w", issueID, err)
+	}
+	if err := rejectClosedCycleGateContract(issue, cycleNo, "instantiating a close contract"); err != nil {
+		return GateSet{}, false, err
 	}
 
 	existing, found, err := gateSetForIssueCycleTx(ctx, tx, issueID, cycleNo)
@@ -205,10 +221,15 @@ func (s *Store) LockGateSet(ctx context.Context, p LockGateSetParams) (GateSet, 
 		return GateSet{}, false, err
 	}
 
-	if _, err := getIssueTx(ctx, tx, issueID); err != nil {
+	issue, err := getIssueTx(ctx, tx, issueID)
+	if err != nil {
 		return GateSet{}, false, err
 	}
 
+	currentCycleNo := 0
+	if err := tx.QueryRowContext(ctx, `SELECT current_cycle_no FROM work_items WHERE id = ?`, issueID).Scan(&currentCycleNo); err != nil {
+		return GateSet{}, false, fmt.Errorf("read current cycle for issue %q: %w", issueID, err)
+	}
 	cycleNo := 0
 	if p.CycleNo != nil {
 		if *p.CycleNo <= 0 {
@@ -216,8 +237,11 @@ func (s *Store) LockGateSet(ctx context.Context, p LockGateSetParams) (GateSet, 
 		}
 		cycleNo = *p.CycleNo
 	} else {
-		if err := tx.QueryRowContext(ctx, `SELECT current_cycle_no FROM work_items WHERE id = ?`, issueID).Scan(&cycleNo); err != nil {
-			return GateSet{}, false, fmt.Errorf("read current cycle for issue %q: %w", issueID, err)
+		cycleNo = currentCycleNo
+	}
+	if cycleNo == currentCycleNo {
+		if err := rejectClosedCycleGateContract(issue, cycleNo, "locking a close contract"); err != nil {
+			return GateSet{}, false, err
 		}
 	}
 

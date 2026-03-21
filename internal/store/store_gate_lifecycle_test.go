@@ -239,6 +239,121 @@ func TestListPendingExecutableGateTemplates(t *testing.T) {
 	}
 }
 
+func TestInstantiateGateSetRejectsClosedCurrentCycle(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-4141414"
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Closed cycle instantiate rejection",
+		Actor:     "agent-1",
+		CommandID: "cmd-closed-instantiate-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-closed-instantiate-progress-1",
+	}); err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "done",
+		Actor:     "agent-1",
+		CommandID: "cmd-closed-instantiate-done-1",
+	}); err != nil {
+		t.Fatalf("close issue: %v", err)
+	}
+	if _, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "closed-cycle-instantiate",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"review","kind":"check","required":true,"criteria":{"ref":"manual-validation"}}]}`,
+		Actor:          "human:alice",
+		CommandID:      "cmd-closed-instantiate-template-1",
+	}); err != nil {
+		t.Fatalf("create gate template: %v", err)
+	}
+
+	_, _, err := s.InstantiateGateSet(ctx, InstantiateGateSetParams{
+		IssueID:      issueID,
+		TemplateRefs: []string{"closed-cycle-instantiate@1"},
+		Actor:        "agent-1",
+		CommandID:    "cmd-closed-instantiate-gateset-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), `reopen it before instantiating a close contract`) {
+		t.Fatalf("expected closed-cycle instantiate rejection, got %v", err)
+	}
+}
+
+func TestLockGateSetRejectsClosedCurrentCycle(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-4242424"
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Closed cycle lock rejection",
+		Actor:     "agent-1",
+		CommandID: "cmd-closed-lock-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-closed-lock-progress-1",
+	}); err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+	if _, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "closed-cycle-lock",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"review","kind":"check","required":true,"criteria":{"ref":"manual-validation"}}]}`,
+		Actor:          "human:alice",
+		CommandID:      "cmd-closed-lock-template-1",
+	}); err != nil {
+		t.Fatalf("create gate template: %v", err)
+	}
+	if _, _, err := s.InstantiateGateSet(ctx, InstantiateGateSetParams{
+		IssueID:      issueID,
+		TemplateRefs: []string{"closed-cycle-lock@1"},
+		Actor:        "agent-1",
+		CommandID:    "cmd-closed-lock-gateset-1",
+	}); err != nil {
+		t.Fatalf("instantiate gate set before close: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "done",
+		Actor:     "agent-1",
+		CommandID: "cmd-closed-lock-done-1",
+	}); err != nil {
+		t.Fatalf("close issue: %v", err)
+	}
+
+	_, _, err := s.LockGateSet(ctx, LockGateSetParams{
+		IssueID:   issueID,
+		Actor:     "agent-1",
+		CommandID: "cmd-closed-lock-gatelock-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), `reopen it before locking a close contract`) {
+		t.Fatalf("expected closed-cycle lock rejection, got %v", err)
+	}
+}
+
 func TestApproveGateTemplateRemovesTemplateFromPendingList(t *testing.T) {
 	t.Parallel()
 

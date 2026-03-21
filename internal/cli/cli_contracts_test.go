@@ -621,6 +621,76 @@ func TestIssueDoneRequiresChildIssuesClosed(t *testing.T) {
 	}
 }
 
+func TestGateSetInstantiateRejectsClosedCurrentCycle(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-closed-cycle-gates.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-a4a4a4a",
+		"--type", "task",
+		"--title", "Closed cycle gate instantiate",
+		"--command-id", "cmd-cli-closed-cycle-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-a4a4a4a",
+		"--status", "inprogress",
+		"--command-id", "cmd-cli-closed-cycle-progress-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue update inprogress: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-a4a4a4a",
+		"--status", "done",
+		"--command-id", "cmd-cli-closed-cycle-done-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue update done: %v\nstderr: %s", err, stderr)
+	}
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := s.CreateGateTemplate(context.Background(), store.CreateGateTemplateParams{
+		TemplateID:     "closed-cycle-cli",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"review","kind":"check","required":true,"criteria":{"ref":"manual-validation"}}]}`,
+		Actor:          "human:alice",
+		CommandID:      "cmd-cli-closed-cycle-template-1",
+	}); err != nil {
+		t.Fatalf("create gate template via store: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	_, _, err = runMemoriForTest(
+		"gate", "set", "instantiate",
+		"--db", dbPath,
+		"--issue", "mem-a4a4a4a",
+		"--template", "closed-cycle-cli@1",
+		"--command-id", "cmd-cli-closed-cycle-gateset-1",
+		"--json",
+	)
+	if err == nil || !strings.Contains(err.Error(), "reopen it before instantiating a close contract") {
+		t.Fatalf("expected closed-cycle gate set rejection, got %v", err)
+	}
+}
+
 func TestDefaultContinuityLoopHumanContract(t *testing.T) {
 	t.Parallel()
 
