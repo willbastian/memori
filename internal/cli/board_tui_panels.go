@@ -132,6 +132,7 @@ func boardHelpPanel(theme boardTheme, width, height int) []string {
 		boardHelpLine(theme, "{ / }", "collapse / expand subtree", width),
 		boardHelpLine(theme, "g / G", "jump top / bottom", width),
 		boardHelpLine(theme, "/", "search visible issue ids", width),
+		boardHelpLine(theme, "c", "toggle detail / continuity", width),
 		boardHelpLine(theme, "enter", "toggle issue detail / confirm search", width),
 		boardHelpLine(theme, "?", "toggle help", width),
 		boardHelpLine(theme, "q", "quit", width),

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/willbastian/memori/internal/store"
@@ -29,7 +30,16 @@ var (
 	boardTUIEnterRawMode  = boardEnterRawMode
 	boardTUITerminalSize  = boardTerminalSize
 	boardTUIBuildSnapshot = buildBoardSnapshot
-	boardTUINow           = func() time.Time {
+	boardTUIBuildAudit    = func(ctx context.Context, s *store.Store, issueID, agent string) (store.ContinuityAuditSnapshot, error) {
+		if s == nil || strings.TrimSpace(issueID) == "" {
+			return store.ContinuityAuditSnapshot{}, nil
+		}
+		return s.ContinuityAuditSnapshot(ctx, store.ContinuityAuditSnapshotParams{
+			IssueID: issueID,
+			AgentID: agent,
+		})
+	}
+	boardTUINow = func() time.Time {
 		return time.Now().UTC()
 	}
 	boardTUINewTicker = func(interval time.Duration) boardTUITicker {
@@ -58,6 +68,10 @@ func runBoardTUI(ctx context.Context, s *store.Store, agent string, interval tim
 		return err
 	}
 	model := newBoardTUIModel(snapshot, width, height)
+	model, err = boardApplyContinuityAudit(ctx, s, agent, model)
+	if err != nil {
+		return err
+	}
 
 	renderFrame := func() error {
 		frame := renderBoardTUI(model, shouldUseColor(out))
@@ -90,6 +104,10 @@ func runBoardTUI(ctx context.Context, s *store.Store, agent string, interval tim
 			if quit {
 				return nil
 			}
+			model, err = boardApplyContinuityAudit(ctx, s, agent, model)
+			if err != nil {
+				return err
+			}
 			if err := renderFrame(); err != nil {
 				return err
 			}
@@ -100,11 +118,28 @@ func runBoardTUI(ctx context.Context, s *store.Store, agent string, interval tim
 				return err
 			}
 			model = boardApplySnapshot(model, snapshot, width, height)
+			model, err = boardApplyContinuityAudit(ctx, s, agent, model)
+			if err != nil {
+				return err
+			}
 			if err := renderFrame(); err != nil {
 				return err
 			}
 		}
 	}
+}
+
+func boardApplyContinuityAudit(ctx context.Context, s *store.Store, agent string, model boardTUIModel) (boardTUIModel, error) {
+	if s == nil || strings.TrimSpace(model.selectedIssue) == "" {
+		model.audit = store.ContinuityAuditSnapshot{}
+		return model, nil
+	}
+	audit, err := boardTUIBuildAudit(ctx, s, model.selectedIssue, agent)
+	if err != nil {
+		return model, err
+	}
+	model.audit = audit
+	return model, nil
 }
 
 func maxInt(a, b int) int {

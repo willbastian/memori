@@ -3,6 +3,8 @@ package cli
 import (
 	"strings"
 	"testing"
+
+	"github.com/willbastian/memori/internal/store"
 )
 
 func TestRenderBoardTUIWideShowsDetailPane(t *testing.T) {
@@ -34,6 +36,143 @@ func TestRenderBoardTUIWideShowsDetailPane(t *testing.T) {
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected wide render to contain %q, got:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestRenderBoardTUIWideShowsContinuityPane(t *testing.T) {
+	t.Parallel()
+
+	model := newBoardTUIModel(boardSnapshot{
+		LikelyNext: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Next one")},
+		},
+	}, 120, 28)
+	model.panelMode = boardPanelModeContinuity
+	model.audit = store.ContinuityAuditSnapshot{
+		Resolution: store.ContinuityResolution{
+			Source:       "agent-focus-session",
+			Status:       "fresh",
+			SessionID:    "sess-audit-1",
+			PacketID:     "pkt-audit-1",
+			PacketScope:  "session",
+			PacketSource: "packet",
+		},
+		Issue: store.IssueContinuitySnapshot{
+			IssueID:     "mem-a111111",
+			HasPacket:   true,
+			PacketFresh: true,
+			LatestPacket: store.RehydratePacket{
+				PacketID: "pkt-issue-1",
+			},
+		},
+		Sessions: []store.ContinuitySessionCandidate{
+			{
+				Session:      store.Session{SessionID: "sess-audit-1"},
+				Lifecycle:    "active",
+				HasPacket:    true,
+				HasSummary:   true,
+				IsSelected:   true,
+				ResolverNote: "agent focus selected this session directly",
+			},
+		},
+		SessionPackets: []store.ContinuityPacketCandidate{
+			{
+				Packet: store.RehydratePacket{PacketID: "pkt-audit-1", BuiltFromEventID: "evt-1"},
+				Status: "active",
+			},
+		},
+		RecentWrites: []store.ContinuityWrite{
+			{EventType: "session.checkpointed", EntityID: "sess-audit-1", CreatedAt: "2026-03-20T10:00:00Z"},
+		},
+	}
+
+	rendered := renderBoardTUI(model, false)
+	for _, want := range []string{
+		"CONTINUITY",
+		"[ DECISION ]",
+		"Resume looks healthy for this issue.",
+		"memori will resume from the session already tied to this agent's focus",
+		"[ CURRENT SESSION ]",
+		"sess-audit-1",
+		"[ NEXT STEP ]",
+		"memori context resume --session sess-audit-1",
+		"[ EVIDENCE ]",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected continuity render to contain %q, got:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestRenderBoardTUIContinuityPaneExplainsWeakHandoff(t *testing.T) {
+	t.Parallel()
+
+	model := newBoardTUIModel(boardSnapshot{
+		LikelyNext: []boardIssueRow{
+			{Issue: boardTestIssue("mem-dccbb32", "Story", "InProgress", "Implement the continuity inspection facet in the board TUI")},
+		},
+	}, 140, 28)
+	model.panelMode = boardPanelModeContinuity
+	model.audit = store.ContinuityAuditSnapshot{
+		Resolution: store.ContinuityResolution{
+			Source:       "latest-open-issue",
+			Status:       "fresh",
+			SessionID:    "sess_85471748e4fa",
+			PacketID:     "pkt_42f7cb9fac4f8072",
+			PacketScope:  "issue",
+			PacketSource: "issue-packet",
+		},
+		Issue: store.IssueContinuitySnapshot{
+			IssueID:     "mem-dccbb32",
+			HasPacket:   true,
+			PacketFresh: true,
+			LatestPacket: store.RehydratePacket{
+				PacketID: "pkt_42f7cb9fac4f8072",
+			},
+		},
+		Session: store.SessionContinuitySnapshot{
+			HasSession: true,
+			Session: store.Session{
+				SessionID: "sess_85471748e4fa",
+				StartedAt: "2026-03-21T01:52:00Z",
+			},
+		},
+		Sessions: []store.ContinuitySessionCandidate{
+			{
+				Session: store.Session{
+					SessionID: "sess_85471748e4fa",
+					StartedAt: "2026-03-21T01:52:00Z",
+				},
+				Lifecycle:    "active",
+				HasPacket:    false,
+				HasSummary:   false,
+				IsSelected:   true,
+				ResolverNote: "latest open session for this issue",
+			},
+		},
+		Alerts: []store.ContinuityAlert{
+			{
+				Level:   "warn",
+				Code:    "session-unsaved",
+				Message: "session sess_85471748e4fa has context chunks but no summary and no session packet",
+			},
+		},
+		RecentWrites: []store.ContinuityWrite{
+			{EventType: "session.checkpointed", EntityID: "sess_85471748e4fa", CreatedAt: "2026-03-21T01:52:00Z"},
+		},
+	}
+
+	rendered := renderBoardTUI(model, false)
+	for _, want := range []string{
+		"Resume is available, but handoff is weak.",
+		"if you stop now: the next worker will resume from raw context chunks",
+		"Best next step: save this session before handing it off.",
+		"memori context summarize --session sess_85471748e4fa",
+		"handoff is weak: work exists, but only raw session context has been saved",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected continuity handoff guidance to contain %q, got:\n%s", want, rendered)
 		}
 	}
 }

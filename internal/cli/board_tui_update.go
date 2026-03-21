@@ -24,6 +24,12 @@ func boardReduce(model boardTUIModel, action boardAction) boardTUIModel {
 		model.index = len(model.rows()) - 1
 	case boardActionToggleDetail:
 		model.detailOpen = !model.detailOpen
+	case boardActionToggleContinuity:
+		if model.panelMode == boardPanelModeContinuity {
+			model.panelMode = boardPanelModeDetail
+		} else {
+			model.panelMode = boardPanelModeContinuity
+		}
 	case boardActionToggleHelp:
 		model.helpOpen = !model.helpOpen
 	case boardActionParent:

@@ -129,7 +129,7 @@ func renderBoardTUI(model boardTUIModel, colors bool) string {
 		leftWidth := minInt(maxInt(width/2-2, 34), 44)
 		rightWidth := width - leftWidth - 3
 		left := boardListPanel(model, theme, leftWidth, bodyHeight)
-		right := boardDetailPanel(model, theme, rightWidth, bodyHeight)
+		right := boardSidePanel(model, theme, rightWidth, bodyHeight)
 		lines = append(lines, boardJoinColumns(left, right, leftWidth, rightWidth)...)
 	} else {
 		listHeight := bodyHeight
@@ -142,7 +142,7 @@ func renderBoardTUI(model boardTUIModel, colors bool) string {
 		lines = append(lines, boardListPanel(model, theme, width, listHeight)...)
 		if model.detailOpen {
 			lines = append(lines, theme.paintLine(theme.borderFG, "", false, strings.Repeat("-", width)))
-			lines = append(lines, boardDetailPanel(model, theme, width, bodyHeight-listHeight-1)...)
+			lines = append(lines, boardSidePanel(model, theme, width, bodyHeight-listHeight-1)...)
 		}
 	}
 
@@ -201,7 +201,7 @@ func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
 		}
 		tabs = append(tabs, theme.paintLine(fg, bg, bold, label))
 	}
-	help := theme.paintLine(theme.mutedFG, "", false, " h/l lanes  j/k move  f history  / search  [] tree  {} fold  enter detail  ? help  q quit ")
+	help := theme.paintLine(theme.mutedFG, "", false, " h/l lanes  j/k move  c panel  f history  / search  enter open  ? help  q quit ")
 	line := strings.Join(tabs, " ")
 	if visualWidth(line)+visualWidth(help)+1 <= width {
 		line += padRight("", width-visualWidth(line)-visualWidth(help)) + help
@@ -230,8 +230,17 @@ func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
 	if model.showHistory {
 		scope = "ALL WORK"
 	}
-	footer := fmt.Sprintf(" Selected %s  |  %s  |  %s  |  f:%s ", row.Issue.ID, row.Issue.Status, truncateBoardLine(row.Issue.Title, maxInt(width/2, 20)), scope)
+	footer := fmt.Sprintf(" Selected %s  |  %s  |  %s  |  panel:%s  |  f:%s ", row.Issue.ID, row.Issue.Status, truncateBoardLine(row.Issue.Title, maxInt(width/3, 18)), strings.ToUpper(boardPanelModeTitle(model.panelMode)), scope)
 	return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
+}
+
+func boardPanelModeTitle(mode boardPanelMode) string {
+	switch mode {
+	case boardPanelModeContinuity:
+		return "continuity"
+	default:
+		return "detail"
+	}
 }
 
 func boardHeaderMeta(model boardTUIModel, theme boardTheme, width int) string {

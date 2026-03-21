@@ -3,6 +3,8 @@ package cli
 import (
 	"sort"
 	"strings"
+
+	"github.com/willbastian/memori/internal/store"
 )
 
 type boardLane int
@@ -28,6 +30,7 @@ const (
 	boardActionTop
 	boardActionBottom
 	boardActionToggleDetail
+	boardActionToggleContinuity
 	boardActionToggleHelp
 	boardActionParent
 	boardActionChild
@@ -43,6 +46,13 @@ type boardKeyInput struct {
 	backspace bool
 }
 
+type boardPanelMode int
+
+const (
+	boardPanelModeDetail boardPanelMode = iota
+	boardPanelModeContinuity
+)
+
 type boardTUIModel struct {
 	snapshot      boardSnapshot
 	width         int
@@ -51,6 +61,7 @@ type boardTUIModel struct {
 	index         int
 	detailOpen    bool
 	helpOpen      bool
+	panelMode     boardPanelMode
 	selectedIssue string
 	expanded      map[string]bool
 	searchOpen    bool
@@ -59,6 +70,7 @@ type boardTUIModel struct {
 	searchOrigin  string
 	searchLane    boardLane
 	showHistory   bool
+	audit         store.ContinuityAuditSnapshot
 }
 
 func newBoardTUIModel(snapshot boardSnapshot, width, height int) boardTUIModel {
@@ -68,6 +80,7 @@ func newBoardTUIModel(snapshot boardSnapshot, width, height int) boardTUIModel {
 		height:     maxInt(height, 10),
 		lane:       boardLaneNext,
 		detailOpen: width >= 100,
+		panelMode:  boardPanelModeDetail,
 		expanded:   make(map[string]bool),
 	}
 	return boardNormalizeModel(model)

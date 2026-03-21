@@ -485,7 +485,8 @@ In the interactive TUI:
 - `[` jumps to the parent issue and `]` jumps to the first child
 - `{` collapses children and `}` expands them
 - `/` opens issue-id search and `enter` jumps to the selected result
-- `space` toggles the detail pane, `?` opens help, and `q` exits
+- `c` toggles the right-hand pane between issue detail and a continuity audit facet for the selected issue
+- `space` / `enter` open or close the lower pane on narrow layouts, `?` opens help, and `q` exits
 
 The current terminal visual direction is a "signal deck":
 
@@ -522,6 +523,7 @@ The board surfaces:
 - ready work (`Todo`) ranked from existing `issue next` guidance
 - full parent/child hierarchy context in the `Active` and `Ready` lanes so related adjacent work stays visible even when siblings or parents are in a different status
 - likely next work, including continuity signals such as focus, packets, open loops, and gate state
+- a continuity audit pane for the selected issue, including the resolved path, candidate sessions and packets, recent writes, and integrity alerts
 - completed and declined work through the all-work history view (`Done` and `WontDo`)
 - hierarchy context such as parent, child, depth, and sibling metadata for each issue
 - ambient continuity pressure for active, blocked, or resume-rich work when packets are stale, missing, or already helping

@@ -24,6 +24,7 @@ func TestReadBoardInputParsesAdditionalNavigationKeys(t *testing.T) {
 		{name: "top", input: "g", want: boardActionTop},
 		{name: "bottom", input: "G", want: boardActionBottom},
 		{name: "toggle help", input: "?", want: boardActionToggleHelp},
+		{name: "toggle continuity", input: "c", want: boardActionToggleContinuity},
 		{name: "toggle history", input: "f", want: boardActionToggleHistory},
 		{name: "parent", input: "[", want: boardActionParent},
 		{name: "child", input: "]", want: boardActionChild},

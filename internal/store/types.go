@@ -516,6 +516,69 @@ type ContinuitySnapshot struct {
 	Session SessionContinuitySnapshot `json:"session"`
 }
 
+type ContinuityAuditSnapshotParams struct {
+	IssueID string
+	AgentID string
+}
+
+type ContinuityAuditSnapshot struct {
+	Resolution     ContinuityResolution         `json:"resolution"`
+	Issue          IssueContinuitySnapshot      `json:"issue"`
+	Agent          AgentContinuitySnapshot      `json:"agent"`
+	Session        SessionContinuitySnapshot    `json:"session"`
+	Sessions       []ContinuitySessionCandidate `json:"sessions,omitempty"`
+	IssuePackets   []ContinuityPacketCandidate  `json:"issue_packets,omitempty"`
+	SessionPackets []ContinuityPacketCandidate  `json:"session_packets,omitempty"`
+	RecentWrites   []ContinuityWrite            `json:"recent_writes,omitempty"`
+	Alerts         []ContinuityAlert            `json:"alerts,omitempty"`
+}
+
+type ContinuityResolution struct {
+	Source          string `json:"source,omitempty"`
+	Status          string `json:"status,omitempty"`
+	SessionID       string `json:"session_id,omitempty"`
+	PacketID        string `json:"packet_id,omitempty"`
+	PacketScope     string `json:"packet_scope,omitempty"`
+	PacketSource    string `json:"packet_source,omitempty"`
+	UsedIssuePacket bool   `json:"used_issue_packet,omitempty"`
+	UsedFocus       bool   `json:"used_focus,omitempty"`
+}
+
+type ContinuitySessionCandidate struct {
+	Session         Session `json:"session"`
+	Lifecycle       string  `json:"lifecycle"`
+	HasSummary      bool    `json:"has_summary"`
+	HasPacket       bool    `json:"has_packet"`
+	PacketID        string  `json:"packet_id,omitempty"`
+	PacketCreatedAt string  `json:"packet_created_at,omitempty"`
+	ResolverNote    string  `json:"resolver_note,omitempty"`
+	IsSelected      bool    `json:"is_selected"`
+}
+
+type ContinuityPacketCandidate struct {
+	Packet              RehydratePacket `json:"packet"`
+	Status              string          `json:"status,omitempty"`
+	ResolverNote        string          `json:"resolver_note,omitempty"`
+	BuiltFromEventFound bool            `json:"built_from_event_found"`
+	IsSelected          bool            `json:"is_selected"`
+}
+
+type ContinuityWrite struct {
+	EventID    string `json:"event_id"`
+	EventType  string `json:"event_type"`
+	EntityType string `json:"entity_type"`
+	EntityID   string `json:"entity_id"`
+	Actor      string `json:"actor,omitempty"`
+	CommandID  string `json:"command_id,omitempty"`
+	CreatedAt  string `json:"created_at"`
+}
+
+type ContinuityAlert struct {
+	Level   string `json:"level"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
 type IssueContinuitySnapshot struct {
 	IssueID        string          `json:"issue_id,omitempty"`
 	CurrentCycleNo int             `json:"current_cycle_no,omitempty"`
