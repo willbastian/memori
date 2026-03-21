@@ -179,7 +179,7 @@ func TestGateTemplateCreateRequiresFile(t *testing.T) {
 	}
 }
 
-func TestIssueDoneRequiresLockedGateSet(t *testing.T) {
+func TestIssueDoneAllowsUngatedClose(t *testing.T) {
 	t.Parallel()
 
 	dbPath := filepath.Join(t.TempDir(), "memori-cli-done-requires-gates.db")
@@ -208,7 +208,7 @@ func TestIssueDoneRequiresLockedGateSet(t *testing.T) {
 		t.Fatalf("issue update inprogress: %v\nstderr: %s", err, stderr)
 	}
 
-	_, _, err := runMemoriForTest(
+	stdout, stderr, err := runMemoriForTest(
 		"issue", "update",
 		"--db", dbPath,
 		"--key", "mem-a1a1a1a",
@@ -216,8 +216,35 @@ func TestIssueDoneRequiresLockedGateSet(t *testing.T) {
 		"--command-id", "cmd-cli-done-gates-done-1",
 		"--json",
 	)
-	if err == nil || !strings.Contains(err.Error(), "no locked gate set for current cycle") {
-		t.Fatalf("expected done gate-set requirement error, got: %v", err)
+	if err != nil {
+		t.Fatalf("issue update done: %v\nstderr: %s", err, stderr)
+	}
+
+	var response struct {
+		Data struct {
+			Issue struct {
+				Status string `json:"status"`
+			} `json:"issue"`
+			Event struct {
+				PayloadJSON string `json:"payload_json"`
+			} `json:"event"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &response); err != nil {
+		t.Fatalf("decode done response: %v\nstdout: %s", err, stdout)
+	}
+	if response.Data.Issue.Status != "Done" {
+		t.Fatalf("expected Done status, got %q", response.Data.Issue.Status)
+	}
+
+	var payload struct {
+		CloseProof any `json:"close_proof"`
+	}
+	if err := json.Unmarshal([]byte(response.Data.Event.PayloadJSON), &payload); err != nil {
+		t.Fatalf("decode issue.updated payload: %v\npayload: %s", err, response.Data.Event.PayloadJSON)
+	}
+	if payload.CloseProof != nil {
+		t.Fatalf("expected ungated close to omit close_proof, got %#v", payload.CloseProof)
 	}
 }
 
