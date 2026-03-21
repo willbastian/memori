@@ -303,6 +303,7 @@ type issueUpdatedPayload struct {
 	AcceptanceCriteriaTo   *string                  `json:"acceptance_criteria_to,omitempty"`
 	ReferencesFrom         *[]string                `json:"references_from,omitempty"`
 	ReferencesTo           *[]string                `json:"references_to,omitempty"`
+	CloseMode              IssueCloseMode           `json:"close_mode,omitempty"`
 	CloseProof             *IssueCloseAuthorization `json:"close_proof,omitempty"`
 	UpdatedAt              string                   `json:"updated_at"`
 }
@@ -449,6 +450,13 @@ type IssueCloseGateProof struct {
 	EvidenceRefs []string             `json:"evidence_refs,omitempty"`
 	Proof        *GateEvaluationProof `json:"proof,omitempty"`
 }
+
+type IssueCloseMode string
+
+const (
+	IssueCloseModeUngated IssueCloseMode = "ungated"
+	IssueCloseModeGated   IssueCloseMode = "gated"
+)
 
 type IssueCloseAuthorization struct {
 	GateSetID   string                `json:"gate_set_id"`

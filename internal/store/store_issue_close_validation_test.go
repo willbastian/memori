@@ -59,6 +59,9 @@ func TestUpdateIssueStatusDoneAllowsUngatedClose(t *testing.T) {
 	if err := json.Unmarshal([]byte(lastEvent.PayloadJSON), &payload); err != nil {
 		t.Fatalf("decode final issue.updated payload: %v", err)
 	}
+	if payload.CloseMode != IssueCloseModeUngated {
+		t.Fatalf("expected ungated close mode, got %q", payload.CloseMode)
+	}
 	if payload.CloseProof != nil {
 		t.Fatalf("expected ungated close to omit close proof, got %#v", payload.CloseProof)
 	}
@@ -230,6 +233,9 @@ func TestUpdateIssueStatusDoneRequiresPassingLockedRequiredGates(t *testing.T) {
 	var payload issueUpdatedPayload
 	if err := json.Unmarshal([]byte(lastEvent.PayloadJSON), &payload); err != nil {
 		t.Fatalf("decode final issue.updated payload: %v", err)
+	}
+	if payload.CloseMode != IssueCloseModeGated {
+		t.Fatalf("expected gated close mode, got %q", payload.CloseMode)
 	}
 	if payload.CloseProof == nil {
 		t.Fatalf("expected close proof on Done payload")

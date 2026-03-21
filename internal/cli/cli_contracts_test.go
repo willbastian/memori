@@ -238,10 +238,14 @@ func TestIssueDoneAllowsUngatedClose(t *testing.T) {
 	}
 
 	var payload struct {
-		CloseProof any `json:"close_proof"`
+		CloseMode  string `json:"close_mode"`
+		CloseProof any    `json:"close_proof"`
 	}
 	if err := json.Unmarshal([]byte(response.Data.Event.PayloadJSON), &payload); err != nil {
 		t.Fatalf("decode issue.updated payload: %v\npayload: %s", err, response.Data.Event.PayloadJSON)
+	}
+	if payload.CloseMode != "ungated" {
+		t.Fatalf("expected ungated close_mode, got %q", payload.CloseMode)
 	}
 	if payload.CloseProof != nil {
 		t.Fatalf("expected ungated close to omit close_proof, got %#v", payload.CloseProof)

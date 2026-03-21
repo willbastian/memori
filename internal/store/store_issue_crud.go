@@ -397,6 +397,10 @@ func prepareIssueUpdateTx(ctx context.Context, tx *sql.Tx, currentIssue Issue, i
 		if err != nil {
 			return issueUpdatedPayload{}, false, "", err
 		}
+		payload.CloseMode = IssueCloseModeUngated
+		if closeProofValue != nil {
+			payload.CloseMode = IssueCloseModeGated
+		}
 		payload.CloseProof = closeProofValue
 	}
 
