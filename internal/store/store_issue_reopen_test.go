@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"testing"
 )
 
@@ -253,5 +254,134 @@ func TestReopenSupportsNewCycleGateSetAndReplay(t *testing.T) {
 	}
 	if len(gateSetEvents) != 2 || gateSetEvents[0].EventType != "gate_set.instantiated" || gateSetEvents[1].EventType != "gate_set.locked" {
 		t.Fatalf("unexpected gate set events: %#v", gateSetEvents)
+	}
+}
+
+func TestReopenSupportsUngatedCloseThenLaterGatedCycle(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-6969696"
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Reopen after ungated close",
+		Actor:     "agent-1",
+		CommandID: "cmd-reopen-ungated-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-reopen-ungated-progress-1",
+	}); err != nil {
+		t.Fatalf("move issue to inprogress: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "done",
+		Actor:     "agent-1",
+		CommandID: "cmd-reopen-ungated-done-1",
+	}); err != nil {
+		t.Fatalf("close issue ungated: %v", err)
+	}
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "inprogress",
+		Actor:     "agent-1",
+		CommandID: "cmd-reopen-ungated-inprogress-2",
+	}); err != nil {
+		t.Fatalf("reopen issue: %v", err)
+	}
+	if _, _, err := s.CreateGateTemplate(ctx, CreateGateTemplateParams{
+		TemplateID:     "reopen-ungated",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"go test ./..."}}]}`,
+		Actor:          "agent-1",
+		CommandID:      "cmd-reopen-ungated-template-1",
+	}); err != nil {
+		t.Fatalf("create gate template: %v", err)
+	}
+
+	cycle2, _, err := s.InstantiateGateSet(ctx, InstantiateGateSetParams{
+		IssueID:      issueID,
+		TemplateRefs: []string{"reopen-ungated@1"},
+		Actor:        "agent-1",
+		CommandID:    "cmd-reopen-ungated-gset-create-2",
+	})
+	if err != nil {
+		t.Fatalf("instantiate cycle 2 gate set: %v", err)
+	}
+	if cycle2.CycleNo != 2 {
+		t.Fatalf("expected cycle 2 gate set, got cycle %d", cycle2.CycleNo)
+	}
+	if _, _, err := s.LockGateSet(ctx, LockGateSetParams{
+		IssueID:   issueID,
+		Actor:     "agent-1",
+		CommandID: "cmd-reopen-ungated-gset-lock-2",
+	}); err != nil {
+		t.Fatalf("lock cycle 2 gate set: %v", err)
+	}
+	appendGateEvaluationEventForTest(t, s, issueID, cycle2.GateSetID, "build", "PASS", "agent-1", "cmd-reopen-ungated-gate-pass-2")
+	if _, _, _, err := s.UpdateIssueStatus(ctx, UpdateIssueStatusParams{
+		IssueID:   issueID,
+		Status:    "done",
+		Actor:     "agent-1",
+		CommandID: "cmd-reopen-ungated-done-2",
+	}); err != nil {
+		t.Fatalf("close issue with gated cycle 2: %v", err)
+	}
+
+	var (
+		cycleNo         int
+		activeGateSetID sql.NullString
+	)
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT current_cycle_no, active_gate_set_id
+		FROM work_items
+		WHERE id = ?
+	`, issueID).Scan(&cycleNo, &activeGateSetID); err != nil {
+		t.Fatalf("read final work item state: %v", err)
+	}
+	if cycleNo != 2 {
+		t.Fatalf("expected current_cycle_no 2, got %d", cycleNo)
+	}
+	if !activeGateSetID.Valid || activeGateSetID.String != cycle2.GateSetID {
+		t.Fatalf("expected active_gate_set_id %q, got %#v", cycle2.GateSetID, activeGateSetID)
+	}
+
+	events, err := s.ListEventsForEntity(ctx, entityTypeIssue, issueID)
+	if err != nil {
+		t.Fatalf("list issue events: %v", err)
+	}
+	donePayloads := make([]issueUpdatedPayload, 0, 2)
+	for _, event := range events {
+		if event.EventType != eventTypeIssueUpdate {
+			continue
+		}
+		var payload issueUpdatedPayload
+		if err := json.Unmarshal([]byte(event.PayloadJSON), &payload); err != nil {
+			t.Fatalf("decode issue.updated payload: %v", err)
+		}
+		if payload.StatusTo != nil && *payload.StatusTo == "Done" {
+			donePayloads = append(donePayloads, payload)
+		}
+	}
+	if len(donePayloads) != 2 {
+		t.Fatalf("expected two Done payloads, got %d", len(donePayloads))
+	}
+	if donePayloads[0].CloseMode != IssueCloseModeUngated || donePayloads[0].CloseProof != nil {
+		t.Fatalf("expected first Done payload to stay ungated, got %#v", donePayloads[0])
+	}
+	if donePayloads[1].CloseMode != IssueCloseModeGated || donePayloads[1].CloseProof == nil {
+		t.Fatalf("expected second Done payload to be gated, got %#v", donePayloads[1])
+	}
+	if donePayloads[1].CloseProof.GateSetID != cycle2.GateSetID {
+		t.Fatalf("expected cycle 2 close proof gate set %q, got %#v", cycle2.GateSetID, donePayloads[1].CloseProof)
 	}
 }

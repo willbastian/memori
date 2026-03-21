@@ -83,7 +83,7 @@ The CLI is the only product surface today. It writes append-only events, rebuild
 - `issue create`, `issue update`, `issue show`, `issue link`, `backlog`, `board`, and `issue next`
 - append-only event log with deterministic ordering and idempotent command handling
 - gate template creation, approval, instantiation, locking, evaluation, verification, and status inspection
-- close validation that requires a locked gate set, passing required gates, and closed child issues
+- close validation that always requires closed child issues, and requires passing gates only when the current cycle has a locked gate set
 - issue and session packet flows, open-loop tracking, session checkpoints, and rehydration
 - hierarchy-aware board snapshots plus an interactive TUI with parent/child navigation and `/` issue search
 - replay, migration, verification, and backup database operations
@@ -257,7 +257,7 @@ flowchart LR
     Resume --> Pick
 ```
 
-Humans and agents operate against the same ledger. The shortest path is: pick tracked work, move it into progress, do the work, let memori keep continuity current, freeze the close contract, verify the required proof, and only then mark the issue `done`.
+Humans and agents operate against the same ledger. The shortest path is: pick tracked work, move it into progress, do the work, let memori keep continuity current, and then either close the issue directly or freeze and verify a close contract for that cycle before marking the issue `done`.
 
 By default, issue lifecycle commands now maintain the right continuity artifacts for you:
 
@@ -361,7 +361,7 @@ That keeps the binary version, schema version, and migration audit aligned befor
 
 ### 1. Human-managed issue lifecycle
 
-This is the core issue-to-done path: create an issue, freeze its completion contract, verify the required gate, then close it.
+This is the most structured issue-to-done path: create an issue, optionally freeze a completion contract for the current cycle, verify the required gate, then close it.
 
 ```bash
 go run ./cmd/memori init --issue-prefix mem
@@ -396,7 +396,10 @@ What happens in this flow:
 - `gate set instantiate` auto-selects the single eligible template for the issue type when you omit `--template`; if more than one template family fits, the CLI tells you to choose explicitly
 - the gate set freezes the completion contract for the issue’s current cycle
 - `gate verify` executes the approved verifier command and stores evidence plus proof metadata
-- `issue update --status done` succeeds only if required gates pass and child issues are already closed
+- `issue update --status done` succeeds without gate setup when no locked close contract exists for the current cycle
+- once a gate set is locked for the current cycle, `issue update --status done` succeeds only if required gates pass and child issues are already closed
+
+If you close an issue ungated and later decide that future completion needs an immutable contract, reopen the issue first. Reopening advances the issue to a new cycle, clears the active gate set pointer, and gives the new cycle its own gate contract without rewriting the meaning of the earlier ungated close.
 
 Issue metadata can still be revised later with append-only updates, including title changes such as:
 
