@@ -297,6 +297,10 @@ func runIssueUpdate(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	closeRecord, _, err := store.DecodeIssueCloseRecordFromEvent(event)
+	if err != nil {
+		return err
+	}
 	if ranAutoStartedContinuity {
 		refreshedContinuity, err := refreshIssueContinuityPacket(ctx, s, issue.ID, *agentID, identity.Actor, identity.CommandID)
 		if err != nil {
@@ -317,6 +321,7 @@ func runIssueUpdate(args []string, out io.Writer) error {
 			Command:               "issue update",
 			Data: issueUpdateData{
 				Issue:      issue,
+				Close:      closeRecord,
 				Event:      event,
 				Idempotent: idempotent,
 			},
@@ -334,6 +339,12 @@ func runIssueUpdate(args []string, out io.Writer) error {
 		}
 	}
 	ui.field("Event", fmt.Sprintf("%s (%s #%d)", event.EventID, event.EventType, event.EventOrder))
+	if closeRecord != nil {
+		ui.field("Close", formatIssueCloseMode(closeRecord))
+		if closeRecord.Proof != nil {
+			ui.field("Gate Set", closeRecord.Proof.GateSetID)
+		}
+	}
 	if ranAutoStartedContinuity {
 		ui.blank()
 		ui.section("Continuity Started")
@@ -506,7 +517,8 @@ type issueLinkData struct {
 }
 
 type issueUpdateData struct {
-	Issue      store.Issue `json:"issue"`
-	Event      store.Event `json:"event"`
-	Idempotent bool        `json:"idempotent"`
+	Issue      store.Issue             `json:"issue"`
+	Close      *store.IssueCloseRecord `json:"close,omitempty"`
+	Event      store.Event             `json:"event"`
+	Idempotent bool                    `json:"idempotent"`
 }

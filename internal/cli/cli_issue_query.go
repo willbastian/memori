@@ -43,13 +43,20 @@ func runIssueShow(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	closeRecord, err := issueCloseRecordForDisplay(ctx, s, issue)
+	if err != nil {
+		return err
+	}
 
 	if *jsonOut {
 		return printJSON(out, jsonEnvelope{
 			ResponseSchemaVersion: responseSchemaVersion,
 			DBSchemaVersion:       dbVersion,
 			Command:               "issue show",
-			Data:                  issueShowData{Issue: issue},
+			Data: issueShowData{
+				Issue: issue,
+				Close: closeRecord,
+			},
 		})
 	}
 
@@ -86,6 +93,7 @@ func runIssueShow(args []string, out io.Writer) error {
 	ui.section("Timeline")
 	ui.field("Created", issue.CreatedAt)
 	ui.field("Updated", issue.UpdatedAt)
+	renderIssueCloseRecord(ui, closeRecord)
 	if !strings.EqualFold(issue.Type, "epic") {
 		snapshot, err := s.ContinuitySnapshot(ctx, store.ContinuitySnapshotParams{IssueID: issue.ID})
 		if err != nil {
@@ -212,7 +220,8 @@ func runIssueNext(args []string, out io.Writer) error {
 }
 
 type issueShowData struct {
-	Issue store.Issue `json:"issue"`
+	Issue store.Issue             `json:"issue"`
+	Close *store.IssueCloseRecord `json:"close,omitempty"`
 }
 
 type issueNextData struct {

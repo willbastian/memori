@@ -225,6 +225,10 @@ func TestIssueDoneAllowsUngatedClose(t *testing.T) {
 			Issue struct {
 				Status string `json:"status"`
 			} `json:"issue"`
+			Close *struct {
+				Mode  string `json:"mode"`
+				Proof any    `json:"proof"`
+			} `json:"close"`
 			Event struct {
 				PayloadJSON string `json:"payload_json"`
 			} `json:"event"`
@@ -235,6 +239,12 @@ func TestIssueDoneAllowsUngatedClose(t *testing.T) {
 	}
 	if response.Data.Issue.Status != "Done" {
 		t.Fatalf("expected Done status, got %q", response.Data.Issue.Status)
+	}
+	if response.Data.Close == nil || response.Data.Close.Mode != "ungated" {
+		t.Fatalf("expected ungated close summary, got %#v", response.Data.Close)
+	}
+	if response.Data.Close.Proof != nil {
+		t.Fatalf("expected ungated close summary to omit proof, got %#v", response.Data.Close.Proof)
 	}
 
 	var payload struct {
@@ -250,6 +260,40 @@ func TestIssueDoneAllowsUngatedClose(t *testing.T) {
 	if payload.CloseProof != nil {
 		t.Fatalf("expected ungated close to omit close_proof, got %#v", payload.CloseProof)
 	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"issue", "show",
+		"--db", dbPath,
+		"--key", "mem-a1a1a1a",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("issue show json: %v\nstderr: %s", err, stderr)
+	}
+	var shown struct {
+		Data struct {
+			Close *struct {
+				Mode string `json:"mode"`
+			} `json:"close"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &shown); err != nil {
+		t.Fatalf("decode issue show response: %v\nstdout: %s", err, stdout)
+	}
+	if shown.Data.Close == nil || shown.Data.Close.Mode != "ungated" {
+		t.Fatalf("expected issue show to report ungated close, got %#v", shown.Data.Close)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"issue", "show",
+		"--db", dbPath,
+		"--key", "mem-a1a1a1a",
+	)
+	if err != nil {
+		t.Fatalf("issue show text: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Close")
+	mustContain(t, stdout, "Ungated")
 }
 
 func TestIssueDoneStillRequiresPassingLockedContract(t *testing.T) {
@@ -328,6 +372,154 @@ func TestIssueDoneStillRequiresPassingLockedContract(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "required gates not PASS: review=MISSING") {
 		t.Fatalf("expected locked-contract failure, got: %v", err)
 	}
+}
+
+func TestIssueDoneReportsGatedCloseState(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-done-gated-close.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-a3a3a3a",
+		"--type", "task",
+		"--title", "Done gated close state test",
+		"--command-id", "cmd-cli-done-gated-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-a3a3a3a",
+		"--status", "inprogress",
+		"--command-id", "cmd-cli-done-gated-progress-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue update inprogress: %v\nstderr: %s", err, stderr)
+	}
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := s.CreateGateTemplate(context.Background(), store.CreateGateTemplateParams{
+		TemplateID:     "task-gated-close",
+		Version:        1,
+		AppliesTo:      []string{"task"},
+		DefinitionJSON: `{"gates":[{"id":"review","kind":"check","required":true,"criteria":{"command":"echo verified"}}]}`,
+		Actor:          "human:alice",
+		CommandID:      "cmd-cli-done-gated-template-1",
+	}); err != nil {
+		t.Fatalf("create gate template via store: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	if _, stderr, err := runMemoriForTest(
+		"gate", "set", "instantiate",
+		"--db", dbPath,
+		"--issue", "mem-a3a3a3a",
+		"--template", "task-gated-close@1",
+		"--json",
+	); err != nil {
+		t.Fatalf("gate set instantiate: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"gate", "set", "lock",
+		"--db", dbPath,
+		"--issue", "mem-a3a3a3a",
+		"--json",
+	); err != nil {
+		t.Fatalf("gate set lock: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"gate", "verify",
+		"--db", dbPath,
+		"--issue", "mem-a3a3a3a",
+		"--gate", "review",
+		"--command-id", "cmd-cli-done-gated-verify-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("gate verify: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := runMemoriForTest(
+		"issue", "update",
+		"--db", dbPath,
+		"--key", "mem-a3a3a3a",
+		"--status", "done",
+		"--command-id", "cmd-cli-done-gated-done-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("issue update done: %v\nstderr: %s", err, stderr)
+	}
+	var updated struct {
+		Data struct {
+			Close *struct {
+				Mode  string `json:"mode"`
+				Proof *struct {
+					GateSetID string `json:"gate_set_id"`
+				} `json:"proof"`
+			} `json:"close"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &updated); err != nil {
+		t.Fatalf("decode gated done response: %v\nstdout: %s", err, stdout)
+	}
+	if updated.Data.Close == nil || updated.Data.Close.Mode != "gated" {
+		t.Fatalf("expected gated close summary, got %#v", updated.Data.Close)
+	}
+	if updated.Data.Close.Proof == nil || updated.Data.Close.Proof.GateSetID == "" {
+		t.Fatalf("expected gated close proof summary, got %#v", updated.Data.Close)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"issue", "show",
+		"--db", dbPath,
+		"--key", "mem-a3a3a3a",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("issue show json: %v\nstderr: %s", err, stderr)
+	}
+	var shown struct {
+		Data struct {
+			Close *struct {
+				Mode  string `json:"mode"`
+				Proof *struct {
+					GateSetID string `json:"gate_set_id"`
+				} `json:"proof"`
+			} `json:"close"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &shown); err != nil {
+		t.Fatalf("decode issue show json: %v\nstdout: %s", err, stdout)
+	}
+	if shown.Data.Close == nil || shown.Data.Close.Mode != "gated" {
+		t.Fatalf("expected issue show to report gated close, got %#v", shown.Data.Close)
+	}
+	if shown.Data.Close.Proof == nil || shown.Data.Close.Proof.GateSetID == "" {
+		t.Fatalf("expected issue show gated proof, got %#v", shown.Data.Close)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
+		"issue", "show",
+		"--db", dbPath,
+		"--key", "mem-a3a3a3a",
+	)
+	if err != nil {
+		t.Fatalf("issue show text: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Close")
+	mustContain(t, stdout, "Gated")
+	mustContain(t, stdout, "Gate Set")
 }
 
 func TestIssueDoneRequiresChildIssuesClosed(t *testing.T) {

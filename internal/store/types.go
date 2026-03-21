@@ -458,6 +458,13 @@ const (
 	IssueCloseModeGated   IssueCloseMode = "gated"
 )
 
+type IssueCloseRecord struct {
+	Mode           IssueCloseMode           `json:"mode"`
+	Proof          *IssueCloseAuthorization `json:"proof,omitempty"`
+	ClosedAt       string                   `json:"closed_at,omitempty"`
+	LegacyInferred bool                     `json:"legacy_inferred,omitempty"`
+}
+
 type IssueCloseAuthorization struct {
 	GateSetID   string                `json:"gate_set_id"`
 	GateSetHash string                `json:"gate_set_hash"`
