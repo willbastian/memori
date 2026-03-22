@@ -511,14 +511,14 @@ The current terminal visual direction aims for a calmer, title-first board:
 - the main board surfaces use a calmer shell, with the list staying primary and temporary modes like help and search rendering as centered overlay-style panels on wide terminals
 - the default wide layout stays list-first so you can scan work before opening extra context
 - rows lead with titles first, then compact issue/type/status metadata, with an explicit left-edge selection marker so focus does not depend only on color
-- chrome stays quieter than the issue text, with the header carrying summary, the lane strip acting like a compact dashboard nav, and the footer carrying just the active hints
+- chrome stays quieter than the issue text, with the header carrying only the board title and optional agent context, the lane strip acting like a compact dashboard nav, and the footer carrying just the active hints
 - detail and continuity inspection behave more like an inspector sidebar: identity and next action first, then supporting context
 - in narrow layouts, opening detail or continuity gives that pane the body instead of clipping the issue content under a tiny list preview
 
 Example wide-layout mockup:
 
 ```text
- MEMORI BOARD                                             T12 IP2 BLK1 RDY7  ACTIONABLE  AGENT WRITER-1
+ MEMORI BOARD                                                                          AGENT WRITER-1
  NEXT 1   ACTIVE 2   BLOCKED 1   READY 7
  READY
  > Refresh stale packet  · mem-a111111 · task

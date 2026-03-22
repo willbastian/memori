@@ -50,7 +50,7 @@ func boardListPanel(model boardTUIModel, theme boardTheme, width, height int) []
 			if idx%2 == 1 {
 				bg = theme.panelAltBG
 			}
-			line = theme.paintLine(boardRowForeground(theme, row), bg, boardRowMatchesLaneStatus(model.lane, row), line)
+			line = theme.paintLine(boardLaneRowForeground(theme, model.lane, row), bg, boardRowMatchesLaneStatus(model.lane, row), line)
 		}
 		lines = append(lines, line)
 	}
@@ -89,14 +89,14 @@ func boardRenderListRow(model boardTUIModel, row boardIssueRow, showScore bool, 
 	}
 
 	metaParts := make([]string, 0, 4)
+	if boardLaneSupportsHierarchy(model.lane) && !boardRowMatchesLaneStatus(model.lane, row) {
+		metaParts = append(metaParts, "["+strings.ToLower(boardExpandedStatusLabel(row.Issue.Status))+"]")
+	}
 	if !boardLaneSupportsHierarchy(model.lane) || width >= 48 {
 		metaParts = append(metaParts, issueID)
 	}
 	if kind := strings.TrimSpace(row.Issue.Type); kind != "" && width >= 44 {
 		metaParts = append(metaParts, strings.ToLower(kind))
-	}
-	if boardLaneSupportsHierarchy(model.lane) && !boardRowMatchesLaneStatus(model.lane, row) {
-		metaParts = append(metaParts, strings.ToLower(boardExpandedStatusLabel(row.Issue.Status)))
 	}
 	if showScore && row.Score > 0 && width >= 64 {
 		metaParts = append(metaParts, fmt.Sprintf("s%d", row.Score))
@@ -164,6 +164,18 @@ func boardRowForeground(theme boardTheme, row boardIssueRow) string {
 	default:
 		return theme.detailFG
 	}
+}
+
+func boardLaneRowForeground(theme boardTheme, lane boardLane, row boardIssueRow) string {
+	if boardLaneSupportsHierarchy(lane) && !boardRowMatchesLaneStatus(lane, row) {
+		switch row.Issue.Status {
+		case "Done":
+			return theme.doneBG
+		case "WontDo":
+			return theme.wontDoFG
+		}
+	}
+	return boardRowForeground(theme, row)
 }
 
 func boardHelpPanel(theme boardTheme, width, height int) []string {

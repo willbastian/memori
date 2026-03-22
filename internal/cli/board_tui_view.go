@@ -158,11 +158,14 @@ func renderBoardTUI(model boardTUIModel, colors bool) string {
 
 func boardHeaderLine(model boardTUIModel, theme boardTheme, width int) string {
 	if width < 36 {
-		return theme.paintLine(theme.titleFG, theme.titleBG, true, padRight(truncateBoardLine(" BOARD "+formatBoardSummaryCompact(model.snapshot.Summary), width), width))
+		return theme.paintLine(theme.titleFG, theme.titleBG, true, padRight(truncateBoardLine(" MEMORI BOARD ", width), width))
 	}
 	title := " MEMORI BOARD "
 	left := theme.paintLine(theme.titleFG, theme.titleBG, true, padRight(title, width))
 	meta := boardHeaderMeta(model, theme, width)
+	if strings.TrimSpace(meta) == "" {
+		return left
+	}
 	rightStart := maxInt(width-visualWidth(meta), visualWidth(title))
 	return replaceSegment(left, rightStart, meta)
 }
@@ -222,6 +225,10 @@ func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
 		footer := fmt.Sprintf(" %s %s %s ", boardDisplayIssueID(row.Issue.ID, width), boardCompactStatusLabel(row.Issue.Status), row.Issue.Title)
 		return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
 	}
+	historyHint := "f history"
+	if model.showHistory {
+		historyHint = "f actionable"
+	}
 	panelHint := "enter detail  c continuity"
 	if model.detailOpen {
 		if model.panelMode == boardPanelModeContinuity {
@@ -230,7 +237,7 @@ func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
 			panelHint = "enter close  c continuity"
 		}
 	}
-	footer := fmt.Sprintf(" %s  · %s · %s  ·  %s  f history  ? help ", row.Issue.ID, strings.ToLower(row.Issue.Type), truncateBoardLine(row.Issue.Title, maxInt(width/3, 18)), panelHint)
+	footer := fmt.Sprintf(" %s  · %s · %s  ·  %s  %s  ? help ", row.Issue.ID, strings.ToLower(row.Issue.Type), truncateBoardLine(row.Issue.Title, maxInt(width/3, 18)), panelHint, historyHint)
 	return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
 }
 
@@ -244,35 +251,11 @@ func boardPanelModeTitle(mode boardPanelMode) string {
 }
 
 func boardHeaderMeta(model boardTUIModel, theme boardTheme, width int) string {
-	mode := " ACTIONABLE "
-	if model.showHistory {
-		mode = " ALL WORK "
-	}
-	parts := []string{
-		theme.paintLine(theme.accentFG, theme.titleMetaBG, true, " "+formatBoardHeaderSummary(model.snapshot.Summary)+" "),
-		theme.paintLine(theme.panelHeadFG, theme.accentBG, true, mode),
-	}
 	if model.snapshot.Agent != "" {
 		agent := " AGENT " + strings.ToUpper(model.snapshot.Agent) + " "
-		parts = append(parts, theme.paintLine(theme.keyFG, theme.titleAltBG, true, truncateBoardLine(agent, maxInt(width/3, 14))))
+		return theme.paintLine(theme.keyFG, theme.titleAltBG, true, truncateBoardLine(agent, maxInt(width/3, 14)))
 	}
-	return strings.Join(parts, " ")
-}
-
-func formatBoardHeaderSummary(summary boardSummary) string {
-	parts := []string{
-		fmt.Sprintf("T%d", summary.Total),
-		fmt.Sprintf("IP%d", summary.InProgress),
-		fmt.Sprintf("BLK%d", summary.Blocked),
-		fmt.Sprintf("RDY%d", summary.Todo),
-	}
-	if summary.Done > 0 {
-		parts = append(parts, fmt.Sprintf("D%d", summary.Done))
-	}
-	if summary.WontDo > 0 {
-		parts = append(parts, fmt.Sprintf("W%d", summary.WontDo))
-	}
-	return strings.Join(parts, " ")
+	return ""
 }
 
 func boardPanelHeader(theme boardTheme, label, subtitle string, width int) string {

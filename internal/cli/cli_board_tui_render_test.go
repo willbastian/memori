@@ -38,6 +38,11 @@ func TestRenderBoardTUIWideShowsDetailPane(t *testing.T) {
 			t.Fatalf("expected wide render to contain %q, got:\n%s", want, rendered)
 		}
 	}
+	for _, dontWant := range []string{"ACTIONABLE", "T3 IP1 BLK1 RDY1"} {
+		if strings.Contains(rendered, dontWant) {
+			t.Fatalf("expected wide render to omit %q, got:\n%s", dontWant, rendered)
+		}
+	}
 }
 
 func TestRenderBoardTUIWideDefaultsToListOnlyUntilPaneOpened(t *testing.T) {
@@ -806,14 +811,16 @@ func TestRenderBoardTUIHistoryModeShowsDoneAndWontDoTabs(t *testing.T) {
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
-		"ALL WORK",
 		"DONE 1",
 		"WONTDO 1",
-		"f history",
+		"f actionable",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected history render to contain %q, got:\n%s", want, rendered)
 		}
+	}
+	if strings.Contains(rendered, "ALL WORK") {
+		t.Fatalf("expected history render to omit old header mode label, got:\n%s", rendered)
 	}
 }
 
@@ -825,9 +832,9 @@ func TestRenderBoardTUIReadyLaneMarksReadyRowsWithinContextTree(t *testing.T) {
 			{
 				Issue: boardTestIssue("mem-a111111", "Story", "InProgress", "Parent story"),
 				Hierarchy: boardIssueHierarchy{
-					ChildIDs:        []string{"mem-b222222", "mem-c333333"},
-					ChildCount:      2,
-					DescendantCount: 2,
+					ChildIDs:        []string{"mem-b222222", "mem-c333333", "mem-d444444"},
+					ChildCount:      3,
+					DescendantCount: 3,
 					HasChildren:     true,
 				},
 			},
@@ -839,7 +846,7 @@ func TestRenderBoardTUIReadyLaneMarksReadyRowsWithinContextTree(t *testing.T) {
 					AncestorIDs:  []string{"mem-a111111"},
 					ParentID:     "mem-a111111",
 					SiblingIndex: 1,
-					SiblingCount: 2,
+					SiblingCount: 3,
 				},
 			},
 		},
@@ -852,7 +859,20 @@ func TestRenderBoardTUIReadyLaneMarksReadyRowsWithinContextTree(t *testing.T) {
 					AncestorIDs:  []string{"mem-a111111"},
 					ParentID:     "mem-a111111",
 					SiblingIndex: 0,
-					SiblingCount: 2,
+					SiblingCount: 3,
+				},
+			},
+		},
+		Done: []boardIssueRow{
+			{
+				Issue: boardTestIssue("mem-d444444", "Task", "Done", "Done child"),
+				Hierarchy: boardIssueHierarchy{
+					Depth:        1,
+					Path:         []string{"mem-a111111", "mem-d444444"},
+					AncestorIDs:  []string{"mem-a111111"},
+					ParentID:     "mem-a111111",
+					SiblingIndex: 2,
+					SiblingCount: 3,
 				},
 			},
 		},
@@ -862,9 +882,10 @@ func TestRenderBoardTUIReadyLaneMarksReadyRowsWithinContextTree(t *testing.T) {
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
-		"Parent story  · mem-a111111 · story · in progress",
+		"Parent story  · [in progress] · mem-a111111 · story",
 		"Ready child  · mem-b222222 · task",
-		"Active sibling  · mem-c333333 · bug · in progress",
+		"Active sibling  · [in progress] · mem-c333333 · bug",
+		"Done child  · [done] · mem-d444444 · task",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected ready context render to contain %q, got:\n%s", want, rendered)
@@ -893,9 +914,9 @@ func TestRenderBoardTUIActiveLaneMarksActiveRowsWithinContextTree(t *testing.T) 
 			{
 				Issue: boardTestIssue("mem-a111111", "Story", "Todo", "Parent story"),
 				Hierarchy: boardIssueHierarchy{
-					ChildIDs:        []string{"mem-b222222", "mem-c333333"},
-					ChildCount:      2,
-					DescendantCount: 2,
+					ChildIDs:        []string{"mem-b222222", "mem-c333333", "mem-d444444"},
+					ChildCount:      3,
+					DescendantCount: 3,
 					HasChildren:     true,
 				},
 			},
@@ -907,7 +928,20 @@ func TestRenderBoardTUIActiveLaneMarksActiveRowsWithinContextTree(t *testing.T) 
 					AncestorIDs:  []string{"mem-a111111"},
 					ParentID:     "mem-a111111",
 					SiblingIndex: 1,
-					SiblingCount: 2,
+					SiblingCount: 3,
+				},
+			},
+		},
+		Done: []boardIssueRow{
+			{
+				Issue: boardTestIssue("mem-d444444", "Task", "Done", "Done sibling"),
+				Hierarchy: boardIssueHierarchy{
+					Depth:        1,
+					Path:         []string{"mem-a111111", "mem-d444444"},
+					AncestorIDs:  []string{"mem-a111111"},
+					ParentID:     "mem-a111111",
+					SiblingIndex: 2,
+					SiblingCount: 3,
 				},
 			},
 		},
@@ -917,9 +951,10 @@ func TestRenderBoardTUIActiveLaneMarksActiveRowsWithinContextTree(t *testing.T) 
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
-		"Parent story  · mem-a111111 · story · todo",
+		"Parent story  · [todo] · mem-a111111 · story",
 		"Active child  · mem-b222222 · task",
-		"Ready sibling  · mem-c333333 · task · todo",
+		"Ready sibling  · [todo] · mem-c333333 · task",
+		"Done sibling  · [done] · mem-d444444 · task",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected active context render to contain %q, got:\n%s", want, rendered)
