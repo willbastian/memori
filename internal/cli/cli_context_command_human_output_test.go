@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -252,6 +253,32 @@ func TestContextResumeHumanOutputCoversFallbackAndFocusedResume(t *testing.T) {
 	); err != nil {
 		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
 	}
+	stdout, stderr, err = runMemoriForTest(
+		"worktree", "register",
+		"--db", dbPath,
+		"--path", filepath.Join(t.TempDir(), "human-resume-worktree"),
+		"--repo-root", t.TempDir(),
+		"--branch", "feature/human-resume-worktree",
+		"--command-id", "cmd-cli-human-resume-worktree-register-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("worktree register: %v\nstderr: %s", err, stderr)
+	}
+	var registered worktreeEnvelope
+	if err := json.Unmarshal([]byte(stdout), &registered); err != nil {
+		t.Fatalf("decode worktree register json: %v\nstdout: %s", err, stdout)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"worktree", "attach",
+		"--db", dbPath,
+		"--worktree", registered.Data.Worktree.WorktreeID,
+		"--issue", "mem-a222222",
+		"--command-id", "cmd-cli-human-resume-worktree-attach-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("worktree attach: %v\nstderr: %s", err, stderr)
+	}
 	if _, stderr, err := runMemoriForTest(
 		"context", "start",
 		"--db", dbPath,
@@ -285,6 +312,8 @@ func TestContextResumeHumanOutputCoversFallbackAndFocusedResume(t *testing.T) {
 	mustContain(t, stdout, "OK Resumed session sess-human-resume-2 via packet and updated focus for agent-human-resume-1")
 	mustContain(t, stdout, "Packet Scope: issue")
 	mustContain(t, stdout, "Issue: mem-a222222")
+	mustContain(t, stdout, "Workspace: ")
+	mustContain(t, stdout, "branch=feature/human-resume-worktree")
 	mustContain(t, stdout, "Agent: agent-human-resume-1")
 	mustContain(t, stdout, "memori issue next --agent agent-human-resume-1")
 	mustContain(t, stdout, "memori board --agent agent-human-resume-1")

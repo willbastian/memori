@@ -14,7 +14,12 @@ import (
 type issueEnvelope struct {
 	Command string `json:"command"`
 	Data    struct {
-		Issue store.Issue `json:"issue"`
+		Issue     store.Issue `json:"issue"`
+		Workspace struct {
+			WorktreeID string `json:"worktree_id"`
+			Path       string `json:"path"`
+			Branch     string `json:"branch"`
+		} `json:"workspace"`
 	} `json:"data"`
 }
 
@@ -134,6 +139,75 @@ func TestIssueUpdateRequiresAtLeastOneMutationField(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "one of --title, --status, --priority, --label, --description, --acceptance-criteria, or --reference is required") {
 		t.Fatalf("expected mutation field validation error, got: %v", err)
 	}
+}
+
+func TestIssueShowSurfacesAttachedWorkspace(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "memori-cli-issue-workspace.db")
+	if _, stderr, err := runMemoriForTest("init", "--db", dbPath, "--issue-prefix", "mem", "--json"); err != nil {
+		t.Fatalf("init db: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"issue", "create",
+		"--db", dbPath,
+		"--key", "mem-7777fff",
+		"--type", "task",
+		"--title", "Workspace issue",
+		"--command-id", "cmd-cli-issue-workspace-create-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
+	}
+
+	workspacePath := filepath.Join(t.TempDir(), "feature-workspace")
+	stdout, stderr, err := runMemoriForTest(
+		"worktree", "register",
+		"--db", dbPath,
+		"--path", workspacePath,
+		"--repo-root", filepath.Dir(workspacePath),
+		"--branch", "feature/workspace-issue",
+		"--command-id", "cmd-cli-issue-workspace-register-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("worktree register: %v\nstderr: %s", err, stderr)
+	}
+	var registered worktreeEnvelope
+	if err := json.Unmarshal([]byte(stdout), &registered); err != nil {
+		t.Fatalf("decode worktree register json: %v\nstdout: %s", err, stdout)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"worktree", "attach",
+		"--db", dbPath,
+		"--worktree", registered.Data.Worktree.WorktreeID,
+		"--issue", "mem-7777fff",
+		"--command-id", "cmd-cli-issue-workspace-attach-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("worktree attach: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err = runMemoriForTest("issue", "show", "--db", dbPath, "--key", "mem-7777fff", "--json")
+	if err != nil {
+		t.Fatalf("issue show json: %v\nstderr: %s", err, stderr)
+	}
+	var shown issueEnvelope
+	if err := json.Unmarshal([]byte(stdout), &shown); err != nil {
+		t.Fatalf("decode issue show json: %v\nstdout: %s", err, stdout)
+	}
+	if shown.Data.Workspace.WorktreeID != registered.Data.Worktree.WorktreeID || shown.Data.Workspace.Path != workspacePath {
+		t.Fatalf("expected attached workspace in issue show json, got %+v", shown.Data.Workspace)
+	}
+
+	stdout, stderr, err = runMemoriForTest("issue", "show", "--db", dbPath, "--key", "mem-7777fff")
+	if err != nil {
+		t.Fatalf("issue show text: %v\nstderr: %s", err, stderr)
+	}
+	mustContain(t, stdout, "Workspace:")
+	mustContain(t, stdout, "Worktree: "+registered.Data.Worktree.WorktreeID)
+	mustContain(t, stdout, "Path: "+workspacePath)
+	mustContain(t, stdout, "Branch: feature/workspace-issue")
 }
 
 func TestIssueUpdateRejectsBlankTitle(t *testing.T) {

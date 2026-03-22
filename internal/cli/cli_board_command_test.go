@@ -44,6 +44,11 @@ type boardSnapshotEnvelope struct {
 				Issue struct {
 					ID string `json:"id"`
 				} `json:"issue"`
+				Workspace struct {
+					WorktreeID string `json:"worktree_id"`
+					Path       string `json:"path"`
+					Branch     string `json:"branch"`
+				} `json:"workspace"`
 				Reasons []string `json:"reasons"`
 			} `json:"likely_next"`
 		} `json:"snapshot"`
@@ -85,6 +90,9 @@ func TestBoardCommandJSONShowsStatusBucketsAndContinuityRanking(t *testing.T) {
 	if len(resp.Data.Snapshot.LikelyNext) == 0 || resp.Data.Snapshot.LikelyNext[0].Issue.ID != "mem-b343434" {
 		t.Fatalf("expected continuity-rich todo issue ranked first, got %+v", resp.Data.Snapshot.LikelyNext)
 	}
+	if resp.Data.Snapshot.LikelyNext[0].Workspace.WorktreeID == "" || !strings.Contains(resp.Data.Snapshot.LikelyNext[0].Workspace.Path, "board-worktree") {
+		t.Fatalf("expected likely next workspace in board snapshot, got %+v", resp.Data.Snapshot.LikelyNext[0].Workspace)
+	}
 
 	reasons := strings.Join(resp.Data.Snapshot.LikelyNext[0].Reasons, "\n")
 	for _, want := range []string{
@@ -116,6 +124,7 @@ func TestBoardCommandHumanOutputShowsSections(t *testing.T) {
 		"Next:",
 		"Continuity State:",
 		"Continuity Pressure:",
+		"Workspace:",
 		"Active (1):",
 		"Blocked (1):",
 		"Ready (2):",
@@ -126,6 +135,8 @@ func TestBoardCommandHumanOutputShowsSections(t *testing.T) {
 		"Latest issue packet",
 		"mem-b343434 is ready to resume and its saved issue packet is stale; rebuild it before the next handoff.",
 		"mem-d454545 is blocked and has no saved issue packet yet; capture one before the next handoff.",
+		"mem-b343434 ->",
+		"branch=feature/board-worktree",
 		"Next:",
 		"memori board --watch",
 	} {
@@ -251,6 +262,24 @@ func seedBoardSnapshotTestDB(t *testing.T) string {
 	createIssue("mem-d454545", "bug", "Blocked bug", "test", "cmd-board-create-4")
 
 	updateStatus("mem-a121212", "inprogress", "test", "cmd-board-progress-1")
+	worktree, _, _, err := s.RegisterWorktree(ctx, store.RegisterWorktreeParams{
+		Path:      filepath.Join(t.TempDir(), "board-worktree"),
+		RepoRoot:  t.TempDir(),
+		Branch:    "feature/board-worktree",
+		Actor:     "test",
+		CommandID: "cmd-board-worktree-register-1",
+	})
+	if err != nil {
+		t.Fatalf("register board worktree: %v", err)
+	}
+	if _, _, _, err := s.AttachWorktree(ctx, store.AttachWorktreeParams{
+		WorktreeID: worktree.WorktreeID,
+		IssueID:    "mem-b343434",
+		Actor:      "test",
+		CommandID:  "cmd-board-worktree-attach-1",
+	}); err != nil {
+		t.Fatalf("attach board worktree: %v", err)
+	}
 
 	if _, _, err := s.CreateGateTemplate(ctx, store.CreateGateTemplateParams{
 		TemplateID:     "board-quality",

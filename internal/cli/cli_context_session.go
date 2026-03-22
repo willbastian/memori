@@ -348,6 +348,11 @@ func runContextResume(args []string, out io.Writer) error {
 		data.FocusUsed = true
 		data.FocusIdempotent = focusIdempotent
 	}
+	workspace, err := resolveWorkspaceForPacket(ctx, s, data.Packet)
+	if err != nil {
+		return err
+	}
+	data.Workspace = workspace
 
 	if *jsonOut {
 		return printJSON(out, jsonEnvelope{
@@ -380,6 +385,9 @@ func runContextResume(args []string, out io.Writer) error {
 	}
 	if issueID := packetIssueIDForCLI(data.Packet); issueID != "" {
 		ui.field("Issue", issueID)
+	}
+	if data.Workspace != nil {
+		ui.field("Workspace", formatWorkspaceSummary(data.Workspace))
 	}
 	if data.FocusUsed {
 		ui.field("Agent", data.Focus.AgentID)
@@ -454,6 +462,7 @@ type contextResumeData struct {
 	SessionID       string                `json:"session_id"`
 	Source          string                `json:"source"`
 	Packet          store.RehydratePacket `json:"packet"`
+	Workspace       *workspaceContext     `json:"workspace,omitempty"`
 	Focus           store.AgentFocus      `json:"focus,omitempty"`
 	FocusUsed       bool                  `json:"focus_used"`
 	FocusIdempotent bool                  `json:"focus_idempotent"`

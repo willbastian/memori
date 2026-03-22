@@ -44,6 +44,13 @@ func renderBoardSnapshot(snapshot boardSnapshot, opts boardRenderOptions) (strin
 		}
 		ui.blank()
 	}
+	if lines := boardWorkspaceLines(snapshot); len(lines) > 0 {
+		ui.section("Workspace")
+		for _, line := range lines {
+			ui.bullet(line)
+		}
+		ui.blank()
+	}
 	if snapshot.Agent != "" && len(snapshot.LikelyNext) > 0 && !continuitySignalsPresent(snapshot.LikelyNext[0].Reasons) {
 		ui.section("Continuity")
 		ui.bullet(continuityBootstrapMessage(snapshot.Agent))
@@ -103,6 +110,33 @@ func renderBoardSection(ui textUI, label string, rows []boardIssueRow, limit, wi
 		ui.bullet(fmt.Sprintf("+%d more", len(rows)-show))
 	}
 	ui.blank()
+}
+
+func boardWorkspaceLines(snapshot boardSnapshot) []string {
+	rows := make([]boardIssueRow, 0, 1+len(snapshot.Active)+len(snapshot.Blocked))
+	if len(snapshot.LikelyNext) > 0 {
+		rows = append(rows, snapshot.LikelyNext[0])
+	}
+	rows = append(rows, snapshot.Active...)
+	rows = append(rows, snapshot.Blocked...)
+
+	lines := make([]string, 0, 4)
+	seen := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		if row.Workspace == nil {
+			continue
+		}
+		key := row.Issue.ID + "|" + row.Workspace.WorktreeID
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		lines = append(lines, formatIssueWorkspaceLine(row.Issue.ID, row.Workspace))
+		if len(lines) >= 4 {
+			break
+		}
+	}
+	return lines
 }
 
 func formatBoardIssueRow(row boardIssueRow) string {

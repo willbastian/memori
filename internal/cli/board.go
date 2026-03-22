@@ -49,6 +49,7 @@ type boardSummary struct {
 
 type boardIssueRow struct {
 	Issue     store.Issue         `json:"issue"`
+	Workspace *workspaceContext   `json:"workspace,omitempty"`
 	Hierarchy boardIssueHierarchy `json:"hierarchy,omitempty"`
 	Score     int                 `json:"score,omitempty"`
 	Reasons   []string            `json:"reasons,omitempty"`
@@ -253,13 +254,17 @@ func buildBoardSnapshot(ctx context.Context, s *store.Store, agent string, now t
 		return boardSnapshot{}, err
 	}
 	scoreByID, rankByID := boardCandidateMaps(nextCandidates)
+	workspaceByIssue, err := activeWorkspaceByIssue(ctx, s)
+	if err != nil {
+		return boardSnapshot{}, err
+	}
 
 	snapshot := boardSnapshot{
 		GeneratedAt: now.Format(time.RFC3339),
 		Agent:       agent,
 	}
-	boardPopulateSnapshotRows(&snapshot, issues, hierarchyByID, scoreByID)
-	boardPopulateLikelyNext(&snapshot, nextCandidates, hierarchyByID)
+	boardPopulateSnapshotRows(&snapshot, issues, hierarchyByID, scoreByID, workspaceByIssue)
+	boardPopulateLikelyNext(&snapshot, nextCandidates, hierarchyByID, workspaceByIssue)
 	boardSortSnapshot(&snapshot, rankByID)
 
 	return snapshot, nil
@@ -292,10 +297,11 @@ func boardPopulateSnapshotRows(
 	issues []store.Issue,
 	hierarchyByID map[string]boardIssueHierarchy,
 	scoreByID map[string]store.IssueNextCandidate,
+	workspaceByIssue map[string]*workspaceContext,
 ) {
 	for _, issue := range issues {
 		boardIncrementSummary(&snapshot.Summary, issue.Status)
-		boardAppendSnapshotRow(snapshot, boardSnapshotRow(issue, hierarchyByID[issue.ID], scoreByID[issue.ID]))
+		boardAppendSnapshotRow(snapshot, boardSnapshotRow(issue, hierarchyByID[issue.ID], scoreByID[issue.ID], workspaceByIssue[issue.ID]))
 	}
 }
 
@@ -303,9 +309,11 @@ func boardSnapshotRow(
 	issue store.Issue,
 	hierarchy boardIssueHierarchy,
 	candidate store.IssueNextCandidate,
+	workspace *workspaceContext,
 ) boardIssueRow {
 	row := boardIssueRow{
 		Issue:     issue,
+		Workspace: workspace,
 		Hierarchy: hierarchy,
 	}
 	if candidate.Issue.ID != "" {
@@ -350,24 +358,27 @@ func boardPopulateLikelyNext(
 	snapshot *boardSnapshot,
 	nextCandidates []store.IssueNextCandidate,
 	hierarchyByID map[string]boardIssueHierarchy,
+	workspaceByIssue map[string]*workspaceContext,
 ) {
-	snapshot.LikelyNext = boardLikelyNextRows(nextCandidates, hierarchyByID)
+	snapshot.LikelyNext = boardLikelyNextRows(nextCandidates, hierarchyByID, workspaceByIssue)
 }
 
 func boardLikelyNextRows(
 	nextCandidates []store.IssueNextCandidate,
 	hierarchyByID map[string]boardIssueHierarchy,
+	workspaceByIssue map[string]*workspaceContext,
 ) []boardIssueRow {
 	rows := make([]boardIssueRow, 0, len(nextCandidates))
 	for _, candidate := range nextCandidates {
-		rows = append(rows, boardLikelyNextRow(candidate, hierarchyByID[candidate.Issue.ID]))
+		rows = append(rows, boardLikelyNextRow(candidate, hierarchyByID[candidate.Issue.ID], workspaceByIssue[candidate.Issue.ID]))
 	}
 	return rows
 }
 
-func boardLikelyNextRow(candidate store.IssueNextCandidate, hierarchy boardIssueHierarchy) boardIssueRow {
+func boardLikelyNextRow(candidate store.IssueNextCandidate, hierarchy boardIssueHierarchy, workspace *workspaceContext) boardIssueRow {
 	return boardIssueRow{
 		Issue:     candidate.Issue,
+		Workspace: workspace,
 		Hierarchy: hierarchy,
 		Score:     candidate.Score,
 		Reasons:   append([]string(nil), candidate.Reasons...),

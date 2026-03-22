@@ -225,8 +225,34 @@ func TestContextResumeUsesSavedPacketAndOptionalAgentFocus(t *testing.T) {
 	); err != nil {
 		t.Fatalf("issue create: %v\nstderr: %s", err, stderr)
 	}
-
 	stdout, stderr, err := runMemoriForTest(
+		"worktree", "register",
+		"--db", dbPath,
+		"--path", filepath.Join(t.TempDir(), "resume-worktree"),
+		"--repo-root", t.TempDir(),
+		"--branch", "feature/resume-worktree",
+		"--command-id", "cmd-cli-resume-worktree-register-1",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("worktree register: %v\nstderr: %s", err, stderr)
+	}
+	var registered worktreeEnvelope
+	if err := json.Unmarshal([]byte(stdout), &registered); err != nil {
+		t.Fatalf("decode worktree register json: %v\nstdout: %s", err, stdout)
+	}
+	if _, stderr, err := runMemoriForTest(
+		"worktree", "attach",
+		"--db", dbPath,
+		"--worktree", registered.Data.Worktree.WorktreeID,
+		"--issue", "mem-a111111",
+		"--command-id", "cmd-cli-resume-worktree-attach-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("worktree attach: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err = runMemoriForTest(
 		"context", "start",
 		"--db", dbPath,
 		"--issue", "mem-a111111",
@@ -289,6 +315,9 @@ func TestContextResumeUsesSavedPacketAndOptionalAgentFocus(t *testing.T) {
 		resumed.Data.Focus.ActiveIssueID != "mem-a111111" ||
 		resumed.Data.Focus.LastPacketID != resumed.Data.Packet.PacketID {
 		t.Fatalf("expected focused resume response, got %+v", resumed)
+	}
+	if resumed.Data.Workspace.WorktreeID != registered.Data.Worktree.WorktreeID || resumed.Data.Workspace.Branch != "feature/resume-worktree" {
+		t.Fatalf("expected resumed workspace context, got %+v", resumed.Data.Workspace)
 	}
 }
 

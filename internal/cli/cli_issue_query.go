@@ -47,6 +47,10 @@ func runIssueShow(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	workspace, err := activeWorkspaceForIssue(ctx, s, issue.ID)
+	if err != nil {
+		return err
+	}
 
 	if *jsonOut {
 		return printJSON(out, jsonEnvelope{
@@ -54,8 +58,9 @@ func runIssueShow(args []string, out io.Writer) error {
 			DBSchemaVersion:       dbVersion,
 			Command:               "issue show",
 			Data: issueShowData{
-				Issue: issue,
-				Close: closeRecord,
+				Issue:     issue,
+				Close:     closeRecord,
+				Workspace: workspace,
 			},
 		})
 	}
@@ -71,6 +76,21 @@ func runIssueShow(args []string, out io.Writer) error {
 	}
 	if len(issue.Labels) > 0 {
 		ui.field("Labels", strings.Join(issue.Labels, ", "))
+	}
+	if workspace != nil {
+		ui.blank()
+		ui.section("Workspace")
+		ui.field("Worktree", workspace.WorktreeID)
+		ui.field("Path", workspace.Path)
+		if strings.TrimSpace(workspace.RepoRoot) != "" {
+			ui.field("Repo Root", workspace.RepoRoot)
+		}
+		if strings.TrimSpace(workspace.Branch) != "" {
+			ui.field("Branch", workspace.Branch)
+		}
+		if strings.TrimSpace(workspace.HeadOID) != "" {
+			ui.field("Head", workspace.HeadOID)
+		}
 	}
 	if strings.TrimSpace(issue.Description) != "" {
 		ui.blank()
@@ -220,8 +240,9 @@ func runIssueNext(args []string, out io.Writer) error {
 }
 
 type issueShowData struct {
-	Issue store.Issue             `json:"issue"`
-	Close *store.IssueCloseRecord `json:"close,omitempty"`
+	Issue     store.Issue             `json:"issue"`
+	Close     *store.IssueCloseRecord `json:"close,omitempty"`
+	Workspace *workspaceContext       `json:"workspace,omitempty"`
 }
 
 type issueNextData struct {

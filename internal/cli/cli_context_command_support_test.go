@@ -106,7 +106,12 @@ type contextResumeEnvelope struct {
 	Data    struct {
 		SessionID string `json:"session_id"`
 		Source    string `json:"source"`
-		Packet    struct {
+		Workspace struct {
+			WorktreeID string `json:"worktree_id"`
+			Path       string `json:"path"`
+			Branch     string `json:"branch"`
+		} `json:"workspace"`
+		Packet struct {
 			PacketID string `json:"packet_id"`
 			Scope    string `json:"scope"`
 		} `json:"packet"`
