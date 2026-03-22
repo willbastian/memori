@@ -4,9 +4,13 @@
 
 # memori
 
+> The tiny repo foreman for humans, agents, and their little worktree desks.
+
 **memori** is a local-first issue tracker for human and agent workflows.
 
-It keeps project state in a local SQLite database, records every mutation in an append-only ledger, and gives you one CLI for planning, handoff, resume, and closeout.
+It keeps project state in a local SQLite database, records every mutation in an append-only ledger, and gives you one CLI for planning, handoff, resume, worktree-aware continuity, and closeout.
+
+If your current system is "the tickets are over there, the branch is over here, and the handoff lives in somebody's scrollback," Memori is meant to put that thread back in one place.
 
 ## What matters most
 
@@ -15,6 +19,7 @@ It keeps project state in a local SQLite database, records every mutation in an 
 - replayable: derived state can be rebuilt from the event ledger
 - continuity-aware: sessions, packets, focus, and worktree context help humans and agents resume work cleanly
 - auditable: human and LLM writes are distinct
+- worktree-aware: Memori can remember which issue owns which workspace and whether that workspace is fresh, stale, or missing
 - disciplined closeout: optional close gates let you require proof before a cycle closes
 
 The default database path is `.memori/memori.db`.
