@@ -8,7 +8,6 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
-	"github.com/charmbracelet/lipgloss"
 )
 
 func newBoardSearchInput() textinput.Model {
@@ -118,12 +117,4 @@ func boardHelpView(model boardTUIModel, theme boardTheme, width int, full bool) 
 func boardSearchInputView(model boardTUIModel, theme boardTheme, width int) string {
 	input := boardStyledSearchInput(model.searchInput, theme, width)
 	return input.View()
-}
-
-func boardSpinnerView(model boardTUIModel, theme boardTheme) string {
-	return boardStyledSpinner(model.spinner, theme).View()
-}
-
-func boardLipGlossWidth(value string) int {
-	return lipgloss.Width(value)
 }

@@ -824,6 +824,21 @@ func TestBoardThemeAndColorHelpersCoverRemainingBranches(t *testing.T) {
 	}
 }
 
+func TestBoardKeyMapShortHelpIncludesPrimaryBindings(t *testing.T) {
+	t.Parallel()
+
+	short := boardKeys.ShortHelp()
+	if len(short) != 7 {
+		t.Fatalf("expected 7 short help bindings, got %d", len(short))
+	}
+	if short[0].Help().Desc != "move selection" {
+		t.Fatalf("expected first short help binding to describe movement, got %+v", short[0].Help())
+	}
+	if short[len(short)-1].Help().Desc != "quit / cancel search" {
+		t.Fatalf("expected last short help binding to describe quit/cancel, got %+v", short[len(short)-1].Help())
+	}
+}
+
 func TestBoardToastLineAndColorModeBranches(t *testing.T) {
 	theme := defaultBoardTheme(false)
 	model := boardTUIModel{}
