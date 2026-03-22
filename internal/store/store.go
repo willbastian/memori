@@ -18,7 +18,7 @@ import (
 const DefaultIssueKeyPrefix = "mem"
 
 const (
-	packetSchemaVersion                 = 2
+	packetSchemaVersion                 = 3
 	packetRelevantChunkLimit            = 3
 	compactionEventThreshold            = 25
 	compactionOpenLoopThreshold         = 1
@@ -33,6 +33,7 @@ const (
 	entityTypeSession      = "session"
 	entityTypePacket       = "packet"
 	entityTypeFocus        = "focus"
+	entityTypeWorktree     = "worktree"
 	entityTypeGateTemplate = "gate_template"
 	entityTypeGateSet      = "gate_set"
 
@@ -45,6 +46,10 @@ const (
 	eventTypeSessionClosed       = "session.closed"
 	eventTypePacketBuilt         = "packet.built"
 	eventTypeFocusUsed           = "focus.used"
+	eventTypeWorktreeRegistered  = "worktree.registered"
+	eventTypeWorktreeAttached    = "worktree.attached"
+	eventTypeWorktreeDetached    = "worktree.detached"
+	eventTypeWorktreeArchived    = "worktree.archived"
 	eventTypeGateTemplateCreate  = "gate_template.created"
 	eventTypeGateTemplateApprove = "gate_template.approved"
 	eventTypeGateSetCreate       = "gate_set.instantiated"

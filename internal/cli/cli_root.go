@@ -64,6 +64,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return runBacklog(args[1:], stdout)
 	case "board":
 		return runBoard(args[1:], stdout)
+	case "worktree":
+		return runWorktree(args[1:], stdout)
 	case "event":
 		return runEvent(args[1:], stdout)
 	case "db":
@@ -94,6 +96,13 @@ func runHelp(args []string, out io.Writer) error {
 			"memori issue show --key <prefix-shortSHA> [--json]",
 			"memori issue next [--agent <id>] [--json]",
 			"memori board [--db <path>] [--agent <id>] [--watch] [--interval <duration>] [--json]",
+			"memori worktree register --path <path> [--repo-root <path>] [--branch <name>] [--head <oid>] [--id <id>] [--db <path>] [--actor <actor>] [--command-id <id>] [--json]",
+			"memori worktree adopt-cwd [--repo-root <path>] [--branch <name>] [--head <oid>] [--id <id>] [--db <path>] [--actor <actor>] [--command-id <id>] [--json]",
+			"memori worktree attach --worktree <id> --issue <prefix-shortSHA> [--db <path>] [--actor <actor>] [--command-id <id>] [--json]",
+			"memori worktree detach --worktree <id> [--db <path>] [--actor <actor>] [--command-id <id>] [--json]",
+			"memori worktree archive --worktree <id> [--db <path>] [--actor <actor>] [--command-id <id>] [--json]",
+			"memori worktree show --worktree <id> [--db <path>] [--json]",
+			"memori worktree list [--issue <prefix-shortSHA>] [--status active|archived] [--db <path>] [--json]",
 			"memori gate template create --id <template-id> --version <n> --applies-to epic|story|task|bug [--applies-to ...] --file <path> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate template approve --id <template-id> --version <n> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori gate template list [--type epic|story|task|bug] [--json]",
@@ -253,6 +262,8 @@ func printHelp(out io.Writer) {
 	ui.bullet("memori auth status [--db <path>] [--json]")
 	ui.bullet("memori backlog [--type epic|story|task|bug] [--status todo|inprogress|blocked|done|wontdo] [--parent <key>] [--json]")
 	ui.bullet("memori board [--db <path>] [--agent <id>] [--watch] [--interval <duration>] [--json]")
+	ui.bullet("memori worktree show --worktree <id> [--db <path>] [--json]")
+	ui.bullet("memori worktree list [--issue <prefix-shortSHA>] [--status active|archived] [--db <path>] [--json]")
 	ui.bullet("memori issue show --key <prefix-shortSHA> [--json]")
 	ui.bullet("memori gate status --issue <prefix-shortSHA> [--cycle <n>] [--json]")
 	ui.bullet("memori event log --entity <entityType:id|id> [--json]")
@@ -280,6 +291,11 @@ func printHelp(out io.Writer) {
 	ui.bullet("memori version [--json]")
 	ui.bullet("memori auth set-password [--db <path>] [--json]")
 	ui.bullet("memori init [--db <path>] [--issue-prefix <prefix>] [--append-agents-md] [--json]")
+	ui.bullet("memori worktree register --path <path> [--repo-root <path>] [--branch <name>] [--head <oid>] [--id <id>] [--db <path>] [--actor <actor>] [--command-id <id>] [--json]")
+	ui.bullet("memori worktree adopt-cwd [--repo-root <path>] [--branch <name>] [--head <oid>] [--id <id>] [--db <path>] [--actor <actor>] [--command-id <id>] [--json]")
+	ui.bullet("memori worktree attach --worktree <id> --issue <prefix-shortSHA> [--db <path>] [--actor <actor>] [--command-id <id>] [--json]")
+	ui.bullet("memori worktree detach --worktree <id> [--db <path>] [--actor <actor>] [--command-id <id>] [--json]")
+	ui.bullet("memori worktree archive --worktree <id> [--db <path>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori issue create --type epic|story|task|bug --title <title> [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori issue update --key <prefix-shortSHA> [--title <title>] [--status todo|inprogress|blocked|done|wontdo] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--agent <id>] [--session <id>] [--continuity manual|assist|auto] [--note <text>] [--reason <text>] [--skip-continuity] [--actor <actor>] [--command-id <id>] [--json]")

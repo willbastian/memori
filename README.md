@@ -365,6 +365,17 @@ memori context resume --agent writer-1 --json
 memori issue update --key acme-a1b2c3d --status blocked --note "waiting on review" --json
 ```
 
+When you already have a Git worktree and want Memori to treat it as the current execution context for an issue, register it and attach it explicitly:
+
+```bash
+memori worktree adopt-cwd --branch feature/acme-a1b2c3d
+memori worktree attach --worktree wt-123 --issue acme-a1b2c3d
+memori worktree show --worktree wt-123
+memori worktree list --issue acme-a1b2c3d
+```
+
+Memori tracks worktree metadata and issue attachment locally for continuity and packets; it does not create, switch, or delete Git worktrees for you.
+
 New issues default to generated keys in `{prefix}-{shortSHA}` format when you omit `--key`. Mutation commands also generate command IDs automatically unless you explicitly opt into supplying your own with `MEMORI_ALLOW_MANUAL_COMMAND_ID=1`.
 
 ### 5. Upgrade safely
@@ -642,10 +653,12 @@ For day-to-day work, the shortest path is usually:
 4. `memori issue show --key <issue>` before editing to inspect packet freshness, open sessions, and resume guidance.
 5. `memori issue update --key <issue> --status blocked --note "<handoff>"` or `--status done --note "<summary>" --reason "<close reason>"` to save a fresh session packet at pause or close.
    If the same issue has multiple open sessions, add `--session <id>` so memori does not have to guess which session you are pausing or finishing.
-6. `memori context resume --agent <id>` when returning to paused work from the latest saved session packet.
-7. `memori gate template list --json` when you need to find a close template before locking gates for a cycle.
-8. `memori gate template pending --json` when you need to review executable templates that are still awaiting human approval.
-9. `memori version --json` when you need the binary build metadata and embedded schema head version.
+6. `memori worktree adopt-cwd` or `memori worktree register --path <path>` when the current work should carry explicit workspace metadata.
+7. `memori worktree attach --worktree <id> --issue <issue>` to bind that workspace to the active issue without asking Memori to manage Git worktree lifecycle.
+8. `memori context resume --agent <id>` when returning to paused work from the latest saved session packet.
+9. `memori gate template list --json` when you need to find a close template before locking gates for a cycle.
+10. `memori gate template pending --json` when you need to review executable templates that are still awaiting human approval.
+11. `memori version --json` when you need the binary build metadata and embedded schema head version.
 
 ## Command map
 
@@ -656,6 +669,8 @@ For day-to-day work, the shortest path is usually:
 - `memori backlog`
 - `memori board`
 - `memori issue show`
+- `memori worktree show`
+- `memori worktree list`
 - `memori gate status`
 - `memori event log`
 - `memori db status`
@@ -668,6 +683,11 @@ For day-to-day work, the shortest path is usually:
 - `memori issue create`
 - `memori issue update`
 - `memori issue link`
+- `memori worktree register`
+- `memori worktree adopt-cwd`
+- `memori worktree attach`
+- `memori worktree detach`
+- `memori worktree archive`
 - `memori gate template create`
 - `memori gate template approve`
 - `memori gate template list`

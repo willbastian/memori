@@ -53,6 +53,9 @@ func (s *Store) ReplayProjections(ctx context.Context) (ReplayResult, error) {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions`); err != nil {
 		return ReplayResult{}, fmt.Errorf("clear sessions: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM worktrees`); err != nil {
+		return ReplayResult{}, fmt.Errorf("clear worktrees: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM work_items`); err != nil {
 		return ReplayResult{}, fmt.Errorf("clear work_items: %w", err)
 	}
@@ -118,6 +121,14 @@ func applyEventProjectionTx(ctx context.Context, tx *sql.Tx, event Event) error 
 		return applyPacketBuiltProjectionTx(ctx, tx, event)
 	case eventTypeFocusUsed:
 		return applyFocusUsedProjectionTx(ctx, tx, event)
+	case eventTypeWorktreeRegistered:
+		return applyWorktreeRegisteredProjectionTx(ctx, tx, event)
+	case eventTypeWorktreeAttached:
+		return applyWorktreeAttachedProjectionTx(ctx, tx, event)
+	case eventTypeWorktreeDetached:
+		return applyWorktreeDetachedProjectionTx(ctx, tx, event)
+	case eventTypeWorktreeArchived:
+		return applyWorktreeArchivedProjectionTx(ctx, tx, event)
 	case eventTypeGateTemplateCreate:
 		return applyGateTemplateCreatedProjectionTx(ctx, tx, event)
 	case eventTypeGateTemplateApprove:

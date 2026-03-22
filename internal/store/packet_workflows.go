@@ -84,6 +84,14 @@ func (s *Store) BuildRehydratePacket(ctx context.Context, p BuildPacketParams) (
 			return RehydratePacket{}, err
 		}
 		packetJSON["linked_work_items"] = linkedWorkItems
+		worktree, worktreeFound, err := activeWorktreeForIssueTx(ctx, tx, issueID)
+		if err != nil {
+			return RehydratePacket{}, err
+		}
+		if worktreeFound {
+			packetJSON["workspace"] = buildWorktreePacketValue(worktree)
+			state["worktree_id"] = worktree.WorktreeID
+		}
 		packetJSON["decision_summary"] = buildIssueDecisionSummary(issue, issueCycleNo, gates, openLoops, linkedWorkItems)
 		packetJSON["open_questions"] = buildIssueOpenQuestions(gates, openLoops)
 		relevantChunks, totalChunkCount, err := listRelevantContextChunksTx(ctx, tx, "issue", issueIDForSummary, packetRelevantChunkLimit)

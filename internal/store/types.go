@@ -156,6 +156,35 @@ type BuildPacketParams struct {
 	CommandID string
 }
 
+type RegisterWorktreeParams struct {
+	WorktreeID string
+	Path       string
+	RepoRoot   string
+	Branch     string
+	HeadOID    string
+	Actor      string
+	CommandID  string
+}
+
+type AttachWorktreeParams struct {
+	WorktreeID string
+	IssueID    string
+	Actor      string
+	CommandID  string
+}
+
+type DetachWorktreeParams struct {
+	WorktreeID string
+	Actor      string
+	CommandID  string
+}
+
+type ArchiveWorktreeParams struct {
+	WorktreeID string
+	Actor      string
+	CommandID  string
+}
+
 type GetPacketParams struct {
 	PacketID string
 }
@@ -215,6 +244,11 @@ type ListIssuesParams struct {
 	Type     string
 	Status   string
 	ParentID string
+}
+
+type ListWorktreesParams struct {
+	IssueID string
+	Status  string
 }
 
 type InitializeParams struct {
@@ -369,6 +403,34 @@ type focusUsedPayload struct {
 	FocusedAt     string `json:"focused_at"`
 }
 
+type worktreeRegisteredPayload struct {
+	WorktreeID   string `json:"worktree_id"`
+	Path         string `json:"path"`
+	RepoRoot     string `json:"repo_root"`
+	Branch       string `json:"branch,omitempty"`
+	HeadOID      string `json:"head_oid,omitempty"`
+	Status       string `json:"status"`
+	RegisteredAt string `json:"registered_at"`
+}
+
+type worktreeAttachedPayload struct {
+	WorktreeID  string `json:"worktree_id"`
+	IssueIDFrom string `json:"issue_id_from,omitempty"`
+	IssueIDTo   string `json:"issue_id_to"`
+	AttachedAt  string `json:"attached_at"`
+}
+
+type worktreeDetachedPayload struct {
+	WorktreeID  string `json:"worktree_id"`
+	IssueIDFrom string `json:"issue_id_from,omitempty"`
+	DetachedAt  string `json:"detached_at"`
+}
+
+type worktreeArchivedPayload struct {
+	WorktreeID string `json:"worktree_id"`
+	ArchivedAt string `json:"archived_at"`
+}
+
 type gateTemplateCreatedPayload struct {
 	TemplateID     string   `json:"template_id"`
 	Version        int      `json:"version"`
@@ -518,6 +580,19 @@ type AgentFocus struct {
 	ActiveCycleNo int    `json:"active_cycle_no,omitempty"`
 	LastPacketID  string `json:"last_packet_id"`
 	UpdatedAt     string `json:"updated_at"`
+}
+
+type Worktree struct {
+	WorktreeID  string `json:"worktree_id"`
+	Path        string `json:"path"`
+	RepoRoot    string `json:"repo_root"`
+	Branch      string `json:"branch,omitempty"`
+	HeadOID     string `json:"head_oid,omitempty"`
+	IssueID     string `json:"issue_id,omitempty"`
+	Status      string `json:"status"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+	LastEventID string `json:"last_event_id"`
 }
 
 type ContinuitySnapshotParams struct {

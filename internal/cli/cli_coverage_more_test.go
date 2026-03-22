@@ -166,6 +166,7 @@ func TestRunHelpJSONListsMachineReadableCommands(t *testing.T) {
 	for _, want := range []string{
 		"memori auth status [--db <path>] [--json]",
 		"memori init [--db <path>] [--issue-prefix <prefix>] [--append-agents-md] [--json]",
+		"memori worktree register --path <path> [--repo-root <path>] [--branch <name>] [--head <oid>] [--id <id>] [--db <path>] [--actor <actor>] [--command-id <id>] [--json]",
 		"memori gate template create --id <template-id> --version <n> --applies-to epic|story|task|bug [--applies-to ...] --file <path> [--actor <actor>] [--command-id <id>] [--json]",
 		"memori db replay [--json]",
 	} {

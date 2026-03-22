@@ -76,6 +76,7 @@ func buildPacketSummaryJSON(packet map[string]any, packetID string, packetSchema
 		"open_loops",
 		"next_actions",
 		"risks",
+		"workspace",
 		"continuity",
 		"provenance",
 	} {
