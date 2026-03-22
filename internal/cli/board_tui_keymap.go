@@ -1,166 +1,88 @@
 package cli
 
-import tea "github.com/charmbracelet/bubbletea"
+import "github.com/charmbracelet/bubbles/key"
 
-type boardKeyBinding struct {
-	label       string
-	description string
-	input       boardKeyInput
-	keyTypes    []tea.KeyType
-	runes       []string
-	help        bool
+type boardKeyMap struct {
+	Up               key.Binding
+	Down             key.Binding
+	PrevLane         key.Binding
+	NextLane         key.Binding
+	ToggleDetail     key.Binding
+	Search           key.Binding
+	ToggleHistory    key.Binding
+	ToggleHelp       key.Binding
+	ToggleContinuity key.Binding
+	Parent           key.Binding
+	Child            key.Binding
+	Collapse         key.Binding
+	Expand           key.Binding
+	Top              key.Binding
+	Bottom           key.Binding
+	PanelPageUp      key.Binding
+	PanelPageDown    key.Binding
+	Backspace        key.Binding
+	Quit             key.Binding
 }
 
-var boardKeyBindings = []boardKeyBinding{
-	{
-		label:       "up / k",
-		description: "move selection",
-		input:       boardKeyInput{action: boardActionUp},
-		keyTypes:    []tea.KeyType{tea.KeyUp},
-		runes:       []string{"k"},
-		help:        true,
-	},
-	{
-		label:       "down / j",
-		description: "move selection",
-		input:       boardKeyInput{action: boardActionDown},
-		keyTypes:    []tea.KeyType{tea.KeyDown},
-		runes:       []string{"j"},
-		help:        true,
-	},
-	{
-		label:       "left / h",
-		description: "switch lanes",
-		input:       boardKeyInput{action: boardActionPrevLane},
-		keyTypes:    []tea.KeyType{tea.KeyLeft},
-		runes:       []string{"h"},
-		help:        true,
-	},
-	{
-		label:       "right / l",
-		description: "switch lanes",
-		input:       boardKeyInput{action: boardActionNextLane},
-		keyTypes:    []tea.KeyType{tea.KeyRight},
-		runes:       []string{"l"},
-		help:        true,
-	},
-	{
-		label:       "enter",
-		description: "toggle issue detail / confirm search",
-		input:       boardKeyInput{action: boardActionToggleDetail},
-		keyTypes:    []tea.KeyType{tea.KeyEnter, tea.KeySpace},
-		help:        true,
-	},
-	{
-		label:       "/",
-		description: "search visible issue ids",
-		input:       boardKeyInput{action: boardActionSearchOpen},
-		runes:       []string{"/"},
-		help:        true,
-	},
-	{
-		label:       "f",
-		description: "toggle actionable/all work",
-		input:       boardKeyInput{action: boardActionToggleHistory},
-		runes:       []string{"f"},
-		help:        true,
-	},
-	{
-		label:       "?",
-		description: "toggle help",
-		input:       boardKeyInput{action: boardActionToggleHelp},
-		runes:       []string{"?"},
-		help:        true,
-	},
-	{
-		label:       "c",
-		description: "toggle detail / continuity",
-		input:       boardKeyInput{action: boardActionToggleContinuity},
-		runes:       []string{"c"},
-		help:        true,
-	},
-	{
-		label:       "[ / ]",
-		description: "jump parent / child",
-		input:       boardKeyInput{action: boardActionParent},
-		runes:       []string{"["},
-		help:        true,
-	},
-	{
-		label:       "[ / ]",
-		description: "jump parent / child",
-		input:       boardKeyInput{action: boardActionChild},
-		runes:       []string{"]"},
-	},
-	{
-		label:       "{ / }",
-		description: "collapse / expand subtree",
-		input:       boardKeyInput{action: boardActionCollapse},
-		runes:       []string{"{"},
-		help:        true,
-	},
-	{
-		label:       "{ / }",
-		description: "collapse / expand subtree",
-		input:       boardKeyInput{action: boardActionExpand},
-		runes:       []string{"}"},
-	},
-	{
-		label:       "g / G",
-		description: "jump top / bottom",
-		input:       boardKeyInput{action: boardActionTop},
-		runes:       []string{"g"},
-		help:        true,
-	},
-	{
-		label:       "g / G",
-		description: "jump top / bottom",
-		input:       boardKeyInput{action: boardActionBottom},
-		runes:       []string{"G"},
-	},
-	{
-		label:       "ctrl+u / pgup",
-		description: "scroll inspector up",
-		input:       boardKeyInput{action: boardActionPanelPageUp},
-		keyTypes:    []tea.KeyType{tea.KeyCtrlU, tea.KeyPgUp},
-		help:        true,
-	},
-	{
-		label:       "ctrl+d / pgdn",
-		description: "scroll inspector down",
-		input:       boardKeyInput{action: boardActionPanelPageDown},
-		keyTypes:    []tea.KeyType{tea.KeyCtrlD, tea.KeyPgDown},
-		help:        true,
-	},
-	{
-		label:       "backspace",
-		description: "edit search",
-		input:       boardKeyInput{backspace: true},
-		keyTypes:    []tea.KeyType{tea.KeyBackspace, tea.KeyCtrlH},
-	},
-	{
-		label:       "q / esc",
-		description: "quit / cancel search",
-		input:       boardKeyInput{action: boardActionQuit},
-		keyTypes:    []tea.KeyType{tea.KeyEsc, tea.KeyCtrlC},
-		runes:       []string{"q"},
-		help:        true,
-	},
+var boardKeys = boardKeyMap{
+	Up:               key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("up/k", "move selection")),
+	Down:             key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("down/j", "move selection")),
+	PrevLane:         key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("left/h", "switch lanes")),
+	NextLane:         key.NewBinding(key.WithKeys("right", "l"), key.WithHelp("right/l", "switch lanes")),
+	ToggleDetail:     key.NewBinding(key.WithKeys("enter", " "), key.WithHelp("enter", "detail / confirm search")),
+	Search:           key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search issue ids")),
+	ToggleHistory:    key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "toggle actionable/all work")),
+	ToggleHelp:       key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "toggle help")),
+	ToggleContinuity: key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "toggle detail / continuity")),
+	Parent:           key.NewBinding(key.WithKeys("["), key.WithHelp("[", "jump parent")),
+	Child:            key.NewBinding(key.WithKeys("]"), key.WithHelp("]", "jump child")),
+	Collapse:         key.NewBinding(key.WithKeys("{"), key.WithHelp("{", "collapse subtree")),
+	Expand:           key.NewBinding(key.WithKeys("}"), key.WithHelp("}", "expand subtree")),
+	Top:              key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "jump top")),
+	Bottom:           key.NewBinding(key.WithKeys("G"), key.WithHelp("G", "jump bottom")),
+	PanelPageUp:      key.NewBinding(key.WithKeys("ctrl+u", "pgup"), key.WithHelp("ctrl+u/pgup", "scroll inspector up")),
+	PanelPageDown:    key.NewBinding(key.WithKeys("ctrl+d", "pgdown"), key.WithHelp("ctrl+d/pgdn", "scroll inspector down")),
+	Backspace:        key.NewBinding(key.WithKeys("backspace", "ctrl+h")),
+	Quit:             key.NewBinding(key.WithKeys("esc", "ctrl+c", "q"), key.WithHelp("q/esc", "quit / cancel search")),
 }
 
-func boardHelpBindings() []boardKeyBinding {
-	entries := make([]boardKeyBinding, 0, len(boardKeyBindings))
-	seen := make(map[string]struct{}, len(boardKeyBindings))
-	for _, binding := range boardKeyBindings {
-		if !binding.help {
-			continue
-		}
-		key := binding.label + "\x00" + binding.description
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		entries = append(entries, binding)
+func (boardKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{
+		boardKeys.Up,
+		boardKeys.PrevLane,
+		boardKeys.ToggleDetail,
+		boardKeys.Search,
+		boardKeys.ToggleHistory,
+		boardKeys.ToggleHelp,
+		boardKeys.Quit,
 	}
-	return entries
+}
+
+func (boardKeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{
+			boardKeys.Up,
+			boardKeys.Down,
+			boardKeys.PrevLane,
+			boardKeys.NextLane,
+			boardKeys.Top,
+			boardKeys.Bottom,
+		},
+		{
+			boardKeys.ToggleDetail,
+			boardKeys.ToggleContinuity,
+			boardKeys.PanelPageUp,
+			boardKeys.PanelPageDown,
+		},
+		{
+			boardKeys.Search,
+			boardKeys.ToggleHistory,
+			boardKeys.Parent,
+			boardKeys.Child,
+			boardKeys.Collapse,
+			boardKeys.Expand,
+			boardKeys.ToggleHelp,
+			boardKeys.Quit,
+		},
+	}
 }

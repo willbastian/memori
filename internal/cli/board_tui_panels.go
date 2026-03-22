@@ -190,10 +190,11 @@ func boardLaneRowStyle(theme boardTheme, lane boardLane, row boardIssueRow) (fg,
 	return fg, "", bold, false
 }
 
-func boardHelpPanel(theme boardTheme, width, height int) []string {
+func boardHelpPanel(model boardTUIModel, theme boardTheme, width, height int) []string {
 	lines := []string{boardPanelHeader(theme, "Keyboard", "Quick reference", width)}
-	for _, binding := range boardHelpBindings() {
-		lines = append(lines, boardHelpLine(theme, binding.label, binding.description, width))
+	helpText := boardHelpView(model, theme, width, width >= 56)
+	for _, line := range strings.Split(helpText, "\n") {
+		lines = append(lines, padRight(line, width))
 	}
 	for len(lines) < height {
 		lines = append(lines, padRight("", width))
@@ -211,11 +212,7 @@ func boardSearchPanel(model boardTUIModel, theme boardTheme, width, height int) 
 		subtitle += fmt.Sprintf(" · %d/%d", minInt(model.searchIndex+1, len(results)), len(results))
 	}
 	lines = append(lines, boardPanelHeader(theme, "Search", subtitle, width))
-	prompt := "/"
-	if model.searchQuery != "" {
-		prompt += model.searchQuery
-	}
-	lines = append(lines, theme.paintLine(theme.detailFG, theme.panelAltBG, true, padRight(" "+prompt+" ", width)))
+	lines = append(lines, theme.paintLine(theme.detailFG, theme.panelAltBG, true, padRight(" "+boardSearchInputView(model, theme, maxInt(width-2, 1))+" ", width)))
 	hint := " short hash, full id, or mem- prefix; press f to include history "
 	lines = append(lines, theme.paintLine(theme.mutedFG, "", false, padRight(truncateBoardLine(hint, width), width)))
 	if len(results) == 0 {
@@ -261,12 +258,6 @@ func boardSearchPanel(model boardTUIModel, theme boardTheme, width, height int) 
 		lines = append(lines, padRight("", width))
 	}
 	return lines[:height]
-}
-
-func boardHelpLine(theme boardTheme, key, desc string, width int) string {
-	keyText := theme.paintLine(theme.keyFG, "", true, " ["+padRight(key, 14)+"] ")
-	descText := theme.paintLine(theme.helpFG, "", false, desc)
-	return padVisual(keyText+descText, width)
 }
 
 func boardSearchHighlightedID(issueID, query string, theme boardTheme) string {

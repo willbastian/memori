@@ -119,10 +119,10 @@ func renderBoardTUI(model boardTUIModel, colors bool) string {
 		if width >= 100 {
 			panelWidth := minInt(maxInt(width-18, 52), 76)
 			panelHeight := minInt(maxInt(bodyHeight-4, 10), 16)
-			help := boardHelpPanel(theme, maxInt(panelWidth-2, 1), maxInt(panelHeight-2, 1))
+			help := boardHelpPanel(model, theme, maxInt(panelWidth-2, 1), maxInt(panelHeight-2, 1))
 			lines = append(lines, boardOverlayPanel(theme, help, width, bodyHeight, panelWidth, panelHeight)...)
 		} else {
-			help := boardHelpPanel(theme, maxInt(width-2, 1), maxInt(bodyHeight-2, 1))
+			help := boardHelpPanel(model, theme, maxInt(width-2, 1), maxInt(bodyHeight-2, 1))
 			lines = append(lines, boardFramePanel(theme, help, width, bodyHeight)...)
 		}
 	} else if model.searchOpen {
@@ -495,26 +495,7 @@ func (theme boardTheme) paintLine(fg, bg string, bold bool, value string) string
 }
 
 func (theme boardTheme) paintLineStyled(fg, bg string, bold, dim bool, value string) string {
-	if !theme.colors {
-		return value
-	}
-	codes := make([]string, 0, 4)
-	if bold {
-		codes = append(codes, "1")
-	}
-	if dim {
-		codes = append(codes, "2")
-	}
-	if fg != "" {
-		codes = append(codes, "38;2;"+fg)
-	}
-	if bg != "" {
-		codes = append(codes, "48;2;"+bg)
-	}
-	if len(codes) == 0 {
-		return value
-	}
-	return "\x1b[" + strings.Join(codes, ";") + "m" + value + "\x1b[0m"
+	return theme.lineStyle(fg, bg, bold, dim).Render(value)
 }
 
 func (theme boardTheme) lineStyle(fg, bg string, bold, dim bool) lipgloss.Style {

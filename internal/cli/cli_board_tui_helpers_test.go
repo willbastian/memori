@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/willbastian/memori/internal/store"
 )
 
@@ -191,16 +193,12 @@ func TestBoardThemePaintLineHonorsColorMode(t *testing.T) {
 
 	colorTheme := boardTheme{colors: true}
 	got := colorTheme.paintLine("1;2;3", "4;5;6", true, "hello")
-	if !strings.HasPrefix(got, "\x1b[1;38;2;1;2;3;48;2;4;5;6m") {
-		t.Fatalf("expected ANSI prefix, got %q", got)
+	if !strings.Contains(got, "hello") {
+		t.Fatalf("expected lipgloss-rendered content to preserve text, got %q", got)
 	}
-	if !strings.HasSuffix(got, "hello\x1b[0m") {
-		t.Fatalf("expected ANSI suffix, got %q", got)
-	}
-
 	dimmed := colorTheme.paintLineStyled("1;2;3", "", false, true, "hello")
-	if !strings.HasPrefix(dimmed, "\x1b[2;38;2;1;2;3m") {
-		t.Fatalf("expected dim ANSI prefix, got %q", dimmed)
+	if !strings.Contains(dimmed, "hello") {
+		t.Fatalf("expected dimmed lipgloss render to preserve text, got %q", dimmed)
 	}
 }
 
@@ -236,25 +234,13 @@ func TestTrimVisualPreservesANSIWhenValueAlreadyFits(t *testing.T) {
 	}
 }
 
-func TestReplaceSegmentPreservesOuterANSIWrapper(t *testing.T) {
+func TestBoardSearchHighlightedIDUsesLipGlossHighlighting(t *testing.T) {
 	t.Parallel()
 
 	theme := boardTheme{colors: true}
-	line := theme.paintLine("1;2;3", "4;5;6", true, padRight(" HEADER ", 20))
-	segment := theme.paintLine("7;8;9", "10;11;12", true, " META ")
-
-	got := replaceSegment(line, 10, segment)
-	if visualWidth(got) != 20 {
-		t.Fatalf("expected replaced line to preserve rendered width 20, got %d (%q)", visualWidth(got), got)
-	}
-	if !strings.HasPrefix(got, "\x1b[1;38;2;1;2;3;48;2;4;5;6m") {
-		t.Fatalf("expected replaced line to retain outer style prefix, got %q", got)
-	}
-	if strings.Count(got, "\x1b[0m") < 3 {
-		t.Fatalf("expected replaced line to restyle prefix, segment, and suffix, got %q", got)
-	}
-	if !strings.Contains(stripANSI(got), "META") {
-		t.Fatalf("expected replaced line to include inserted meta text, got %q", stripANSI(got))
+	got := boardSearchHighlightedID("mem-abcd123", "abcd", theme)
+	if stripped := ansi.Strip(got); stripped != "mem-abcd123" {
+		t.Fatalf("expected highlighted id to preserve id text, got %q", stripped)
 	}
 }
 
@@ -359,13 +345,6 @@ func TestBoardStatusAndViewportHelpersCoverAsyncBranches(t *testing.T) {
 		t.Fatalf("expected mismatched toast clear to preserve toast")
 	}
 
-	if got := boardSpinnerGlyph(-1); got != "-" {
-		t.Fatalf("expected negative spinner frame to clamp to '-', got %q", got)
-	}
-	if got := boardSpinnerGlyph(2); got != "|" {
-		t.Fatalf("expected spinner frame 2 to be '|', got %q", got)
-	}
-
 	if got := boardCurrentPanelScroll(boardTUIModel{}); got != 0 {
 		t.Fatalf("expected nil panel scroll map to read as zero, got %d", got)
 	}
@@ -412,19 +391,20 @@ func TestBoardStatusAndViewportHelpersCoverAsyncBranches(t *testing.T) {
 	loadModel := boardTUIModel{
 		snapshotLoad: boardAsyncLoadState{loading: true, stale: true},
 		auditLoad:    boardAsyncLoadState{err: "boom"},
-		spinnerFrame: 1,
+		spinner:      newBoardSpinner(),
 	}
-	if got := boardInspectorStatusTokens(loadModel); !reflect.DeepEqual(got, []string{`snapshot stale \`, "audit failed"}) {
+	theme := defaultBoardTheme(false)
+	if got := boardInspectorStatusTokens(loadModel, theme); !reflect.DeepEqual(got, []string{"snapshot stale |", "audit failed"}) {
 		t.Fatalf("unexpected inspector status tokens %#v", got)
 	}
 
-	if got := boardLoadToken("snapshot", boardAsyncLoadState{loading: true}, 3); got != "snapshot /" {
+	if got := boardLoadToken("snapshot", boardAsyncLoadState{loading: true}, spinner.New(spinner.WithSpinner(spinner.Line))); got != "snapshot |" {
 		t.Fatalf("unexpected active load token %q", got)
 	}
-	if got := boardLoadToken("snapshot", boardAsyncLoadState{stale: true}, 0); got != "snapshot stale" {
+	if got := boardLoadToken("snapshot", boardAsyncLoadState{stale: true}, spinner.New(spinner.WithSpinner(spinner.Line))); got != "snapshot stale" {
 		t.Fatalf("unexpected stale load token %q", got)
 	}
-	if got := boardLoadToken("snapshot", boardAsyncLoadState{}, 0); got != "" {
+	if got := boardLoadToken("snapshot", boardAsyncLoadState{}, spinner.New(spinner.WithSpinner(spinner.Line))); got != "" {
 		t.Fatalf("expected empty load token, got %q", got)
 	}
 
@@ -839,8 +819,8 @@ func TestBoardThemeAndColorHelpersCoverRemainingBranches(t *testing.T) {
 		t.Fatalf("expected line style render to contain content, got %q", rendered)
 	}
 
-	if got := stripANSI(colorTheme.rule(5)); got != "·····" {
-		t.Fatalf("unexpected rule rendering %q", stripANSI(colorTheme.rule(5)))
+	if got := ansi.Strip(colorTheme.rule(5)); got != "·····" {
+		t.Fatalf("unexpected rule rendering %q", ansi.Strip(colorTheme.rule(5)))
 	}
 }
 
@@ -852,11 +832,11 @@ func TestBoardToastLineAndColorModeBranches(t *testing.T) {
 	}
 
 	model.toast = boardToast{message: "saved", tone: boardToastToneSuccess}
-	if got := stripANSI(boardToastLine(model, theme, 30)); !strings.Contains(got, "saved") {
+	if got := ansi.Strip(boardToastLine(model, theme, 30)); !strings.Contains(got, "saved") {
 		t.Fatalf("expected success toast line to contain message, got %q", got)
 	}
 	model.toast = boardToast{message: "warn", tone: boardToastToneWarn}
-	if got := stripANSI(boardToastLine(model, theme, 30)); !strings.Contains(got, "warn") {
+	if got := ansi.Strip(boardToastLine(model, theme, 30)); !strings.Contains(got, "warn") {
 		t.Fatalf("expected warn toast line to contain message, got %q", got)
 	}
 
