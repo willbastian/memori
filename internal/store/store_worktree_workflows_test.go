@@ -157,3 +157,59 @@ func TestReplayRebuildsWorktreeProjection(t *testing.T) {
 		t.Fatalf("unexpected rebuilt worktree: %+v", rebuilt)
 	}
 }
+
+func TestAttachWorktreeRejectsAmbiguousIssueWorkspace(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	issueID := "mem-c3d4e5f"
+	if _, _, _, err := s.CreateIssue(ctx, CreateIssueParams{
+		IssueID:   issueID,
+		Type:      "task",
+		Title:     "Single workspace issue",
+		Actor:     "test",
+		CommandID: "cmd-worktree-ambiguous-issue-create-1",
+	}); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+
+	first, _, _, err := s.RegisterWorktree(ctx, RegisterWorktreeParams{
+		Path:      "/tmp/memori/worktrees/c1",
+		RepoRoot:  "/tmp/memori",
+		Actor:     "test",
+		CommandID: "cmd-worktree-ambiguous-register-1",
+	})
+	if err != nil {
+		t.Fatalf("register first worktree: %v", err)
+	}
+	second, _, _, err := s.RegisterWorktree(ctx, RegisterWorktreeParams{
+		Path:      "/tmp/memori/worktrees/c2",
+		RepoRoot:  "/tmp/memori",
+		Actor:     "test",
+		CommandID: "cmd-worktree-ambiguous-register-2",
+	})
+	if err != nil {
+		t.Fatalf("register second worktree: %v", err)
+	}
+
+	if _, _, _, err := s.AttachWorktree(ctx, AttachWorktreeParams{
+		WorktreeID: first.WorktreeID,
+		IssueID:    issueID,
+		Actor:      "test",
+		CommandID:  "cmd-worktree-ambiguous-attach-1",
+	}); err != nil {
+		t.Fatalf("attach first worktree: %v", err)
+	}
+	if _, _, _, err := s.AttachWorktree(ctx, AttachWorktreeParams{
+		WorktreeID: second.WorktreeID,
+		IssueID:    issueID,
+		Actor:      "test",
+		CommandID:  "cmd-worktree-ambiguous-attach-2",
+	}); err == nil || err.Error() == "" {
+		t.Fatal("expected second worktree attach to fail")
+	} else if got := err.Error(); got != `issue "mem-c3d4e5f" already has active worktree "`+first.WorktreeID+`" attached` {
+		t.Fatalf("unexpected ambiguous attach error %q", got)
+	}
+}

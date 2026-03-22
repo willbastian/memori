@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -119,7 +120,15 @@ func assessWorkspaceContext(workspace *workspaceContext) *workspaceContext {
 		return &assessed
 	}
 	if _, err := os.Stat(path); err == nil {
-		assessed.Health = "available"
+		inferredRoot, inferErr := inferRepoRootFromPath(path)
+		switch {
+		case inferErr != nil:
+			assessed.Health = "stale"
+		case strings.TrimSpace(assessed.RepoRoot) != "" && filepath.Clean(inferredRoot) != filepath.Clean(assessed.RepoRoot):
+			assessed.Health = "stale"
+		default:
+			assessed.Health = "fresh"
+		}
 	} else if os.IsNotExist(err) {
 		assessed.Health = "missing"
 	}
@@ -176,8 +185,10 @@ func workspaceReason(workspace *workspaceContext) string {
 		return ""
 	}
 	switch strings.TrimSpace(workspace.Health) {
-	case "available":
-		return "attached workspace is available on this machine"
+	case "fresh":
+		return "attached workspace looks fresh on this machine"
+	case "stale":
+		return "attached workspace metadata looks stale on this machine"
 	case "missing":
 		return "attached workspace path is missing on this machine"
 	default:
@@ -193,8 +204,10 @@ func workspaceScoreDelta(workspace *workspaceContext) int {
 		return 0
 	}
 	switch strings.TrimSpace(workspace.Health) {
-	case "available":
+	case "fresh":
 		return 10
+	case "stale":
+		return -5
 	case "missing":
 		return -10
 	default:

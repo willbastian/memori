@@ -130,6 +130,11 @@ func (s *Store) AttachWorktree(ctx context.Context, p AttachWorktreeParams) (Wor
 	if _, err := getIssueTx(ctx, tx, issueID); err != nil {
 		return Worktree{}, Event{}, false, err
 	}
+	if active, found, err := activeWorktreeForIssueTx(ctx, tx, issueID); err != nil {
+		return Worktree{}, Event{}, false, err
+	} else if found && active.WorktreeID != worktreeID {
+		return Worktree{}, Event{}, false, fmt.Errorf("issue %q already has active worktree %q attached", issueID, active.WorktreeID)
+	}
 
 	payload := worktreeAttachedPayload{
 		WorktreeID:  worktreeID,

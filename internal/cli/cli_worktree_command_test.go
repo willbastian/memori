@@ -203,6 +203,59 @@ func TestRunWorktreeRejectsUnknownSubcommands(t *testing.T) {
 	}
 }
 
+func TestWorktreeAttachRejectsAmbiguousIssueWorkspace(t *testing.T) {
+	t.Parallel()
+
+	dbPath := seedWorktreeCommandTestDB(t)
+	repoRoot := t.TempDir()
+
+	register := func(pathSuffix, commandID string) string {
+		t.Helper()
+		stdout, stderr, err := runMemoriForTest(
+			"worktree", "register",
+			"--db", dbPath,
+			"--path", filepath.Join(repoRoot, pathSuffix),
+			"--repo-root", repoRoot,
+			"--command-id", commandID,
+			"--json",
+		)
+		if err != nil {
+			t.Fatalf("worktree register %s: %v\nstderr: %s", pathSuffix, err, stderr)
+		}
+		var registered worktreeEnvelope
+		if err := json.Unmarshal([]byte(stdout), &registered); err != nil {
+			t.Fatalf("decode worktree register json: %v\nstdout: %s", err, stdout)
+		}
+		return registered.Data.Worktree.WorktreeID
+	}
+
+	first := register("feature-a", "cmd-worktree-cli-ambiguous-register-1")
+	second := register("feature-b", "cmd-worktree-cli-ambiguous-register-2")
+
+	if _, stderr, err := runMemoriForTest(
+		"worktree", "attach",
+		"--db", dbPath,
+		"--worktree", first,
+		"--issue", "mem-a111111",
+		"--command-id", "cmd-worktree-cli-ambiguous-attach-1",
+		"--json",
+	); err != nil {
+		t.Fatalf("attach first worktree: %v\nstderr: %s", err, stderr)
+	}
+
+	_, _, err := runMemoriForTest(
+		"worktree", "attach",
+		"--db", dbPath,
+		"--worktree", second,
+		"--issue", "mem-a111111",
+		"--command-id", "cmd-worktree-cli-ambiguous-attach-2",
+		"--json",
+	)
+	if err == nil || !strings.Contains(err.Error(), `already has active worktree`) {
+		t.Fatalf("expected ambiguous attach error, got %v", err)
+	}
+}
+
 func seedWorktreeCommandTestDB(t *testing.T) string {
 	t.Helper()
 
