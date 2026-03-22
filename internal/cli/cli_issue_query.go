@@ -82,6 +82,9 @@ func runIssueShow(args []string, out io.Writer) error {
 		ui.section("Workspace")
 		ui.field("Worktree", workspace.WorktreeID)
 		ui.field("Path", workspace.Path)
+		if strings.TrimSpace(workspace.Health) != "" {
+			ui.field("Health", workspace.Health)
+		}
 		if strings.TrimSpace(workspace.RepoRoot) != "" {
 			ui.field("Repo Root", workspace.RepoRoot)
 		}
@@ -176,6 +179,11 @@ func runIssueNext(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	workspaceByIssue, err := activeWorkspaceByIssue(ctx, s)
+	if err != nil {
+		return err
+	}
+	next = annotateIssueNextResultWithWorkspace(next, workspaceByIssue)
 	workspace, err := activeWorkspaceForIssue(ctx, s, next.Candidate.Issue.ID)
 	if err != nil {
 		return err

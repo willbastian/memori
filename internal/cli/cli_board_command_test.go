@@ -48,6 +48,7 @@ type boardSnapshotEnvelope struct {
 					WorktreeID string `json:"worktree_id"`
 					Path       string `json:"path"`
 					Branch     string `json:"branch"`
+					Health     string `json:"health"`
 				} `json:"workspace"`
 				Reasons []string `json:"reasons"`
 			} `json:"likely_next"`
@@ -93,6 +94,9 @@ func TestBoardCommandJSONShowsStatusBucketsAndContinuityRanking(t *testing.T) {
 	if resp.Data.Snapshot.LikelyNext[0].Workspace.WorktreeID == "" || !strings.Contains(resp.Data.Snapshot.LikelyNext[0].Workspace.Path, "board-worktree") {
 		t.Fatalf("expected likely next workspace in board snapshot, got %+v", resp.Data.Snapshot.LikelyNext[0].Workspace)
 	}
+	if resp.Data.Snapshot.LikelyNext[0].Workspace.Health != "missing" {
+		t.Fatalf("expected missing workspace health in board snapshot, got %+v", resp.Data.Snapshot.LikelyNext[0].Workspace)
+	}
 
 	reasons := strings.Join(resp.Data.Snapshot.LikelyNext[0].Reasons, "\n")
 	for _, want := range []string{
@@ -101,6 +105,7 @@ func TestBoardCommandJSONShowsStatusBucketsAndContinuityRanking(t *testing.T) {
 		"has 1 open loop(s) that need continuity",
 		"1 required gate(s) are failing",
 		"available issue packet is stale",
+		"attached workspace path is missing on this machine",
 	} {
 		if !strings.Contains(reasons, want) {
 			t.Fatalf("expected likely-next reasons to contain %q, got:\n%s", want, reasons)
@@ -130,13 +135,14 @@ func TestBoardCommandHumanOutputShowsSections(t *testing.T) {
 		"Ready (2):",
 		"mem-a121212 Baseline active task",
 		"mem-d454545 Blocked bug",
-		"mem-b343434 Continuity-heavy task [task/todo] [s300,focus,packet,loop,+5 more]",
+		"mem-b343434 Continuity-heavy task [task/todo]",
 		"Agent agent-board-1 focus points to mem-b343434 cycle 1 via packet",
 		"Latest issue packet",
 		"mem-b343434 is ready to resume and its saved issue packet is stale; rebuild it before the next handoff.",
 		"mem-d454545 is blocked and has no saved issue packet yet; capture one before the next handoff.",
 		"mem-b343434 ->",
 		"branch=feature/board-worktree",
+		"health=missing",
 		"Next:",
 		"memori board --watch",
 	} {

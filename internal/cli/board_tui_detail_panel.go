@@ -182,6 +182,7 @@ func boardWorkspaceSection(row boardIssueRow, width int) (string, []string) {
 	}
 
 	appendWrapped("path", row.Workspace.Path)
+	appendWrapped("health", row.Workspace.Health)
 	appendWrapped("branch", row.Workspace.Branch)
 	appendWrapped("worktree", row.Workspace.WorktreeID)
 	if len(lines) == 0 {

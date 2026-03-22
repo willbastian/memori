@@ -17,6 +17,7 @@ type issueNextEnvelope struct {
 			WorktreeID string `json:"worktree_id"`
 			Path       string `json:"path"`
 			Branch     string `json:"branch"`
+			Health     string `json:"health"`
 		} `json:"workspace"`
 		Next struct {
 			Considered int `json:"considered"`
@@ -241,6 +242,9 @@ func TestIssueNextPrefersContinuitySignalsForAgentResume(t *testing.T) {
 	if resp.Data.Workspace.WorktreeID != worktree.WorktreeID || resp.Data.Workspace.Branch != "feature/issue-next-worktree" {
 		t.Fatalf("expected issue next workspace payload, got %+v", resp.Data.Workspace)
 	}
+	if resp.Data.Workspace.Health != "missing" {
+		t.Fatalf("expected missing local workspace path signal, got %+v", resp.Data.Workspace)
+	}
 
 	reasons := strings.Join(resp.Data.Next.Candidate.Reasons, "\n")
 	for _, want := range []string{
@@ -249,6 +253,7 @@ func TestIssueNextPrefersContinuitySignalsForAgentResume(t *testing.T) {
 		"has 1 open loop(s) that need continuity",
 		"1 required gate(s) are failing",
 		"available issue packet is stale",
+		"attached workspace path is missing on this machine",
 	} {
 		if !strings.Contains(reasons, want) {
 			t.Fatalf("expected reasons to contain %q, got:\n%s", want, reasons)

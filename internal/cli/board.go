@@ -93,7 +93,9 @@ var boardReasonRules = []boardReasonRule{
 	{contains: "required gate(s) are failing", weight: 85, tag: "fail"},
 	{contains: "required gate(s) are blocked", weight: 85, tag: "blocked"},
 	{contains: "required gate(s) still need evaluation", weight: 85, tag: "gates"},
+	{contains: "workspace path is missing", weight: 82, tag: "ws-miss"},
 	{contains: "issue packet", weight: 80},
+	{contains: "workspace is available", weight: 78, tag: "ws"},
 	{contains: "packet is stale", weight: 75, tag: "stale"},
 	{contains: "issue packet is ready", tag: "fresh"},
 	{contains: "fresh issue packet", tag: "fresh"},
@@ -253,11 +255,12 @@ func buildBoardSnapshot(ctx context.Context, s *store.Store, agent string, now t
 	if err != nil {
 		return boardSnapshot{}, err
 	}
-	scoreByID, rankByID := boardCandidateMaps(nextCandidates)
 	workspaceByIssue, err := activeWorkspaceByIssue(ctx, s)
 	if err != nil {
 		return boardSnapshot{}, err
 	}
+	nextCandidates = annotateIssueNextCandidatesWithWorkspace(nextCandidates, workspaceByIssue)
+	scoreByID, rankByID := boardCandidateMaps(nextCandidates)
 
 	snapshot := boardSnapshot{
 		GeneratedAt: now.Format(time.RFC3339),
