@@ -186,7 +186,7 @@ func runInit(args []string, out io.Writer) error {
 	fs.SetOutput(io.Discard)
 	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
 	issuePrefix := fs.String("issue-prefix", store.DefaultIssueKeyPrefix, "project-wide issue key prefix for new issues")
-	appendAgentsMD := fs.Bool("append-agents-md", false, "append memori worktree continuity guidance and the closeout checklist to AGENTS.md in the current directory")
+	appendAgentsMD := fs.Bool("append-agents-md", false, "append memori agent setup, worktree continuity guidance, and the closeout checklist to AGENTS.md in the current directory")
 	jsonOut := fs.Bool("json", false, "machine-readable output")
 	if err := fs.Parse(args); err != nil {
 		return err

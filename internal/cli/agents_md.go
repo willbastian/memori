@@ -15,6 +15,16 @@ const (
 
 var managedAgentsLandThePlaneSection = strings.Join([]string{
 	"<!-- memori:land-the-plane:start -->",
+	"## Non-Interactive Agent Setup",
+	"- Before mutating Memori state from an agent or automation flow, declare the writer as an LLM explicitly:",
+	"```bash",
+	"export MEMORI_PRINCIPAL=llm",
+	"export MEMORI_LLM_PROVIDER=openai",
+	"export MEMORI_LLM_MODEL=gpt-5",
+	"export MEMORI_ALLOW_MANUAL_COMMAND_ID=1",
+	"```",
+	"- If you skip `MEMORI_PRINCIPAL=llm`, Memori will treat the caller as a human writer and mutating commands will prompt for the configured password.",
+	"",
 	"## Worktree Continuity",
 	"- When the current work already lives in a Git worktree, register that workspace in Memori so issue, board, and resume flows can carry the same execution context forward.",
 	"- If you are standing in the worktree already, prefer `memori worktree adopt-cwd --branch <branch>`; otherwise use `memori worktree register --path <path> --repo-root <repo-root> --branch <branch>`.",
@@ -124,6 +134,9 @@ func replaceManagedAgentsSection(current string) (string, bool, error) {
 
 func agentsLandThePlaneAlreadyPresent(current string) bool {
 	required := [][]string{
+		{"## Non-Interactive Agent Setup"},
+		{"`MEMORI_PRINCIPAL=llm`", "export MEMORI_PRINCIPAL=llm"},
+		{"configured password", "human writer and mutating commands will prompt for the configured password"},
 		{"## Worktree Continuity"},
 		{"`memori worktree adopt-cwd --branch <branch>`", "`go run ./cmd/memori worktree adopt-cwd --branch <branch>`"},
 		{"`memori worktree attach --worktree <worktree_id> --issue <issue_key> --command-id \"<unique-id>\" --json`", "`go run ./cmd/memori worktree attach --worktree <worktree_id> --issue <issue_key> --command-id \"<unique-id>\" --json`"},
