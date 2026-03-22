@@ -508,10 +508,12 @@ The current terminal visual direction aims for a calmer, title-first board:
 
 - Bubble Tea owns refresh, key handling, quit behavior, and terminal resize updates so the interactive path stays responsive without a hand-rolled raw-terminal loop
 - Lip Gloss owns the layout and styling for the header, tabs, issue list, search, detail, continuity, and footer surfaces
+- the main board surfaces render as framed panels instead of a loose wall of rows, so list, search, detail, and continuity states feel intentionally separated
 - the default wide layout stays list-first so you can scan work before opening extra context
+- rows lead with titles first, then compact issue/type/status chips, instead of treating the issue id as the primary visual anchor
 - chrome stays quieter than the issue text, with the header carrying summary and the footer carrying just the key hints
-- rows lead with titles and keep supporting metadata compact so hierarchy and context stay legible without marker clutter
 - detail and continuity inspection remain one keystroke away instead of competing for attention all the time
+- in narrow layouts, opening detail or continuity gives that pane the body instead of clipping the issue content under a tiny list preview
 
 Example wide-layout mockup:
 

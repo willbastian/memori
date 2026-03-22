@@ -28,7 +28,7 @@ func TestRenderBoardTUIWideShowsDetailPane(t *testing.T) {
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
 		"MEMORI BOARD",
-		"NEXT 1",
+		"NEXT / 1",
 		"ISSUE DETAIL",
 		"mem-a111111 · Next one",
 		"[ REASONS ]",
@@ -52,8 +52,8 @@ func TestRenderBoardTUIWideDefaultsToListOnlyUntilPaneOpened(t *testing.T) {
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
 		"MEMORI BOARD",
-		"NEXT 1",
-		"Next one · task · mem-a111111",
+		"NEXT / 1",
+		"Next one  [task] mem-a111111",
 		"enter details",
 	} {
 		if !strings.Contains(rendered, want) {
@@ -397,8 +397,8 @@ func TestRenderBoardTUIShowsHierarchyCuesInListAndDetail(t *testing.T) {
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
-		"[-] a111111  Parent story",
-		"`- b222222  Child task",
+		"[-] Parent story  a111111",
+		"`- Child task  b222222",
 		"[ HIERARCHY ]",
 		"path: mem-a111111 > mem-b222222",
 		"parent: mem-a111111 (Parent story)",
@@ -466,10 +466,10 @@ func TestRenderBoardTUIShowsConsistentNestedHierarchyPrefixes(t *testing.T) {
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
-		"[-] mem-a111111  Root epic",
-		"   [-] mem-b222222  Nested story",
-		"      `- mem-d444444  Grandchild task",
-		"   `- mem-c333333  Sibling story",
+		"[-] Root epic  mem-a111111",
+		"   [-] Nested story  mem-b222222",
+		"      `- Grandchild task  mem-d444444",
+		"   `- Sibling story  mem-c333333",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected nested hierarchy render to contain %q, got:\n%s", want, rendered)
@@ -531,9 +531,9 @@ func TestRenderBoardTUIUsesLaneSiblingOrderForLeafBranches(t *testing.T) {
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
-		"|- mem-b222222  First child",
-		"|- mem-c333333  Second child",
-		"`- mem-d444444  Third child",
+		"|- First child  mem-b222222",
+		"|- Second child  mem-c333333",
+		"`- Third child  mem-d444444",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected lane-order branches to contain %q, got:\n%s", want, rendered)
@@ -571,7 +571,7 @@ func TestRenderBoardTUIShowsSearchPanel(t *testing.T) {
 		"/b22",
 		"BLOCKED",
 		"b222222",
-		"Search /b22",
+		"[enter jump]",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected search render to contain %q, got:\n%s", want, rendered)
@@ -608,7 +608,7 @@ func TestRenderBoardTUINarrowShowsSearchPanel(t *testing.T) {
 		"SEARCH",
 		"/b22",
 		"BLOCKED",
-		"Search /b22",
+		"[enter jump]",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected narrow search render to contain %q, got:\n%s", want, rendered)
@@ -628,7 +628,7 @@ func TestRenderBoardTUIVeryNarrowStillShowsTickets(t *testing.T) {
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
 		"BOARD",
-		"READY 1 |",
+		"READY 1",
 		"a11111",
 		"A narrow pa",
 	} {
@@ -765,8 +765,8 @@ func TestRenderBoardTUIHistoryModeShowsDoneAndWontDoTabs(t *testing.T) {
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
 		"ALL WORK",
-		"DONE 1",
-		"WONTDO 1",
+		"DONE / 1",
+		"WONTDO / 1",
 		"f history",
 	} {
 		if !strings.Contains(rendered, want) {
@@ -820,9 +820,9 @@ func TestRenderBoardTUIReadyLaneMarksReadyRowsWithinContextTree(t *testing.T) {
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
-		"[-] mem-a111111  Parent story · in progress · story",
-		"|- mem-b222222  Ready child · task",
-		"`- mem-c333333  Active sibling · in progress · bug",
+		"Parent story  mem-a111111  [in progress] [story]",
+		"Ready child  mem-b222222  [task]",
+		"Active sibling  mem-c333333  [in progress] [bug]",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected ready context render to contain %q, got:\n%s", want, rendered)
@@ -875,9 +875,9 @@ func TestRenderBoardTUIActiveLaneMarksActiveRowsWithinContextTree(t *testing.T) 
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
-		"[-] mem-a111111  Parent story · todo · story",
-		"|- mem-b222222  Active child · task",
-		"`- mem-c333333  Ready sibling · todo · task",
+		"Parent story  mem-a111111  [todo] [story]",
+		"Active child  mem-b222222  [task]",
+		"Ready sibling  mem-c333333  [todo] [task]",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected active context render to contain %q, got:\n%s", want, rendered)

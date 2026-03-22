@@ -113,40 +113,37 @@ func renderBoardTUI(model boardTUIModel, colors bool) string {
 
 	bodyHeight := maxInt(height-4, 5)
 	if model.helpOpen {
-		lines = append(lines, boardHelpPanel(theme, width, bodyHeight)...)
+		help := boardHelpPanel(theme, maxInt(width-2, 1), maxInt(bodyHeight-2, 1))
+		lines = append(lines, boardFramePanel(theme, help, width, bodyHeight)...)
 	} else if model.searchOpen {
 		if width >= 100 {
 			leftWidth := minInt(maxInt(width/2-2, 34), 44)
 			rightWidth := width - leftWidth - 3
-			left := boardListPanel(model, theme, leftWidth, bodyHeight)
-			right := boardSearchPanel(model, theme, rightWidth, bodyHeight)
+			left := boardFramePanel(theme, boardListPanel(model, theme, maxInt(leftWidth-2, 1), maxInt(bodyHeight-2, 1)), leftWidth, bodyHeight)
+			right := boardFramePanel(theme, boardSearchPanel(model, theme, maxInt(rightWidth-2, 1), maxInt(bodyHeight-2, 1)), rightWidth, bodyHeight)
 			lines = append(lines, boardJoinColumns(left, right, leftWidth, rightWidth)...)
 		} else {
 			listHeight := maxInt(bodyHeight/2, 6)
 			searchHeight := maxInt(bodyHeight-listHeight-1, 6)
-			lines = append(lines, boardListPanel(model, theme, width, listHeight)...)
+			lines = append(lines, boardFramePanel(theme, boardListPanel(model, theme, maxInt(width-2, 1), maxInt(listHeight-2, 1)), width, listHeight)...)
 			lines = append(lines, theme.rule(width))
-			lines = append(lines, boardSearchPanel(model, theme, width, searchHeight)...)
+			lines = append(lines, boardFramePanel(theme, boardSearchPanel(model, theme, maxInt(width-2, 1), maxInt(searchHeight-2, 1)), width, searchHeight)...)
 		}
 	} else if width >= 100 && model.detailOpen {
 		leftWidth := minInt(maxInt(width/2-2, 34), 44)
 		rightWidth := width - leftWidth - 3
-		left := boardListPanel(model, theme, leftWidth, bodyHeight)
-		right := boardSidePanel(model, theme, rightWidth, bodyHeight)
+		left := boardFramePanel(theme, boardListPanel(model, theme, maxInt(leftWidth-2, 1), maxInt(bodyHeight-2, 1)), leftWidth, bodyHeight)
+		right := boardFramePanel(theme, boardSidePanel(model, theme, maxInt(rightWidth-2, 1), maxInt(bodyHeight-2, 1)), rightWidth, bodyHeight)
 		lines = append(lines, boardJoinColumns(left, right, leftWidth, rightWidth)...)
 	} else {
+		if model.detailOpen {
+			lines = append(lines, boardFramePanel(theme, boardSidePanel(model, theme, maxInt(width-2, 1), maxInt(bodyHeight-2, 1)), width, bodyHeight)...)
+			lines = append(lines, boardFooterLine(model, theme, width))
+			return lipgloss.JoinVertical(lipgloss.Left, lines...)
+		}
+
 		listHeight := bodyHeight
-		if model.detailOpen {
-			detailHeight := maxInt((bodyHeight*2)/3, 10)
-			maxDetailHeight := maxInt(bodyHeight-4, 1)
-			detailHeight = minInt(detailHeight, maxDetailHeight)
-			listHeight = maxInt(bodyHeight-detailHeight-1, 3)
-		}
-		lines = append(lines, boardListPanel(model, theme, width, listHeight)...)
-		if model.detailOpen {
-			lines = append(lines, theme.rule(width))
-			lines = append(lines, boardSidePanel(model, theme, width, bodyHeight-listHeight-1)...)
-		}
+		lines = append(lines, boardFramePanel(theme, boardListPanel(model, theme, maxInt(width-2, 1), maxInt(listHeight-2, 1)), width, listHeight)...)
 	}
 
 	lines = append(lines, boardFooterLine(model, theme, width))
@@ -157,7 +154,7 @@ func boardHeaderLine(model boardTUIModel, theme boardTheme, width int) string {
 	if width < 36 {
 		return theme.paintLine(theme.titleFG, theme.titleBG, true, padRight(truncateBoardLine(" BOARD "+formatBoardSummaryCompact(model.snapshot.Summary), width), width))
 	}
-	title := " MEMORI BOARD "
+	title := " MEMORI BOARD / BUBBLE TEA "
 	left := theme.paintLine(theme.titleFG, theme.titleBG, true, padRight(title, width))
 	meta := boardHeaderMeta(model, theme, width)
 	rightStart := maxInt(width-visualWidth(meta), visualWidth(title))
@@ -166,12 +163,12 @@ func boardHeaderLine(model boardTUIModel, theme boardTheme, width int) string {
 
 func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
 	if width < 56 {
-		line := formatBoardTabsCompact(model, width)
+		line := " lanes / " + formatBoardTabsCompact(model, width)
 		return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(line, width), width))
 	}
 	tabs := make([]string, 0, len(model.availableLanes()))
 	for _, lane := range model.availableLanes() {
-		label := fmt.Sprintf(" %s %d ", strings.ToUpper(boardLaneTitle(lane)), model.issueCountForLane(lane))
+		label := fmt.Sprintf(" %s / %d ", strings.ToUpper(boardLaneTitle(lane)), model.issueCountForLane(lane))
 		fg, bg := theme.mutedFG, theme.panelBG
 		bold := false
 		if lane == model.lane {
@@ -208,7 +205,7 @@ func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
 		if model.showHistory {
 			scope = "all"
 		}
-		footer := fmt.Sprintf(" Search /%s  |  enter jump  j/k results  backspace edit  f scope:%s  esc cancel  ? help ", model.searchQuery, scope)
+		footer := fmt.Sprintf(" /%s  [enter jump] [j/k results] [backspace edit] [f scope:%s] [esc cancel] [? help] ", model.searchQuery, scope)
 		return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
 	}
 	row, ok := model.selectedRow()
@@ -227,7 +224,7 @@ func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
 			panelHint = "enter close  c continuity"
 		}
 	}
-	footer := fmt.Sprintf(" %s  |  %s  |  %s  |  f history  ? help ", row.Issue.ID, truncateBoardLine(row.Issue.Title, maxInt(width/3, 18)), panelHint)
+	footer := fmt.Sprintf(" %s  [%s]  %s  |  [%s] [f history] [? help] ", row.Issue.ID, strings.ToLower(row.Issue.Type), truncateBoardLine(row.Issue.Title, maxInt(width/3, 18)), panelHint)
 	return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
 }
 
@@ -288,13 +285,54 @@ func boardPanelHeader(theme boardTheme, label, subtitle string, width int) strin
 	return line
 }
 
+func boardFramePanel(theme boardTheme, lines []string, width, height int) []string {
+	if width <= 2 || height <= 2 {
+		return lines
+	}
+	innerWidth := width - 2
+	innerHeight := height - 2
+	body := make([]string, 0, innerHeight)
+	for _, line := range lines {
+		if len(body) >= innerHeight {
+			break
+		}
+		body = append(body, padRight(line, innerWidth))
+	}
+	for len(body) < innerHeight {
+		body = append(body, padRight("", innerWidth))
+	}
+
+	top := theme.borderFrameLine("╭" + strings.Repeat("─", innerWidth) + "╮")
+	bottom := theme.borderFrameLine("╰" + strings.Repeat("─", innerWidth) + "╯")
+	framed := make([]string, 0, height)
+	framed = append(framed, top)
+	for _, line := range body {
+		content := line
+		if theme.colors && theme.panelBG != "" {
+			content = lipgloss.NewStyle().
+				Background(lipgloss.Color(boardLipGlossColor(theme.panelBG))).
+				Render(padRight(line, innerWidth))
+		} else {
+			content = padRight(line, innerWidth)
+		}
+		framed = append(framed, lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			theme.borderFrameToken("│"),
+			content,
+			theme.borderFrameToken("│"),
+		))
+	}
+	framed = append(framed, bottom)
+	return framed
+}
+
 func boardJoinColumns(left, right []string, leftWidth, rightWidth int) []string {
 	leftBlock := lipgloss.JoinVertical(lipgloss.Left, left...)
 	rightBlock := lipgloss.JoinVertical(lipgloss.Left, right...)
 	joined := lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		lipgloss.NewStyle().Width(leftWidth).MaxWidth(leftWidth).Render(leftBlock),
-		" | ",
+		" ",
 		lipgloss.NewStyle().Width(rightWidth).MaxWidth(rightWidth).Render(rightBlock),
 	)
 	return strings.Split(joined, "\n")
@@ -428,7 +466,22 @@ func (theme boardTheme) rule(width int) string {
 	if theme.colors && theme.borderFG != "" {
 		style = style.Foreground(lipgloss.Color(boardLipGlossColor(theme.borderFG)))
 	}
-	return style.Render(strings.Repeat("-", maxInt(width, 0)))
+	return style.Render(strings.Repeat("·", maxInt(width, 0)))
+}
+
+func (theme boardTheme) borderFrameLine(value string) string {
+	style := lipgloss.NewStyle()
+	if theme.colors && theme.borderFG != "" {
+		style = style.Foreground(lipgloss.Color(boardLipGlossColor(theme.borderFG)))
+	}
+	if theme.colors && theme.panelBG != "" {
+		style = style.Background(lipgloss.Color(boardLipGlossColor(theme.panelBG)))
+	}
+	return style.Render(value)
+}
+
+func (theme boardTheme) borderFrameToken(value string) string {
+	return theme.borderFrameLine(value)
 }
 
 func boardLipGlossColor(value string) string {
