@@ -66,6 +66,14 @@ Use `go run ./cmd/memori ...` for the commands below when you are operating insi
    - Use replay when you need to recompute derived state such as gate projections, packets, focus, summaries, or open loops from the append-only ledger.
    - Use replay when validating continuity, packet, session, or other derived-projection changes against the append-only ledger.
 
+## Worktree Continuity
+- When the current work already lives in a Git worktree, register that workspace in Memori so issue, board, and resume flows can carry the same execution context forward.
+- If you are standing in the worktree already, prefer `go run ./cmd/memori worktree adopt-cwd --branch <branch>`; otherwise use `go run ./cmd/memori worktree register --path <path> --repo-root <repo-root> --branch <branch>`.
+- Attach the recorded workspace to the active issue with `go run ./cmd/memori worktree attach --worktree <worktree_id> --issue <issue_key> --command-id "<unique-id>" --json`.
+- After attachment, `issue show`, `issue next`, `board`, and `context resume` will surface the workspace and its local health.
+- Memori tracks and ranks workspace context, but it does not create, switch, or delete Git worktrees for you.
+- Keep one active attached worktree per issue. Detach or archive the old one before attaching a replacement.
+
 ## Command ID Convention
 For mutating commands, always pass a stable `--command-id`.
 

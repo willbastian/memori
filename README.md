@@ -314,7 +314,7 @@ memori backlog
 
 The default database path is `.memori/memori.db` inside that repository. Issue keys will use the prefix you choose, for example `acme-a1b2c3d`.
 
-If the repository uses `AGENTS.md` for collaborator guidance, add `--append-agents-md` during init to append Memori's standard "Land The Plane" closeout checklist in the current repo. The managed block is idempotent, so rerunning the command updates that block instead of duplicating it.
+If the repository uses `AGENTS.md` for collaborator guidance, add `--append-agents-md` during init to append Memori's standard worktree continuity guidance and managed "Land The Plane" closeout checklist in the current repo. The managed block is idempotent, so rerunning the command updates that block instead of duplicating it.
 
 ### 2. Set up human writes
 
@@ -375,6 +375,8 @@ memori worktree list --issue acme-a1b2c3d
 ```
 
 Memori tracks worktree metadata and issue attachment locally for continuity and packets; it does not create, switch, or delete Git worktrees for you.
+
+If you bootstrap agent guidance with `memori init --append-agents-md`, the generated `AGENTS.md` block includes the same worktree continuity workflow so future agents know to adopt or register the workspace and attach it to the issue before relying on resume or board context.
 
 New issues default to generated keys in `{prefix}-{shortSHA}` format when you omit `--key`. Mutation commands also generate command IDs automatically unless you explicitly opt into supplying your own with `MEMORI_ALLOW_MANUAL_COMMAND_ID=1`.
 

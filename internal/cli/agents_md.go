@@ -15,6 +15,14 @@ const (
 
 var managedAgentsLandThePlaneSection = strings.Join([]string{
 	"<!-- memori:land-the-plane:start -->",
+	"## Worktree Continuity",
+	"- When the current work already lives in a Git worktree, register that workspace in Memori so issue, board, and resume flows can carry the same execution context forward.",
+	"- If you are standing in the worktree already, prefer `memori worktree adopt-cwd --branch <branch>`; otherwise use `memori worktree register --path <path> --repo-root <repo-root> --branch <branch>`.",
+	"- Attach the recorded workspace to the active issue with `memori worktree attach --worktree <worktree_id> --issue <issue_key> --command-id \"<unique-id>\" --json`.",
+	"- After attachment, `issue show`, `issue next`, `board`, and `context resume` will surface the workspace and its local health.",
+	"- Memori tracks and ranks workspace context, but it does not create, switch, or delete Git worktrees for you.",
+	"- Keep one active attached worktree per issue. Detach or archive the old one before attaching a replacement.",
+	"",
 	"## Land The Plane",
 	"Before closing a task, run this checklist in order:",
 	"",
@@ -115,14 +123,24 @@ func replaceManagedAgentsSection(current string) (string, bool, error) {
 }
 
 func agentsLandThePlaneAlreadyPresent(current string) bool {
-	required := []string{
-		"## Land The Plane",
-		"`git push origin <branch>`",
-		"`memori gate set instantiate --issue <issue_key> --command-id \"<unique-id>\" --json`",
-		"`memori issue update --key <issue_key> --status done --command-id \"<unique-id>\" --json`",
+	required := [][]string{
+		{"## Worktree Continuity"},
+		{"`memori worktree adopt-cwd --branch <branch>`", "`go run ./cmd/memori worktree adopt-cwd --branch <branch>`"},
+		{"`memori worktree attach --worktree <worktree_id> --issue <issue_key> --command-id \"<unique-id>\" --json`", "`go run ./cmd/memori worktree attach --worktree <worktree_id> --issue <issue_key> --command-id \"<unique-id>\" --json`"},
+		{"## Land The Plane"},
+		{"`git push origin <branch>`"},
+		{"`memori gate set instantiate --issue <issue_key> --command-id \"<unique-id>\" --json`"},
+		{"`memori issue update --key <issue_key> --status done --command-id \"<unique-id>\" --json`"},
 	}
-	for _, want := range required {
-		if !strings.Contains(current, want) {
+	for _, options := range required {
+		found := false
+		for _, want := range options {
+			if strings.Contains(current, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
 			return false
 		}
 	}

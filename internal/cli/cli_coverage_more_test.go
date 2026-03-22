@@ -60,6 +60,9 @@ func TestRunInitAppendAgentsMDCreatesManagedSection(t *testing.T) {
 	rendered := string(agentsContent)
 	for _, want := range []string{
 		agentsLandThePlaneStartTag,
+		"## Worktree Continuity",
+		"`memori worktree adopt-cwd --branch <branch>`",
+		"`memori worktree attach --worktree <worktree_id> --issue <issue_key> --command-id \"<unique-id>\" --json`",
 		"## Land The Plane",
 		"`git push origin <branch>`",
 		"`memori gate set lock --issue <issue_key> --command-id \"<unique-id>\" --json`",
@@ -104,6 +107,9 @@ func TestRunInitAppendAgentsMDIsIdempotentAndPreservesExistingContent(t *testing
 	}
 	if got := strings.Count(rendered, agentsLandThePlaneStartTag); got != 1 {
 		t.Fatalf("expected one managed Land The Plane block, got %d in:\n%s", got, rendered)
+	}
+	if !strings.Contains(rendered, "## Worktree Continuity") {
+		t.Fatalf("expected managed AGENTS.md block to keep worktree guidance, got:\n%s", rendered)
 	}
 	if !strings.Contains(out.String(), "AGENTS.md: AGENTS.md (up_to_date)") {
 		t.Fatalf("expected second init output to report up_to_date AGENTS.md, got:\n%s", out.String())
