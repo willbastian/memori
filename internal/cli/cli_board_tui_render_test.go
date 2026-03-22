@@ -53,6 +53,7 @@ func TestRenderBoardTUIWideDefaultsToListOnlyUntilPaneOpened(t *testing.T) {
 	for _, want := range []string{
 		"MEMORI BOARD",
 		"NEXT / 1",
+		"> Next one",
 		"Next one  [task] mem-a111111",
 		"enter details",
 	} {
@@ -62,6 +63,25 @@ func TestRenderBoardTUIWideDefaultsToListOnlyUntilPaneOpened(t *testing.T) {
 	}
 	if strings.Contains(rendered, "ISSUE DETAIL") || strings.Contains(rendered, "CONTINUITY") {
 		t.Fatalf("expected default wide render to stay list-first until pane open, got:\n%s", rendered)
+	}
+}
+
+func TestRenderBoardTUIAlwaysShowsExplicitSelectedRowMarker(t *testing.T) {
+	t.Parallel()
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "First row")},
+			{Issue: boardTestIssue("mem-b222222", "Task", "Todo", "Second row")},
+		},
+	}, 96, 18)
+	model.lane = boardLaneReady
+	model.index = 1
+	model = boardNormalizeModel(model)
+
+	rendered := renderBoardTUI(model, false)
+	if !strings.Contains(rendered, "> Second row") {
+		t.Fatalf("expected rendered board to show an explicit selected-row marker, got:\n%s", rendered)
 	}
 }
 

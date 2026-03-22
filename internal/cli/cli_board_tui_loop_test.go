@@ -37,6 +37,7 @@ func withStubbedBoardTUIRuntime(t *testing.T, buildSnapshot func(context.Context
 	originalNewProgram := boardTUINewProgram
 	originalInput := boardTUIInput
 	originalNow := boardTUINow
+	originalSupportsInteractive := boardTUISupportsInteractive
 
 	t.Cleanup(func() {
 		boardTUITerminalSize = originalTerminalSize
@@ -45,6 +46,7 @@ func withStubbedBoardTUIRuntime(t *testing.T, buildSnapshot func(context.Context
 		boardTUINewProgram = originalNewProgram
 		boardTUIInput = originalInput
 		boardTUINow = originalNow
+		boardTUISupportsInteractive = originalSupportsInteractive
 	})
 
 	boardTUITerminalSize = func(io.Writer) (int, int) {
@@ -55,6 +57,9 @@ func withStubbedBoardTUIRuntime(t *testing.T, buildSnapshot func(context.Context
 	}
 	boardTUINow = func() time.Time {
 		return time.Date(2026, time.March, 22, 17, 0, 0, 0, time.UTC)
+	}
+	boardTUISupportsInteractive = func(io.Writer) bool {
+		return false
 	}
 	boardTUIBuildSnapshot = buildSnapshot
 	boardTUIBuildAudit = buildAudit
@@ -191,5 +196,31 @@ func TestBoardTeaModelHandlesResizeRefreshAndQuit(t *testing.T) {
 	updatedModel, cmd = updatedModel.(boardTeaModel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	if cmd == nil {
 		t.Fatal("expected quit key to return a quit command")
+	}
+}
+
+func TestBoardTUIShouldUseColorHonorsInteractiveDefaults(t *testing.T) {
+	t.Setenv("MEMORI_COLOR", "")
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("CLICOLOR", "")
+	t.Setenv("CLICOLOR_FORCE", "")
+	t.Setenv("FORCE_COLOR", "")
+	t.Setenv("TERM", "xterm-256color")
+
+	original := boardTUISupportsInteractive
+	t.Cleanup(func() {
+		boardTUISupportsInteractive = original
+	})
+
+	boardTUISupportsInteractive = func(io.Writer) bool {
+		return true
+	}
+	if !boardTUIShouldUseColor(&bytes.Buffer{}) {
+		t.Fatal("expected interactive board TUI to default to color")
+	}
+
+	t.Setenv("NO_COLOR", "1")
+	if boardTUIShouldUseColor(&bytes.Buffer{}) {
+		t.Fatal("expected NO_COLOR to still disable board TUI color")
 	}
 }

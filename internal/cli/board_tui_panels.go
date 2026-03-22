@@ -40,9 +40,8 @@ func boardListPanel(model boardTUIModel, theme boardTheme, width, height int) []
 	for idx := start; idx < end; idx++ {
 		row := rows[idx]
 		line := boardRenderListRow(model, row, model.lane == boardLaneNext, width)
-		if idx == model.index && !theme.colors {
-			line = truncateBoardRowLine("> "+strings.TrimSpace(line), width)
-		}
+		line = boardApplySelectedLineToken(line, idx == model.index)
+		line = truncateBoardRowLine(line, width)
 		line = padRight(line, width)
 		if idx == model.index {
 			line = theme.paintLine(theme.selectedFG, theme.selectedBG, true, line)
@@ -225,9 +224,8 @@ func boardSearchPanel(model boardTUIModel, theme boardTheme, width, height int) 
 			fmt.Sprintf(" %-7s %-8s %s", strings.ToUpper(boardLaneTitle(result.lane)), boardDisplayIssueID(result.row.Issue.ID, width), result.row.Issue.Title),
 			width,
 		)
-		if idx == model.searchIndex && !theme.colors {
-			line = truncateBoardRowLine("> "+strings.TrimSpace(line), width)
-		}
+		line = boardApplySelectedLineToken(line, idx == model.searchIndex)
+		line = truncateBoardRowLine(line, width)
 		line = padRight(line, width)
 		if idx == model.searchIndex {
 			line = theme.paintLine(theme.selectedFG, theme.selectedBG, true, line)
@@ -250,6 +248,16 @@ func boardHelpLine(theme boardTheme, key, desc string, width int) string {
 	keyText := theme.paintLine(theme.keyFG, "", true, " ["+padRight(key, 7)+"] ")
 	descText := theme.paintLine(theme.helpFG, "", false, desc)
 	return padVisual(keyText+descText, width)
+}
+
+func boardApplySelectedLineToken(line string, selected bool) string {
+	if !selected {
+		return line
+	}
+	if strings.HasPrefix(line, " ") {
+		return ">" + line
+	}
+	return "> " + line
 }
 
 func boardMetaToken(theme boardTheme, value, fg, bg string) string {

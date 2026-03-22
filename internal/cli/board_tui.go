@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -53,7 +54,8 @@ var (
 	boardTUINow = func() time.Time {
 		return time.Now().UTC()
 	}
-	boardTUIInput = func() io.Reader {
+	boardTUISupportsInteractive = boardSupportsInteractive
+	boardTUIInput               = func() io.Reader {
 		return boardInput()
 	}
 	boardTUINewProgram = func(model tea.Model, opts ...tea.ProgramOption) boardTUIProgram {
@@ -80,7 +82,7 @@ func runBoardTUI(ctx context.Context, s *store.Store, agent string, interval tim
 		store:    s,
 		agent:    agent,
 		interval: interval,
-		colors:   shouldUseColor(out),
+		colors:   boardTUIShouldUseColor(out),
 		state:    state,
 	}
 
@@ -185,6 +187,31 @@ func boardLoadAuditCmd(ctx context.Context, s *store.Store, agent, issueID strin
 		audit, err := boardTUIBuildAudit(ctx, s, issueID, agent)
 		return boardAuditLoadedMsg{issueID: issueID, audit: audit, err: err}
 	}
+}
+
+func boardTUIShouldUseColor(out io.Writer) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MEMORI_COLOR"))) {
+	case "always":
+		return true
+	case "never":
+		return false
+	}
+	if os.Getenv("NO_COLOR") != "" || strings.TrimSpace(os.Getenv("CLICOLOR")) == "0" {
+		return false
+	}
+	if force := strings.TrimSpace(os.Getenv("CLICOLOR_FORCE")); force != "" && force != "0" {
+		return true
+	}
+	if force := strings.TrimSpace(os.Getenv("FORCE_COLOR")); force != "" && force != "0" {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("TERM")), "dumb") {
+		return false
+	}
+	if boardTUISupportsInteractive(out) {
+		return true
+	}
+	return shouldUseColor(out)
 }
 
 func maxInt(a, b int) int {
