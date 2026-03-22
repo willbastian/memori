@@ -3,6 +3,8 @@ package cli
 import (
 	"fmt"
 	"strings"
+
+	"github.com/charmbracelet/bubbles/spinner"
 )
 
 type boardPanelContent struct {
@@ -34,8 +36,10 @@ func boardSidePanelContent(model boardTUIModel, theme boardTheme, width int) boa
 func boardRenderViewportPanel(model boardTUIModel, content boardPanelContent, theme boardTheme, width, height int) []string {
 	lines := make([]string, 0, height)
 	visibleBody := maxInt(height-1, 0)
-	body, _, rangeLabel := boardViewportWindow(content.body, visibleBody, boardCurrentPanelScroll(model))
-	subtitle := boardPanelSubtitle(content.subtitle, boardInspectorStatusTokens(model), rangeLabel)
+	view := boardViewportModelForContent(model, model.panelMode, content.body, width, visibleBody)
+	rangeLabel := boardViewportRangeLabel(view)
+	body := strings.Split(view.View(), "\n")
+	subtitle := boardPanelSubtitle(content.subtitle, boardInspectorStatusTokens(model, theme), rangeLabel)
 	lines = append(lines, boardPanelHeader(theme, content.title, subtitle, width))
 	lines = append(lines, body...)
 	for len(lines) < height {
@@ -86,23 +90,23 @@ func boardPanelSubtitle(base string, tokens []string, rangeLabel string) string 
 	return strings.Join(parts, " · ")
 }
 
-func boardInspectorStatusTokens(model boardTUIModel) []string {
+func boardInspectorStatusTokens(model boardTUIModel, theme boardTheme) []string {
 	tokens := make([]string, 0, 2)
-	if token := boardLoadToken("snapshot", model.snapshotLoad, model.spinnerFrame); token != "" {
+	if token := boardLoadToken("snapshot", model.snapshotLoad, boardStyledSpinner(model.spinner, theme)); token != "" {
 		tokens = append(tokens, token)
 	}
-	if token := boardLoadToken("audit", model.auditLoad, model.spinnerFrame); token != "" {
+	if token := boardLoadToken("audit", model.auditLoad, boardStyledSpinner(model.spinner, theme)); token != "" {
 		tokens = append(tokens, token)
 	}
 	return tokens
 }
 
-func boardLoadToken(label string, state boardAsyncLoadState, frame int) string {
+func boardLoadToken(label string, state boardAsyncLoadState, spin spinner.Model) string {
 	switch {
 	case state.loading && state.stale:
-		return label + " stale " + boardSpinnerGlyph(frame)
+		return label + " stale " + spin.View()
 	case state.loading:
-		return label + " " + boardSpinnerGlyph(frame)
+		return label + " " + spin.View()
 	case strings.TrimSpace(state.err) != "" && state.stale:
 		return label + " stale"
 	case strings.TrimSpace(state.err) != "":

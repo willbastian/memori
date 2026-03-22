@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/willbastian/memori/internal/store"
 )
@@ -17,7 +18,6 @@ type boardTUIProgram interface {
 }
 
 type boardRefreshTickMsg struct{}
-type boardSpinnerTickMsg struct{}
 type boardToastExpiredMsg struct {
 	id int
 }
@@ -119,7 +119,7 @@ func (model boardTeaModel) Init() tea.Cmd {
 		requestID := model.state.activeAuditRequestID
 		cmds = append(cmds,
 			boardLoadAuditCmd(model.ctx, model.store, model.agent, model.state.selectedIssue, requestID),
-			boardScheduleSpinner(),
+			model.state.spinner.Tick,
 		)
 	}
 	return tea.Batch(cmds...)
@@ -133,12 +133,22 @@ func (model boardTeaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		model.state = boardNormalizeModel(model.state)
 		return model, nil
 	case tea.KeyMsg:
-		input, ok := boardKeyInputFromKeyMsg(msg)
-		if !ok {
-			return model, nil
-		}
 		previous := model.state
-		nextState, quit := boardHandleInput(model.state, input)
+		var (
+			nextState boardTUIModel
+			quit      bool
+			input     boardKeyInput
+			ok        bool
+		)
+		if model.state.searchOpen {
+			nextState, quit = boardHandleSearchInput(model.state, msg)
+		} else {
+			input, ok = boardKeyInputFromKeyMsg(msg)
+			if !ok {
+				return model, nil
+			}
+			nextState, quit = boardHandleInput(model.state, input)
+		}
 		model.state = nextState
 		if quit {
 			return model, tea.Quit
@@ -150,7 +160,7 @@ func (model boardTeaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, boardLoadAuditCmd(model.ctx, model.store, model.agent, model.state.selectedIssue, requestID))
 		}
 		if !boardAnyLoading(previous) && boardAnyLoading(model.state) {
-			cmds = append(cmds, boardScheduleSpinner())
+			cmds = append(cmds, model.state.spinner.Tick)
 		}
 		if model.state.toast.id != 0 && model.state.toast.id != previous.toast.id {
 			cmds = append(cmds, boardExpireToastCmd(model.state.toast.id))
@@ -165,7 +175,7 @@ func (model boardTeaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			boardScheduleRefresh(model.interval),
 		}
 		if !wasLoading {
-			cmds = append(cmds, boardScheduleSpinner())
+			cmds = append(cmds, model.state.spinner.Tick)
 		}
 		return model, tea.Batch(cmds...)
 	case boardSnapshotLoadedMsg:
@@ -196,7 +206,7 @@ func (model boardTeaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, boardLoadAuditCmd(model.ctx, model.store, model.agent, model.state.selectedIssue, requestID))
 		}
 		if !wasLoading && boardAnyLoading(model.state) {
-			cmds = append(cmds, boardScheduleSpinner())
+			cmds = append(cmds, model.state.spinner.Tick)
 		}
 		return model, tea.Batch(cmds...)
 	case boardAuditLoadedMsg:
@@ -225,12 +235,13 @@ func (model boardTeaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			model.state.auditLoad = boardSucceedAsyncLoad(model.state.auditLoad, boardTUINow())
 		}
 		return model, nil
-	case boardSpinnerTickMsg:
+	case spinner.TickMsg:
 		if !boardAnyLoading(model.state) {
 			return model, nil
 		}
-		model.state.spinnerFrame++
-		return model, boardScheduleSpinner()
+		var cmd tea.Cmd
+		model.state.spinner, cmd = model.state.spinner.Update(msg)
+		return model, cmd
 	case boardToastExpiredMsg:
 		model.state = boardClearToast(model.state, msg.id)
 		return model, nil
@@ -264,12 +275,6 @@ func boardLoadAuditCmd(ctx context.Context, s *store.Store, agent, issueID strin
 		audit, err := boardTUIBuildAudit(ctx, s, issueID, agent)
 		return boardAuditLoadedMsg{requestID: requestID, issueID: issueID, audit: audit, err: err}
 	}
-}
-
-func boardScheduleSpinner() tea.Cmd {
-	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg {
-		return boardSpinnerTickMsg{}
-	})
 }
 
 func boardExpireToastCmd(id int) tea.Cmd {

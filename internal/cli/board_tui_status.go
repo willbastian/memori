@@ -95,26 +95,12 @@ func boardStartAuditLoad(model boardTUIModel) (boardTUIModel, int) {
 	return model, model.activeAuditRequestID
 }
 
-func boardSpinnerGlyph(frame int) string {
-	frames := []string{"-", "\\", "|", "/"}
-	if len(frames) == 0 {
-		return "-"
-	}
-	if frame < 0 {
-		frame = 0
-	}
-	return frames[frame%len(frames)]
-}
-
 func boardPanelScrollKey(issueID string, mode boardPanelMode) string {
 	return boardPanelModeTitle(mode) + ":" + strings.TrimSpace(issueID)
 }
 
 func boardCurrentPanelScroll(model boardTUIModel) int {
-	if model.panelScroll == nil {
-		return 0
-	}
-	return model.panelScroll[boardPanelScrollKey(model.selectedIssue, model.panelMode)]
+	return boardPanelScrollForMode(model, model.panelMode)
 }
 
 func boardSetCurrentPanelScroll(model boardTUIModel, offset int) boardTUIModel {
@@ -129,6 +115,12 @@ func boardSetCurrentPanelScroll(model boardTUIModel, offset int) boardTUIModel {
 		return model
 	}
 	model.panelScroll[key] = offset
+	switch model.panelMode {
+	case boardPanelModeContinuity:
+		model.continuityViewport.SetYOffset(offset)
+	default:
+		model.detailViewport.SetYOffset(offset)
+	}
 	return model
 }
 
@@ -149,12 +141,21 @@ func boardMaxPanelScroll(model boardTUIModel) int {
 		return 0
 	}
 	content := boardSidePanelContent(model, defaultBoardTheme(false), boardCurrentPanelInnerWidth(model))
-	visible := boardCurrentPanelBodyHeight(model)
-	return maxInt(len(content.body)-visible, 0)
+	view := boardViewportModelForContent(model, model.panelMode, content.body, boardCurrentPanelInnerWidth(model), boardCurrentPanelBodyHeight(model))
+	return maxInt(view.TotalLineCount()-view.VisibleLineCount(), 0)
 }
 
 func boardAdjustPanelScroll(model boardTUIModel, delta int) boardTUIModel {
-	return boardSetCurrentPanelScroll(model, boardCurrentPanelScroll(model)+delta)
+	content := boardSidePanelContent(model, defaultBoardTheme(false), boardCurrentPanelInnerWidth(model))
+	view := boardViewportModelForContent(model, model.panelMode, content.body, boardCurrentPanelInnerWidth(model), boardCurrentPanelBodyHeight(model))
+	switch {
+	case delta < 0:
+		view.ScrollUp(-delta)
+	case delta > 0:
+		view.ScrollDown(delta)
+	}
+	model = boardSetCurrentPanelScroll(model, view.YOffset)
+	return boardSyncViewportState(model)
 }
 
 func boardCurrentPanelInnerWidth(model boardTUIModel) int {

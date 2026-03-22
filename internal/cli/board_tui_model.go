@@ -4,6 +4,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/willbastian/memori/internal/store"
 )
 
@@ -80,21 +84,30 @@ type boardTUIModel struct {
 	activeAuditRequestID    int
 	nextAuditRequestID      int
 	panelScroll             map[string]int
-	spinnerFrame            int
+	searchInput             textinput.Model
+	help                    help.Model
+	spinner                 spinner.Model
+	detailViewport          viewport.Model
+	continuityViewport      viewport.Model
 	toast                   boardToast
 	nextToastID             int
 }
 
 func newBoardTUIModel(snapshot boardSnapshot, width, height int) boardTUIModel {
 	model := boardTUIModel{
-		snapshot:    snapshot,
-		width:       maxInt(width, 24),
-		height:      maxInt(height, 10),
-		lane:        boardLaneNext,
-		detailOpen:  false,
-		panelMode:   boardPanelModeDetail,
-		expanded:    make(map[string]bool),
-		panelScroll: make(map[string]int),
+		snapshot:           snapshot,
+		width:              maxInt(width, 24),
+		height:             maxInt(height, 10),
+		lane:               boardLaneNext,
+		detailOpen:         false,
+		panelMode:          boardPanelModeDetail,
+		expanded:           make(map[string]bool),
+		panelScroll:        make(map[string]int),
+		searchInput:        newBoardSearchInput(),
+		help:               newBoardHelp(),
+		spinner:            newBoardSpinner(),
+		detailViewport:     newBoardViewport(),
+		continuityViewport: newBoardViewport(),
 	}
 	return boardNormalizeModel(model)
 }
@@ -151,7 +164,8 @@ func boardNormalizeModel(model boardTUIModel) boardTUIModel {
 	}
 
 	model = boardClampSelection(model)
-	return boardClampPanelScroll(model)
+	model.searchQuery = model.searchInput.Value()
+	return boardClampPanelScroll(boardSyncViewportState(model))
 }
 
 func boardClampSearchSelection(model boardTUIModel) boardTUIModel {

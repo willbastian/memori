@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/willbastian/memori/internal/store"
 )
@@ -249,8 +250,8 @@ func TestBoardLoadCommandsReturnExpectedMessages(t *testing.T) {
 		t.Fatalf("unexpected audit msg %#v", auditMsg)
 	}
 
-	if _, ok := boardScheduleSpinner()().(boardSpinnerTickMsg); !ok {
-		t.Fatalf("expected spinner cmd to emit boardSpinnerTickMsg")
+	if _, ok := newBoardSpinner().Tick().(spinner.TickMsg); !ok {
+		t.Fatalf("expected spinner tick cmd to emit spinner.TickMsg")
 	}
 	if msg := boardExpireToastCmd(17)(); msg.(boardToastExpiredMsg).id != 17 {
 		t.Fatalf("expected toast expiry id 17, got %#v", msg)
@@ -363,10 +364,11 @@ func TestBoardTeaModelUpdateHandlesSuccessSpinnerAndToastLifecycle(t *testing.T)
 	}
 
 	updated.state.snapshotLoad = boardBeginAsyncLoad(updated.state.snapshotLoad)
-	updatedModel, cmd = updated.Update(boardSpinnerTickMsg{})
+	before := updated.state.spinner.View()
+	updatedModel, cmd = updated.Update(updated.state.spinner.Tick())
 	updated = updatedModel.(boardTeaModel)
-	if cmd == nil || updated.state.spinnerFrame != 1 {
-		t.Fatalf("expected spinner tick to advance frame, got frame=%d cmd=%v", updated.state.spinnerFrame, cmd != nil)
+	if cmd == nil || updated.state.spinner.View() == before {
+		t.Fatalf("expected spinner tick to advance the bubbles spinner, got before=%q after=%q cmd=%v", before, updated.state.spinner.View(), cmd != nil)
 	}
 
 	updated.state = boardSetToast(updated.state, boardToastToneInfo, "toast")
@@ -410,10 +412,11 @@ func TestBoardTeaModelUpdateHandlesIgnoredAuditAndCanceledErrors(t *testing.T) {
 	}
 
 	updated.state.snapshotLoad = boardAsyncLoadState{}
-	updatedModel, cmd = updated.Update(boardSpinnerTickMsg{})
+	before := updated.state.spinner.View()
+	updatedModel, cmd = updated.Update(updated.state.spinner.Tick())
 	updated = updatedModel.(boardTeaModel)
-	if cmd != nil || updated.state.spinnerFrame != 0 {
-		t.Fatalf("expected idle spinner tick to do nothing, got frame=%d cmd=%v", updated.state.spinnerFrame, cmd != nil)
+	if cmd != nil || updated.state.spinner.View() != before {
+		t.Fatalf("expected idle spinner tick to do nothing, got before=%q after=%q cmd=%v", before, updated.state.spinner.View(), cmd != nil)
 	}
 }
 

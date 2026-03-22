@@ -89,6 +89,17 @@ The CLI is the only product surface today. It writes append-only events, rebuild
 - replay, migration, verification, and backup database operations
 - human password-based mutation auth and explicit LLM provenance for automation
 
+## Interactive board architecture
+
+The interactive `memori board` path is intentionally CLI-native and terminal-first, but it follows a clear UI architecture:
+
+- Bubble Tea owns the board runtime: program lifecycle, messages, refresh scheduling, resize handling, and async snapshot/audit loading.
+- Bubbles owns generic interactive surfaces inside the board: search input, inspector viewport behavior, help metadata, and loading spinner behavior.
+- Lip Gloss is the sole board styling and layout layer for headers, tabs, panels, rows, overlays, help surfaces, footer text, toast states, and framed layouts.
+- Board-specific code owns domain state and content assembly: lane selection, hierarchy navigation, detail vs continuity mode, history toggle, search result ranking, and continuity guidance text.
+
+When adding new board UI behavior, prefer extending those layers instead of introducing bespoke terminal widgets or raw ANSI assembly. New interactive surfaces should default to Bubble Tea plus Bubbles components, and new visual treatment should be expressed through Lip Gloss styles and layout primitives.
+
 ## Current boundaries
 
 memori is already useful for local workflow design and disciplined execution, but it is still intentionally narrow:

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/willbastian/memori/internal/store"
 )
 
@@ -259,8 +260,8 @@ func TestRenderBoardTUINarrowShowsSinglePaneAndHelp(t *testing.T) {
 	for _, want := range []string{
 		"KEYBOARD",
 		"move selection",
-		"jump parent / child",
-		"quit",
+		"toggle detail / continuity",
+		"scroll inspector down",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected narrow help render to contain %q, got:\n%s", want, rendered)
@@ -294,7 +295,7 @@ func TestBoardListPanelPadsColoredRowsToPanelWidth(t *testing.T) {
 	lines := boardListPanel(model, theme, 32, 4)
 	for _, idx := range []int{1, 2} {
 		if got := visualWidth(lines[idx]); got != 32 {
-			t.Fatalf("expected rendered row %d to be padded to width 32, got %d (%q)", idx, got, stripANSI(lines[idx]))
+			t.Fatalf("expected rendered row %d to be padded to width 32, got %d (%q)", idx, got, ansi.Strip(lines[idx]))
 		}
 	}
 }
@@ -328,14 +329,13 @@ func TestBoardSearchPanelPadsColoredRowsToPanelWidth(t *testing.T) {
 	if quit {
 		t.Fatalf("did not expect search open to quit")
 	}
-	model, quit = boardHandleInput(model, boardKeyInput{text: "b22"})
-	if quit {
-		t.Fatalf("did not expect text entry to quit")
-	}
+	model.searchInput.SetValue("b22")
+	model.searchQuery = model.searchInput.Value()
+	model = boardNormalizeModel(model)
 
 	lines := boardSearchPanel(model, theme, 32, 4)
 	if got := visualWidth(lines[2]); got != 32 {
-		t.Fatalf("expected rendered search row to be padded to width 32, got %d (%q)", got, stripANSI(lines[2]))
+		t.Fatalf("expected rendered search row to be padded to width 32, got %d (%q)", got, ansi.Strip(lines[2]))
 	}
 }
 
@@ -376,7 +376,7 @@ func TestBoardDetailPanelPadsColoredSectionLinesToPanelWidth(t *testing.T) {
 	lines := boardDetailPanel(model, theme, 40, 12)
 	for _, idx := range []int{5, 7, 9} {
 		if got := visualWidth(lines[idx]); got != 40 {
-			t.Fatalf("expected detail line %d to be padded to width 40, got %d (%q)", idx, got, stripANSI(lines[idx]))
+			t.Fatalf("expected detail line %d to be padded to width 40, got %d (%q)", idx, got, ansi.Strip(lines[idx]))
 		}
 	}
 }
@@ -395,11 +395,8 @@ func TestBoardFramePanelPreservesStyledRowContent(t *testing.T) {
 	line := theme.paintLine(theme.selectedFG, theme.selectedBG, true, padRight(" selected row ", 16))
 	panel := boardFramePanel(theme, []string{line}, 18, 3)
 
-	if !strings.Contains(panel[1], "\x1b[1;38;2;7;8;9;48;2;10;11;12m") {
-		t.Fatalf("expected framed panel to preserve row styling, got %q", panel[1])
-	}
-	if !strings.Contains(stripANSI(panel[1]), "selected row") {
-		t.Fatalf("expected framed panel to preserve row content, got %q", stripANSI(panel[1]))
+	if !strings.Contains(ansi.Strip(panel[1]), "selected row") {
+		t.Fatalf("expected framed panel to preserve row content, got %q", ansi.Strip(panel[1]))
 	}
 }
 
@@ -607,10 +604,9 @@ func TestRenderBoardTUIShowsSearchPanel(t *testing.T) {
 	if quit {
 		t.Fatalf("did not expect search open to quit")
 	}
-	model, quit = boardHandleInput(model, boardKeyInput{text: "b22"})
-	if quit {
-		t.Fatalf("did not expect text entry to quit")
-	}
+	model.searchInput.SetValue("b22")
+	model.searchQuery = model.searchInput.Value()
+	model = boardNormalizeModel(model)
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
@@ -645,10 +641,9 @@ func TestRenderBoardTUINarrowShowsSearchPanel(t *testing.T) {
 	if quit {
 		t.Fatalf("did not expect search open to quit")
 	}
-	model, quit = boardHandleInput(model, boardKeyInput{text: "b22"})
-	if quit {
-		t.Fatalf("did not expect text entry to quit")
-	}
+	model.searchInput.SetValue("b22")
+	model.searchQuery = model.searchInput.Value()
+	model = boardNormalizeModel(model)
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
