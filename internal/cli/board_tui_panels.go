@@ -40,7 +40,7 @@ func boardListPanel(model boardTUIModel, theme boardTheme, width, height int) []
 	for idx := start; idx < end; idx++ {
 		row := rows[idx]
 		line := boardRenderListRow(model, row, model.lane == boardLaneNext, width)
-		line = boardApplySelectedLineToken(line, idx == model.index)
+		line = boardApplySelectedLineToken(line, idx == model.index, theme.colors)
 		line = truncateBoardRowLine(line, width)
 		line = padRight(line, width)
 		if idx == model.index {
@@ -89,17 +89,17 @@ func boardRenderListRow(model boardTUIModel, row boardIssueRow, showScore bool, 
 	}
 
 	metaParts := make([]string, 0, 4)
-	if boardLaneSupportsHierarchy(model.lane) && !boardRowMatchesLaneStatus(model.lane, row) {
-		metaParts = append(metaParts, "["+boardExpandedStatusLabel(row.Issue.Status)+"]")
-	}
-	if kind := strings.TrimSpace(row.Issue.Type); kind != "" && width >= 40 {
-		metaParts = append(metaParts, "["+strings.ToLower(kind)+"]")
-	}
-	if !boardLaneSupportsHierarchy(model.lane) {
+	if !boardLaneSupportsHierarchy(model.lane) || width >= 48 {
 		metaParts = append(metaParts, issueID)
 	}
+	if kind := strings.TrimSpace(row.Issue.Type); kind != "" && width >= 44 {
+		metaParts = append(metaParts, strings.ToLower(kind))
+	}
+	if boardLaneSupportsHierarchy(model.lane) && !boardRowMatchesLaneStatus(model.lane, row) {
+		metaParts = append(metaParts, strings.ToLower(boardExpandedStatusLabel(row.Issue.Status)))
+	}
 	if showScore && row.Score > 0 && width >= 64 {
-		metaParts = append(metaParts, fmt.Sprintf("[s%d]", row.Score))
+		metaParts = append(metaParts, fmt.Sprintf("s%d", row.Score))
 	}
 
 	switch {
@@ -110,14 +110,10 @@ func boardRenderListRow(model boardTUIModel, row boardIssueRow, showScore bool, 
 	default:
 		body := title
 		if boardLaneSupportsHierarchy(model.lane) {
-			body = lead + title + "  " + issueID
-			if len(metaParts) > 0 {
-				body += "  " + strings.Join(metaParts, " ")
-			}
-		} else {
-			if len(metaParts) > 0 {
-				body += "  " + strings.Join(metaParts, " ")
-			}
+			body = lead + title
+		}
+		if len(metaParts) > 0 {
+			body += "  · " + strings.Join(metaParts, " · ")
 		}
 		return truncateBoardRowLine(" "+body, width)
 	}
@@ -221,10 +217,10 @@ func boardSearchPanel(model boardTUIModel, theme boardTheme, width, height int) 
 	for idx := start; idx < end; idx++ {
 		result := results[idx]
 		line := truncateBoardLine(
-			fmt.Sprintf(" %-7s %-8s %s", strings.ToUpper(boardLaneTitle(result.lane)), boardDisplayIssueID(result.row.Issue.ID, width), result.row.Issue.Title),
+			fmt.Sprintf(" %-7s %s  · %s", strings.ToUpper(boardLaneTitle(result.lane)), result.row.Issue.Title, boardDisplayIssueID(result.row.Issue.ID, width)),
 			width,
 		)
-		line = boardApplySelectedLineToken(line, idx == model.searchIndex)
+		line = boardApplySelectedLineToken(line, idx == model.searchIndex, theme.colors)
 		line = truncateBoardRowLine(line, width)
 		line = padRight(line, width)
 		if idx == model.searchIndex {
@@ -250,14 +246,18 @@ func boardHelpLine(theme boardTheme, key, desc string, width int) string {
 	return padVisual(keyText+descText, width)
 }
 
-func boardApplySelectedLineToken(line string, selected bool) string {
+func boardApplySelectedLineToken(line string, selected bool, colors bool) string {
 	if !selected {
 		return line
 	}
-	if strings.HasPrefix(line, " ") {
-		return ">" + line
+	marker := ">"
+	if colors {
+		marker = "|"
 	}
-	return "> " + line
+	if strings.HasPrefix(line, " ") {
+		return marker + line
+	}
+	return marker + " " + line
 }
 
 func boardMetaToken(theme boardTheme, value, fg, bg string) string {

@@ -113,15 +113,21 @@ func renderBoardTUI(model boardTUIModel, colors bool) string {
 
 	bodyHeight := maxInt(height-4, 5)
 	if model.helpOpen {
-		help := boardHelpPanel(theme, maxInt(width-2, 1), maxInt(bodyHeight-2, 1))
-		lines = append(lines, boardFramePanel(theme, help, width, bodyHeight)...)
+		if width >= 100 {
+			panelWidth := minInt(maxInt(width-18, 52), 76)
+			panelHeight := minInt(maxInt(bodyHeight-4, 10), 16)
+			help := boardHelpPanel(theme, maxInt(panelWidth-2, 1), maxInt(panelHeight-2, 1))
+			lines = append(lines, boardOverlayPanel(theme, help, width, bodyHeight, panelWidth, panelHeight)...)
+		} else {
+			help := boardHelpPanel(theme, maxInt(width-2, 1), maxInt(bodyHeight-2, 1))
+			lines = append(lines, boardFramePanel(theme, help, width, bodyHeight)...)
+		}
 	} else if model.searchOpen {
 		if width >= 100 {
-			leftWidth := minInt(maxInt(width/2-2, 34), 44)
-			rightWidth := width - leftWidth - 3
-			left := boardFramePanel(theme, boardListPanel(model, theme, maxInt(leftWidth-2, 1), maxInt(bodyHeight-2, 1)), leftWidth, bodyHeight)
-			right := boardFramePanel(theme, boardSearchPanel(model, theme, maxInt(rightWidth-2, 1), maxInt(bodyHeight-2, 1)), rightWidth, bodyHeight)
-			lines = append(lines, boardJoinColumns(left, right, leftWidth, rightWidth)...)
+			panelWidth := minInt(maxInt(width-16, 56), 82)
+			panelHeight := minInt(maxInt(bodyHeight-3, 10), 15)
+			search := boardSearchPanel(model, theme, maxInt(panelWidth-2, 1), maxInt(panelHeight-2, 1))
+			lines = append(lines, boardOverlayPanel(theme, search, width, bodyHeight, panelWidth, panelHeight)...)
 		} else {
 			listHeight := maxInt(bodyHeight/2, 6)
 			searchHeight := maxInt(bodyHeight-listHeight-1, 6)
@@ -130,8 +136,8 @@ func renderBoardTUI(model boardTUIModel, colors bool) string {
 			lines = append(lines, boardFramePanel(theme, boardSearchPanel(model, theme, maxInt(width-2, 1), maxInt(searchHeight-2, 1)), width, searchHeight)...)
 		}
 	} else if width >= 100 && model.detailOpen {
-		leftWidth := minInt(maxInt(width/2-2, 34), 44)
-		rightWidth := width - leftWidth - 3
+		rightWidth := minInt(maxInt(width/3+6, 38), 52)
+		leftWidth := width - rightWidth - 1
 		left := boardFramePanel(theme, boardListPanel(model, theme, maxInt(leftWidth-2, 1), maxInt(bodyHeight-2, 1)), leftWidth, bodyHeight)
 		right := boardFramePanel(theme, boardSidePanel(model, theme, maxInt(rightWidth-2, 1), maxInt(bodyHeight-2, 1)), rightWidth, bodyHeight)
 		lines = append(lines, boardJoinColumns(left, right, leftWidth, rightWidth)...)
@@ -154,7 +160,7 @@ func boardHeaderLine(model boardTUIModel, theme boardTheme, width int) string {
 	if width < 36 {
 		return theme.paintLine(theme.titleFG, theme.titleBG, true, padRight(truncateBoardLine(" BOARD "+formatBoardSummaryCompact(model.snapshot.Summary), width), width))
 	}
-	title := " MEMORI BOARD / BUBBLE TEA "
+	title := " MEMORI BOARD "
 	left := theme.paintLine(theme.titleFG, theme.titleBG, true, padRight(title, width))
 	meta := boardHeaderMeta(model, theme, width)
 	rightStart := maxInt(width-visualWidth(meta), visualWidth(title))
@@ -168,8 +174,8 @@ func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
 	}
 	tabs := make([]string, 0, len(model.availableLanes()))
 	for _, lane := range model.availableLanes() {
-		label := fmt.Sprintf(" %s / %d ", strings.ToUpper(boardLaneTitle(lane)), model.issueCountForLane(lane))
-		fg, bg := theme.mutedFG, theme.panelBG
+		label := fmt.Sprintf(" %s %d ", strings.ToUpper(boardLaneTitle(lane)), model.issueCountForLane(lane))
+		fg, bg := theme.mutedFG, theme.panelAltBG
 		bold := false
 		if lane == model.lane {
 			bold = true
@@ -196,7 +202,7 @@ func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
 		}
 		tabs = append(tabs, theme.paintLine(fg, bg, bold, label))
 	}
-	return lipgloss.NewStyle().Width(width).MaxWidth(width).Render(strings.Join(tabs, " "))
+	return theme.paintLine(theme.mutedFG, theme.panelBG, false, padRight(truncateBoardLine(strings.Join(tabs, " "), width), width))
 }
 
 func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
@@ -205,7 +211,7 @@ func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
 		if model.showHistory {
 			scope = "all"
 		}
-		footer := fmt.Sprintf(" /%s  [enter jump] [j/k results] [backspace edit] [f scope:%s] [esc cancel] [? help] ", model.searchQuery, scope)
+		footer := fmt.Sprintf(" /%s  [enter jump] [j/k results] [backspace edit] [f scope:%s] [esc cancel] ", model.searchQuery, scope)
 		return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
 	}
 	row, ok := model.selectedRow()
@@ -216,15 +222,15 @@ func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
 		footer := fmt.Sprintf(" %s %s %s ", boardDisplayIssueID(row.Issue.ID, width), boardCompactStatusLabel(row.Issue.Status), row.Issue.Title)
 		return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
 	}
-	panelHint := "enter details  c continuity"
+	panelHint := "enter detail  c continuity"
 	if model.detailOpen {
 		if model.panelMode == boardPanelModeContinuity {
-			panelHint = "enter close  c details"
+			panelHint = "enter close  c detail"
 		} else {
 			panelHint = "enter close  c continuity"
 		}
 	}
-	footer := fmt.Sprintf(" %s  [%s]  %s  |  [%s] [f history] [? help] ", row.Issue.ID, strings.ToLower(row.Issue.Type), truncateBoardLine(row.Issue.Title, maxInt(width/3, 18)), panelHint)
+	footer := fmt.Sprintf(" %s  · %s · %s  ·  %s  f history  ? help ", row.Issue.ID, strings.ToLower(row.Issue.Type), truncateBoardLine(row.Issue.Title, maxInt(width/3, 18)), panelHint)
 	return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
 }
 
@@ -324,6 +330,32 @@ func boardFramePanel(theme boardTheme, lines []string, width, height int) []stri
 	}
 	framed = append(framed, bottom)
 	return framed
+}
+
+func boardOverlayPanel(theme boardTheme, lines []string, outerWidth, outerHeight, panelWidth, panelHeight int) []string {
+	if outerWidth <= 0 || outerHeight <= 0 {
+		return nil
+	}
+	panelWidth = minInt(maxInt(panelWidth, 12), outerWidth)
+	panelHeight = minInt(maxInt(panelHeight, 4), outerHeight)
+	panel := boardFramePanel(theme, lines, panelWidth, panelHeight)
+	leftPad := maxInt((outerWidth-panelWidth)/2, 0)
+	rightPad := maxInt(outerWidth-panelWidth-leftPad, 0)
+	topPad := maxInt((outerHeight-panelHeight)/2, 0)
+
+	out := make([]string, 0, outerHeight)
+	blank := strings.Repeat(" ", outerWidth)
+	for i := 0; i < topPad; i++ {
+		out = append(out, blank)
+	}
+	for _, line := range panel {
+		framed := strings.Repeat(" ", leftPad) + line + strings.Repeat(" ", rightPad)
+		out = append(out, padRight(framed, outerWidth))
+	}
+	for len(out) < outerHeight {
+		out = append(out, blank)
+	}
+	return out[:outerHeight]
 }
 
 func boardJoinColumns(left, right []string, leftWidth, rightWidth int) []string {

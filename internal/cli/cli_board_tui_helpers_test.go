@@ -193,6 +193,18 @@ func TestBoardVisualHelpersUseRenderedWidthInsteadOfBytes(t *testing.T) {
 	}
 }
 
+func TestTrimVisualPreservesANSIWhenValueAlreadyFits(t *testing.T) {
+	t.Parallel()
+
+	theme := boardTheme{colors: true}
+	styled := theme.paintLine("1;2;3", "4;5;6", true, "hello")
+
+	got := trimVisual(styled, 5)
+	if got != styled {
+		t.Fatalf("expected trimVisual to preserve styled value when it already fits, got %q", got)
+	}
+}
+
 func TestReplaceSegmentPreservesOuterANSIWrapper(t *testing.T) {
 	t.Parallel()
 

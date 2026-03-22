@@ -29,6 +29,7 @@ func boardDetailPanel(model boardTUIModel, theme boardTheme, width, height int) 
 	for _, line := range boardDetailIntroLines(row, theme, width) {
 		lines = append(lines, line)
 	}
+	lines = append(lines, theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(" "+boardDetailActionLine(row, width)+" ", width), width)))
 	lines = append(lines, theme.paintLine(theme.borderFG, "", false, strings.Repeat(".", width)))
 
 	sections := boardDetailSections(row, width, width < 100)
@@ -78,6 +79,24 @@ func boardDetailSections(row boardIssueRow, width int, compact bool) []boardDeta
 	appendSection(referencesLabel, references, true)
 	appendSection(reasonsLabel, reasons, false)
 	return sections
+}
+
+func boardDetailActionLine(row boardIssueRow, width int) string {
+	if len(row.Reasons) > 0 {
+		return "next: " + truncateBoardLine(orderBoardReasons(row.Reasons)[0], maxInt(width-8, 12))
+	}
+	switch row.Issue.Status {
+	case "InProgress":
+		return "next: keep continuity current while this work is active"
+	case "Blocked":
+		return "next: inspect the blocker and the required follow-up"
+	case "Done":
+		return "status: done and kept here for historical context"
+	case "WontDo":
+		return "status: won't do and kept here for historical context"
+	default:
+		return "next: review the scope and acceptance before starting"
+	}
 }
 
 func boardHierarchySection(row boardIssueRow, width int) (string, []string) {

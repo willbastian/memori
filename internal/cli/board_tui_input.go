@@ -19,7 +19,7 @@ func boardKeyInputFromKeyMsg(msg tea.KeyMsg) (boardKeyInput, bool) {
 		return boardKeyInput{action: boardActionNextLane}, true
 	case tea.KeyEnter, tea.KeySpace:
 		return boardKeyInput{action: boardActionToggleDetail}, true
-	case tea.KeyBackspace:
+	case tea.KeyBackspace, tea.KeyCtrlH:
 		return boardKeyInput{backspace: true}, true
 	case tea.KeyEsc, tea.KeyCtrlC:
 		return boardKeyInput{action: boardActionQuit}, true

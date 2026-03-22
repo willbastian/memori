@@ -23,6 +23,7 @@ func boardContinuityPanel(model boardTUIModel, theme boardTheme, width, height i
 	audit := model.audit
 	lines = append(lines, theme.paintLine(theme.detailFG, theme.panelAltBG, true, padRight(truncateBoardLine(" "+boardDetailHeadline(row, width)+" ", width), width)))
 	lines = append(lines, boardRenderMetaLines(theme, boardContinuityMetaParts(audit, theme), width, 2)...)
+	lines = append(lines, theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(" "+boardContinuityActionSummary(audit)+" ", width), width)))
 	lines = append(lines, theme.paintLine(theme.borderFG, "", false, strings.Repeat(".", width)))
 
 	for _, section := range boardContinuitySections(audit, width) {

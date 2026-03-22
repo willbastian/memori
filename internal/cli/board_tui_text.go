@@ -68,10 +68,10 @@ func trimVisual(value string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	raw := stripANSI(value)
-	if utf8.RuneCountInString(raw) <= width {
-		return raw
+	if visualWidth(value) <= width {
+		return value
 	}
+	raw := stripANSI(value)
 	var out strings.Builder
 	count := 0
 	for _, r := range raw {

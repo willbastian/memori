@@ -33,6 +33,7 @@ func TestBoardKeyInputFromKeyMsgParsesNavigationAndPanelKeys(t *testing.T) {
 		{name: "enter toggles detail", msg: tea.KeyMsg{Type: tea.KeyEnter}, want: boardActionToggleDetail},
 		{name: "space toggles detail", msg: tea.KeyMsg{Type: tea.KeySpace}, want: boardActionToggleDetail},
 		{name: "backspace", msg: tea.KeyMsg{Type: tea.KeyBackspace}, backspace: true},
+		{name: "ctrl h backspace", msg: tea.KeyMsg{Type: tea.KeyCtrlH}, backspace: true},
 		{name: "arrow up", msg: tea.KeyMsg{Type: tea.KeyUp}, want: boardActionUp},
 		{name: "arrow down", msg: tea.KeyMsg{Type: tea.KeyDown}, want: boardActionDown},
 		{name: "arrow right", msg: tea.KeyMsg{Type: tea.KeyRight}, want: boardActionNextLane},

@@ -28,11 +28,11 @@ func TestRenderBoardTUIWideShowsDetailPane(t *testing.T) {
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
 		"MEMORI BOARD",
-		"NEXT / 1",
+		"NEXT 1",
 		"ISSUE DETAIL",
-		"mem-a111111 · Next one",
+		"a111111 · Next one",
 		"[ REASONS ]",
-		"focus for resume",
+		"active focus",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected wide render to contain %q, got:\n%s", want, rendered)
@@ -52,10 +52,10 @@ func TestRenderBoardTUIWideDefaultsToListOnlyUntilPaneOpened(t *testing.T) {
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
 		"MEMORI BOARD",
-		"NEXT / 1",
+		"NEXT 1",
 		"> Next one",
-		"Next one  [task] mem-a111111",
-		"enter details",
+		"Next one  · mem-a111111 · task",
+		"enter detail",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected default wide render to contain %q, got:\n%s", want, rendered)
@@ -138,7 +138,7 @@ func TestRenderBoardTUIWideShowsContinuityPane(t *testing.T) {
 		"CONTINUITY",
 		"[ DECISION ]",
 		"Resume looks healthy for this issue.",
-		"memori will resume from the session already tied to this agent's focus",
+		"memori will resume from the session",
 		"[ CURRENT SESSION ]",
 		"sess-audit-1",
 		"[ NEXT STEP ]",
@@ -213,10 +213,10 @@ func TestRenderBoardTUIContinuityPaneExplainsWeakHandoff(t *testing.T) {
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
 		"Resume is available, but handoff is weak.",
-		"if you stop now: the next worker will resume from raw context chunks",
-		"Best next step: save this session before handing it off.",
-		"memori context summarize --session sess_85471748e4fa",
-		"handoff is weak: work exists, but only raw session context has been saved",
+		"if you stop now:",
+		"Best next step: save this session",
+		"memori context summarize --session sess_8547174",
+		"handoff is weak: work exists",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected continuity handoff guidance to contain %q, got:\n%s", want, rendered)
@@ -288,7 +288,7 @@ func TestBoardListPanelPadsColoredRowsToPanelWidth(t *testing.T) {
 
 	lines := boardListPanel(model, theme, 32, 4)
 	for _, idx := range []int{1, 2} {
-		if got := len(stripANSI(lines[idx])); got != 32 {
+		if got := visualWidth(lines[idx]); got != 32 {
 			t.Fatalf("expected rendered row %d to be padded to width 32, got %d (%q)", idx, got, stripANSI(lines[idx]))
 		}
 	}
@@ -329,7 +329,7 @@ func TestBoardSearchPanelPadsColoredRowsToPanelWidth(t *testing.T) {
 	}
 
 	lines := boardSearchPanel(model, theme, 32, 4)
-	if got := len(stripANSI(lines[2])); got != 32 {
+	if got := visualWidth(lines[2]); got != 32 {
 		t.Fatalf("expected rendered search row to be padded to width 32, got %d (%q)", got, stripANSI(lines[2]))
 	}
 }
@@ -370,9 +370,31 @@ func TestBoardDetailPanelPadsColoredSectionLinesToPanelWidth(t *testing.T) {
 
 	lines := boardDetailPanel(model, theme, 40, 12)
 	for _, idx := range []int{5, 7, 9} {
-		if got := len(stripANSI(lines[idx])); got != 40 {
+		if got := visualWidth(lines[idx]); got != 40 {
 			t.Fatalf("expected detail line %d to be padded to width 40, got %d (%q)", idx, got, stripANSI(lines[idx]))
 		}
+	}
+}
+
+func TestBoardFramePanelPreservesStyledRowContent(t *testing.T) {
+	t.Parallel()
+
+	theme := boardTheme{
+		colors:     true,
+		borderFG:   "1;2;3",
+		panelBG:    "4;5;6",
+		selectedFG: "7;8;9",
+		selectedBG: "10;11;12",
+	}
+
+	line := theme.paintLine(theme.selectedFG, theme.selectedBG, true, padRight(" selected row ", 16))
+	panel := boardFramePanel(theme, []string{line}, 18, 3)
+
+	if !strings.Contains(panel[1], "\x1b[1;38;2;7;8;9;48;2;10;11;12m") {
+		t.Fatalf("expected framed panel to preserve row styling, got %q", panel[1])
+	}
+	if !strings.Contains(stripANSI(panel[1]), "selected row") {
+		t.Fatalf("expected framed panel to preserve row content, got %q", stripANSI(panel[1]))
 	}
 }
 
@@ -417,11 +439,11 @@ func TestRenderBoardTUIShowsHierarchyCuesInListAndDetail(t *testing.T) {
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
-		"[-] Parent story  a111111",
-		"`- Child task  b222222",
+		"[-] Parent story  · mem-a111111 · story",
+		"`- Child task  · mem-b222222 · task",
 		"[ HIERARCHY ]",
-		"path: mem-a111111 > mem-b222222",
-		"parent: mem-a111111 (Parent story)",
+		"path: ... > mem-b222222",
+		"parent: mem-a111111",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected hierarchy render to contain %q, got:\n%s", want, rendered)
@@ -486,10 +508,10 @@ func TestRenderBoardTUIShowsConsistentNestedHierarchyPrefixes(t *testing.T) {
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
-		"[-] Root epic  mem-a111111",
-		"   [-] Nested story  mem-b222222",
-		"      `- Grandchild task  mem-d444444",
-		"   `- Sibling story  mem-c333333",
+		"[-] Root epic  · mem-a111111 · epic",
+		"   [-] Nested story  · mem-b222222 · story",
+		"      `- Grandchild task  · mem-d444444 · task",
+		"   `- Sibling story  · mem-c333333 · story",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected nested hierarchy render to contain %q, got:\n%s", want, rendered)
@@ -551,9 +573,9 @@ func TestRenderBoardTUIUsesLaneSiblingOrderForLeafBranches(t *testing.T) {
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
-		"|- First child  mem-b222222",
-		"|- Second child  mem-c333333",
-		"`- Third child  mem-d444444",
+		"|- First child  · mem-b222222 · story",
+		"|- Second child  · mem-c333333 · story",
+		"`- Third child  · mem-d444444 · story",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected lane-order branches to contain %q, got:\n%s", want, rendered)
@@ -785,8 +807,8 @@ func TestRenderBoardTUIHistoryModeShowsDoneAndWontDoTabs(t *testing.T) {
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
 		"ALL WORK",
-		"DONE / 1",
-		"WONTDO / 1",
+		"DONE 1",
+		"WONTDO 1",
 		"f history",
 	} {
 		if !strings.Contains(rendered, want) {
@@ -840,9 +862,9 @@ func TestRenderBoardTUIReadyLaneMarksReadyRowsWithinContextTree(t *testing.T) {
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
-		"Parent story  mem-a111111  [in progress] [story]",
-		"Ready child  mem-b222222  [task]",
-		"Active sibling  mem-c333333  [in progress] [bug]",
+		"Parent story  · mem-a111111 · story · in progress",
+		"Ready child  · mem-b222222 · task",
+		"Active sibling  · mem-c333333 · bug · in progress",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected ready context render to contain %q, got:\n%s", want, rendered)
@@ -895,9 +917,9 @@ func TestRenderBoardTUIActiveLaneMarksActiveRowsWithinContextTree(t *testing.T) 
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
-		"Parent story  mem-a111111  [todo] [story]",
-		"Active child  mem-b222222  [task]",
-		"Ready sibling  mem-c333333  [todo] [task]",
+		"Parent story  · mem-a111111 · story · todo",
+		"Active child  · mem-b222222 · task",
+		"Ready sibling  · mem-c333333 · task · todo",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected active context render to contain %q, got:\n%s", want, rendered)

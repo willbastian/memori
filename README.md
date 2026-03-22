@@ -508,11 +508,11 @@ The current terminal visual direction aims for a calmer, title-first board:
 
 - Bubble Tea owns refresh, key handling, quit behavior, and terminal resize updates so the interactive path stays responsive without a hand-rolled raw-terminal loop
 - Lip Gloss owns the layout and styling for the header, tabs, issue list, search, detail, continuity, and footer surfaces
-- the main board surfaces render as framed panels instead of a loose wall of rows, so list, search, detail, and continuity states feel intentionally separated
+- the main board surfaces use a calmer shell, with the list staying primary and temporary modes like help and search rendering as centered overlay-style panels on wide terminals
 - the default wide layout stays list-first so you can scan work before opening extra context
-- rows lead with titles first, then compact issue/type/status chips, instead of treating the issue id as the primary visual anchor
-- chrome stays quieter than the issue text, with the header carrying summary and the footer carrying just the key hints
-- detail and continuity inspection remain one keystroke away instead of competing for attention all the time
+- rows lead with titles first, then compact issue/type/status metadata, with an explicit left-edge selection marker so focus does not depend only on color
+- chrome stays quieter than the issue text, with the header carrying summary, the lane strip acting like a compact dashboard nav, and the footer carrying just the active hints
+- detail and continuity inspection behave more like an inspector sidebar: identity and next action first, then supporting context
 - in narrow layouts, opening detail or continuity gives that pane the body instead of clipping the issue content under a tiny list preview
 
 Example wide-layout mockup:
@@ -521,11 +521,11 @@ Example wide-layout mockup:
  MEMORI BOARD                                             T12 IP2 BLK1 RDY7  ACTIONABLE  AGENT WRITER-1
  NEXT 1   ACTIVE 2   BLOCKED 1   READY 7
  READY
- Refresh stale packet · task · a111111
- Tighten close gates · story · b222222
- Parent epic · in progress · epic · fffffff
+ > Refresh stale packet  · mem-a111111 · task
+   Tighten close gates   · mem-b222222 · story
+   Parent epic           · mem-fffffff · epic · in progress
 
- mem-a111111  |  Refresh stale packet  |  enter details  c continuity  |  f history  ? help
+ mem-a111111  · task · Refresh stale packet  ·  enter detail  c continuity  f history  ? help
 ```
 
 Tradeoffs and constraints behind that direction:
