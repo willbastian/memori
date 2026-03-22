@@ -159,24 +159,24 @@ func TestBoardLaneRowStyleUsesDistinctHistoricalPalette(t *testing.T) {
 	t.Parallel()
 
 	theme := boardTheme{
-		mutedFG:  "1;2;3",
+		detailFG: "0;0;0",
+		taskFG:   "13;14;15",
 		wontDoFG: "7;8;9",
 		wontDoBG: "10;11;12",
-		taskFG:   "13;14;15",
 	}
 
-	doneFG, doneBG, doneBold := boardLaneRowStyle(theme, boardLaneReady, boardIssueRow{
+	doneFG, doneBG, doneBold, doneDim := boardLaneRowStyle(theme, boardLaneReady, boardIssueRow{
 		Issue: store.Issue{Type: "Task", Status: "Done"},
 	})
-	if doneFG != theme.mutedFG || doneBG != "" || doneBold {
-		t.Fatalf("expected done context row to use historical palette, got fg=%q bg=%q bold=%v", doneFG, doneBG, doneBold)
+	if doneFG != theme.taskFG || doneBG != "" || doneBold || !doneDim {
+		t.Fatalf("expected done context row to keep its type color and dim the row, got fg=%q bg=%q bold=%v dim=%v", doneFG, doneBG, doneBold, doneDim)
 	}
 
-	todoFG, todoBG, todoBold := boardLaneRowStyle(theme, boardLaneReady, boardIssueRow{
+	todoFG, todoBG, todoBold, todoDim := boardLaneRowStyle(theme, boardLaneReady, boardIssueRow{
 		Issue: store.Issue{Type: "Task", Status: "Todo"},
 	})
-	if todoFG != theme.taskFG || todoBG != "" || !todoBold {
-		t.Fatalf("expected matching lane row to keep primary palette, got fg=%q bg=%q bold=%v", todoFG, todoBG, todoBold)
+	if todoFG != theme.taskFG || todoBG != "" || !todoBold || todoDim {
+		t.Fatalf("expected matching lane row to keep primary palette, got fg=%q bg=%q bold=%v dim=%v", todoFG, todoBG, todoBold, todoDim)
 	}
 }
 
@@ -195,6 +195,11 @@ func TestBoardThemePaintLineHonorsColorMode(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "hello\x1b[0m") {
 		t.Fatalf("expected ANSI suffix, got %q", got)
+	}
+
+	dimmed := colorTheme.paintLineStyled("1;2;3", "", false, true, "hello")
+	if !strings.HasPrefix(dimmed, "\x1b[2;38;2;1;2;3m") {
+		t.Fatalf("expected dim ANSI prefix, got %q", dimmed)
 	}
 }
 

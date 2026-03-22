@@ -457,12 +457,19 @@ func boardHierarchyToggleToken(expanded bool) string {
 }
 
 func (theme boardTheme) paintLine(fg, bg string, bold bool, value string) string {
+	return theme.paintLineStyled(fg, bg, bold, false, value)
+}
+
+func (theme boardTheme) paintLineStyled(fg, bg string, bold, dim bool, value string) string {
 	if !theme.colors {
 		return value
 	}
-	codes := make([]string, 0, 3)
+	codes := make([]string, 0, 4)
 	if bold {
 		codes = append(codes, "1")
+	}
+	if dim {
+		codes = append(codes, "2")
 	}
 	if fg != "" {
 		codes = append(codes, "38;2;"+fg)

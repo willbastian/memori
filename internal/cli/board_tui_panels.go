@@ -46,11 +46,11 @@ func boardListPanel(model boardTUIModel, theme boardTheme, width, height int) []
 		if idx == model.index {
 			line = theme.paintLine(theme.selectedFG, theme.selectedBG, true, line)
 		} else {
-			fg, bg, bold := boardLaneRowStyle(theme, model.lane, row)
+			fg, bg, bold, dim := boardLaneRowStyle(theme, model.lane, row)
 			if bg == "" && idx%2 == 1 {
 				bg = theme.panelAltBG
 			}
-			line = theme.paintLine(fg, bg, bold, line)
+			line = theme.paintLineStyled(fg, bg, bold, dim, line)
 		}
 		lines = append(lines, line)
 	}
@@ -169,8 +169,6 @@ func boardRowForeground(theme boardTheme, row boardIssueRow) string {
 func boardLaneRowForeground(theme boardTheme, lane boardLane, row boardIssueRow) string {
 	if boardLaneSupportsHierarchy(lane) && !boardRowMatchesLaneStatus(lane, row) {
 		switch row.Issue.Status {
-		case "Done":
-			return theme.mutedFG
 		case "WontDo":
 			return theme.wontDoFG
 		}
@@ -178,18 +176,18 @@ func boardLaneRowForeground(theme boardTheme, lane boardLane, row boardIssueRow)
 	return boardRowForeground(theme, row)
 }
 
-func boardLaneRowStyle(theme boardTheme, lane boardLane, row boardIssueRow) (fg, bg string, bold bool) {
+func boardLaneRowStyle(theme boardTheme, lane boardLane, row boardIssueRow) (fg, bg string, bold, dim bool) {
 	fg = boardLaneRowForeground(theme, lane, row)
 	bold = boardRowMatchesLaneStatus(lane, row)
 	if boardLaneSupportsHierarchy(lane) && !boardRowMatchesLaneStatus(lane, row) {
 		switch row.Issue.Status {
 		case "Done":
-			return fg, "", false
+			return fg, "", false, true
 		case "WontDo":
-			return fg, theme.wontDoBG, false
+			return fg, theme.wontDoBG, false, false
 		}
 	}
-	return fg, "", bold
+	return fg, "", bold, false
 }
 
 func boardHelpPanel(theme boardTheme, width, height int) []string {
