@@ -200,6 +200,69 @@ func TestBoardTeaModelHandlesResizeRefreshAndQuit(t *testing.T) {
 	}
 }
 
+func TestBoardTeaModelInitStartsRefreshAuditAndSpinner(t *testing.T) {
+	model := boardTeaModel{
+		ctx:      context.Background(),
+		store:    nil,
+		agent:    "agent-board",
+		interval: time.Second,
+		state:    newBoardTUIModel(boardTUITestSnapshot("Ready one"), 80, 20),
+	}
+
+	cmd := model.Init()
+	if cmd == nil {
+		t.Fatal("expected init to schedule commands")
+	}
+}
+
+func TestBoardLoadCommandsReturnExpectedMessages(t *testing.T) {
+	originalSnapshot := boardTUIBuildSnapshot
+	originalAudit := boardTUIBuildAudit
+	originalNow := boardTUINow
+	t.Cleanup(func() {
+		boardTUIBuildSnapshot = originalSnapshot
+		boardTUIBuildAudit = originalAudit
+		boardTUINow = originalNow
+	})
+
+	boardTUINow = func() time.Time {
+		return time.Date(2026, time.March, 22, 19, 30, 0, 0, time.UTC)
+	}
+	boardTUIBuildSnapshot = func(context.Context, *store.Store, string, time.Time) (boardSnapshot, error) {
+		return boardTUITestSnapshot("Loaded snapshot"), nil
+	}
+	boardTUIBuildAudit = func(context.Context, *store.Store, string, string) (store.ContinuityAuditSnapshot, error) {
+		return store.ContinuityAuditSnapshot{
+			Resolution: store.ContinuityResolution{Status: "fresh"},
+		}, nil
+	}
+
+	snapshotMsg := boardLoadSnapshotCmd(context.Background(), nil, "agent-board")()
+	loadedSnapshot, ok := snapshotMsg.(boardSnapshotLoadedMsg)
+	if !ok || loadedSnapshot.err != nil || loadedSnapshot.snapshot.Ready[0].Issue.Title != "Loaded snapshot" {
+		t.Fatalf("unexpected snapshot msg %#v", snapshotMsg)
+	}
+
+	auditMsg := boardLoadAuditCmd(context.Background(), nil, "agent-board", "mem-a111111")()
+	loadedAudit, ok := auditMsg.(boardAuditLoadedMsg)
+	if !ok || loadedAudit.err != nil || loadedAudit.issueID != "mem-a111111" || loadedAudit.audit.Resolution.Status != "fresh" {
+		t.Fatalf("unexpected audit msg %#v", auditMsg)
+	}
+
+	if _, ok := boardScheduleSpinner()().(boardSpinnerTickMsg); !ok {
+		t.Fatalf("expected spinner cmd to emit boardSpinnerTickMsg")
+	}
+	if msg := boardExpireToastCmd(17)(); msg.(boardToastExpiredMsg).id != 17 {
+		t.Fatalf("expected toast expiry id 17, got %#v", msg)
+	}
+	if boardScheduleRefresh(0) != nil {
+		t.Fatal("expected zero refresh interval to return nil cmd")
+	}
+	if _, ok := boardScheduleRefresh(time.Millisecond)().(boardRefreshTickMsg); !ok {
+		t.Fatal("expected scheduled refresh cmd to emit boardRefreshTickMsg")
+	}
+}
+
 func TestBoardTeaModelRefreshFailureBecomesToastInsteadOfFatalError(t *testing.T) {
 	model := boardTeaModel{
 		ctx:      context.Background(),
@@ -254,6 +317,142 @@ func TestBoardTeaModelAuditFailureBecomesToastInsteadOfFatalError(t *testing.T) 
 	}
 	if updated.state.auditLoad.loading || updated.state.auditLoad.err == "" {
 		t.Fatalf("expected failed audit state to stay visible, got %+v", updated.state.auditLoad)
+	}
+}
+
+func TestBoardTeaModelUpdateHandlesSuccessSpinnerAndToastLifecycle(t *testing.T) {
+	model := boardTeaModel{
+		ctx:      context.Background(),
+		interval: time.Second,
+		state:    newBoardTUIModel(boardTUITestSnapshot("Ready one"), 80, 20),
+	}
+	model.state.snapshotLoad = boardBeginAsyncLoad(model.state.snapshotLoad)
+
+	updatedModel, cmd := model.Update(boardSnapshotLoadedMsg{
+		snapshot: boardSnapshot{
+			Ready: []boardIssueRow{
+				{Issue: boardTestIssue("mem-b222222", "Task", "Todo", "Ready two")},
+			},
+		},
+	})
+	updated := updatedModel.(boardTeaModel)
+	if cmd == nil {
+		t.Fatal("expected snapshot success to queue follow-up audit load")
+	}
+	if updated.state.selectedIssue != "mem-b222222" || updated.state.snapshotLoad.loading || updated.state.snapshotLoad.stale {
+		t.Fatalf("expected snapshot success to refresh selection and clear loading, got %+v", updated.state)
+	}
+	if !updated.state.auditLoad.loading {
+		t.Fatalf("expected snapshot success to start audit load, got %+v", updated.state.auditLoad)
+	}
+
+	updatedModel, cmd = updated.Update(boardAuditLoadedMsg{
+		issueID: "mem-b222222",
+		audit:   store.ContinuityAuditSnapshot{Resolution: store.ContinuityResolution{Status: "fresh"}},
+	})
+	updated = updatedModel.(boardTeaModel)
+	if cmd != nil {
+		t.Fatalf("expected audit success to finish without extra command, got %#v", cmd)
+	}
+	if updated.state.audit.Resolution.Status != "fresh" || updated.state.auditLoad.loading || updated.state.auditLoad.err != "" {
+		t.Fatalf("expected audit success to populate state, got %+v", updated.state.auditLoad)
+	}
+
+	updated.state.snapshotLoad = boardBeginAsyncLoad(updated.state.snapshotLoad)
+	updatedModel, cmd = updated.Update(boardSpinnerTickMsg{})
+	updated = updatedModel.(boardTeaModel)
+	if cmd == nil || updated.state.spinnerFrame != 1 {
+		t.Fatalf("expected spinner tick to advance frame, got frame=%d cmd=%v", updated.state.spinnerFrame, cmd != nil)
+	}
+
+	updated.state = boardSetToast(updated.state, boardToastToneInfo, "toast")
+	updatedModel, cmd = updated.Update(boardToastExpiredMsg{id: updated.state.toast.id})
+	updated = updatedModel.(boardTeaModel)
+	if cmd != nil {
+		t.Fatalf("expected toast expiry to finish without command, got %#v", cmd)
+	}
+	if updated.state.toast.message != "" {
+		t.Fatalf("expected toast expiry to clear toast, got %+v", updated.state.toast)
+	}
+}
+
+func TestBoardTeaModelUpdateHandlesIgnoredAuditAndCanceledErrors(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	model := boardTeaModel{
+		ctx:      ctx,
+		interval: time.Second,
+		state:    newBoardTUIModel(boardTUITestSnapshot("Ready one"), 80, 20),
+	}
+
+	updatedModel, cmd := model.Update(boardAuditLoadedMsg{
+		issueID: "mem-other",
+		audit:   store.ContinuityAuditSnapshot{Resolution: store.ContinuityResolution{Status: "stale"}},
+	})
+	updated := updatedModel.(boardTeaModel)
+	if cmd != nil {
+		t.Fatalf("expected mismatched audit update to do nothing, got %#v", cmd)
+	}
+	if updated.state.audit.Resolution.Status != "" {
+		t.Fatalf("expected mismatched audit to be ignored, got %+v", updated.state.audit)
+	}
+
+	cancel()
+	updatedModel, cmd = updated.Update(boardSnapshotLoadedMsg{err: errors.New("boom")})
+	updated = updatedModel.(boardTeaModel)
+	if cmd == nil {
+		t.Fatal("expected canceled snapshot error to quit")
+	}
+
+	updated.state.snapshotLoad = boardAsyncLoadState{}
+	updatedModel, cmd = updated.Update(boardSpinnerTickMsg{})
+	updated = updatedModel.(boardTeaModel)
+	if cmd != nil || updated.state.spinnerFrame != 0 {
+		t.Fatalf("expected idle spinner tick to do nothing, got frame=%d cmd=%v", updated.state.spinnerFrame, cmd != nil)
+	}
+}
+
+func TestBoardTeaModelUpdateCoversResizeInputRefreshAndDefaultMessages(t *testing.T) {
+	model := boardTeaModel{
+		ctx:      context.Background(),
+		interval: 2 * time.Second,
+		state: newBoardTUIModel(boardSnapshot{
+			Ready: []boardIssueRow{
+				{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Ready one")},
+				{Issue: boardTestIssue("mem-b222222", "Task", "Todo", "Ready two")},
+			},
+		}, 60, 12),
+	}
+	model.state.lane = boardLaneReady
+	model.state = boardNormalizeModel(model.state)
+
+	updatedModel, cmd := model.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	updated := updatedModel.(boardTeaModel)
+	if cmd != nil || updated.state.width != 140 || updated.state.height != 40 {
+		t.Fatalf("expected resize to update dimensions without command, got state=%+v cmd=%v", updated.state, cmd != nil)
+	}
+
+	updatedModel, cmd = updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	updated = updatedModel.(boardTeaModel)
+	if cmd == nil || updated.state.selectedIssue != "mem-b222222" || !updated.state.auditLoad.loading {
+		t.Fatalf("expected movement key to change selection and start audit load, got state=%+v cmd=%v", updated.state, cmd != nil)
+	}
+
+	updatedModel, cmd = updated.Update(boardRefreshTickMsg{})
+	updated = updatedModel.(boardTeaModel)
+	if cmd == nil || !updated.state.snapshotLoad.loading {
+		t.Fatalf("expected refresh tick to start snapshot load, got state=%+v cmd=%v", updated.state.snapshotLoad, cmd != nil)
+	}
+
+	updatedModel, cmd = updated.Update(struct{}{})
+	updated = updatedModel.(boardTeaModel)
+	if cmd != nil {
+		t.Fatalf("expected default message path to return nil cmd, got %#v", cmd)
+	}
+
+	updatedModel, cmd = updated.Update(tea.KeyMsg{Type: tea.KeyF1})
+	updated = updatedModel.(boardTeaModel)
+	if cmd != nil {
+		t.Fatalf("expected unmapped key to return nil cmd, got %#v", cmd)
 	}
 }
 

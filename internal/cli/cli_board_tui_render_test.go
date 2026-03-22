@@ -692,6 +692,23 @@ func TestRenderBoardTUIShowsInspectorStatusAndToast(t *testing.T) {
 	}
 }
 
+func TestBoardContinuityPanelDirectRenderShowsHeader(t *testing.T) {
+	t.Parallel()
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Ready one")}},
+	}, 60, 12)
+	model.lane = boardLaneReady
+	model.detailOpen = true
+	model.panelMode = boardPanelModeContinuity
+	model = boardNormalizeModel(model)
+
+	lines := boardContinuityPanel(model, defaultBoardTheme(false), 32, 6)
+	if len(lines) != 6 || !strings.Contains(lines[0], "CONTINUITY") {
+		t.Fatalf("expected direct continuity panel render, got %#v", lines)
+	}
+}
+
 func TestRenderBoardTUIVeryNarrowStillShowsTickets(t *testing.T) {
 	t.Parallel()
 
