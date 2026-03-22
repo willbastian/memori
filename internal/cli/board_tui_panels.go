@@ -170,7 +170,7 @@ func boardLaneRowForeground(theme boardTheme, lane boardLane, row boardIssueRow)
 	if boardLaneSupportsHierarchy(lane) && !boardRowMatchesLaneStatus(lane, row) {
 		switch row.Issue.Status {
 		case "Done":
-			return theme.panelHeadFG
+			return theme.mutedFG
 		case "WontDo":
 			return theme.wontDoFG
 		}
@@ -184,7 +184,7 @@ func boardLaneRowStyle(theme boardTheme, lane boardLane, row boardIssueRow) (fg,
 	if boardLaneSupportsHierarchy(lane) && !boardRowMatchesLaneStatus(lane, row) {
 		switch row.Issue.Status {
 		case "Done":
-			return fg, theme.doneFG, false
+			return fg, "", false
 		case "WontDo":
 			return fg, theme.wontDoBG, false
 		}

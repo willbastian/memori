@@ -159,17 +159,16 @@ func TestBoardLaneRowStyleUsesDistinctHistoricalPalette(t *testing.T) {
 	t.Parallel()
 
 	theme := boardTheme{
-		panelHeadFG: "1;2;3",
-		doneFG:      "4;5;6",
-		wontDoFG:    "7;8;9",
-		wontDoBG:    "10;11;12",
-		taskFG:      "13;14;15",
+		mutedFG:  "1;2;3",
+		wontDoFG: "7;8;9",
+		wontDoBG: "10;11;12",
+		taskFG:   "13;14;15",
 	}
 
 	doneFG, doneBG, doneBold := boardLaneRowStyle(theme, boardLaneReady, boardIssueRow{
 		Issue: store.Issue{Type: "Task", Status: "Done"},
 	})
-	if doneFG != theme.panelHeadFG || doneBG != theme.doneFG || doneBold {
+	if doneFG != theme.mutedFG || doneBG != "" || doneBold {
 		t.Fatalf("expected done context row to use historical palette, got fg=%q bg=%q bold=%v", doneFG, doneBG, doneBold)
 	}
 
