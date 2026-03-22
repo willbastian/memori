@@ -747,6 +747,103 @@ func TestBoardDetailActionLineAndSnapshotStatusHelpersCoverBranches(t *testing.T
 	}
 }
 
+func TestBoardHierarchyAndMetaFormattingHelpersCoverBranches(t *testing.T) {
+	t.Parallel()
+
+	if got := boardCompactHierarchyPath([]string{"mem-a111111"}, 40, true); got != "mem-a111111" {
+		t.Fatalf("unexpected single-item compact hierarchy path %q", got)
+	}
+	if got := boardCompactHierarchyPath([]string{"mem-a111111", "mem-b222222"}, 24, true); !strings.Contains(got, "... > mem-b222222") {
+		t.Fatalf("unexpected elided compact hierarchy path %q", got)
+	}
+	if got := boardCompactHierarchyPath([]string{"mem-a111111", "mem-b222222", "mem-c333333"}, 120, false); got != "mem-a111111 > mem-b222222 > mem-c333333" {
+		t.Fatalf("unexpected full hierarchy path %q", got)
+	}
+
+	theme := defaultBoardTheme(false)
+	if got := boardMetaOverflowToken(theme, 1); !strings.Contains(got, "+1 more") {
+		t.Fatalf("unexpected singular overflow token %q", got)
+	}
+	if got := boardMetaOverflowToken(theme, 3); !strings.Contains(got, "+3 more") {
+		t.Fatalf("unexpected plural overflow token %q", got)
+	}
+
+	statusCases := map[string]string{
+		"InProgress": "in progress",
+		"Blocked":    "blocked",
+		"Done":       "done",
+		"WontDo":     "won't do",
+		"Todo":       "todo",
+	}
+	for status, want := range statusCases {
+		if got := boardExpandedStatusLabel(status); got != want {
+			t.Fatalf("status %q: expected %q, got %q", status, want, got)
+		}
+	}
+}
+
+func TestBoardLaneAndTabsHelpersCoverAdditionalBranches(t *testing.T) {
+	t.Parallel()
+
+	theme := boardTheme{
+		detailFG: "0;0;0",
+		taskFG:   "1;2;3",
+		wontDoFG: "4;5;6",
+	}
+	contextWontDo := boardIssueRow{Issue: store.Issue{Type: "Task", Status: "WontDo"}}
+	if got := boardLaneRowForeground(theme, boardLaneReady, contextWontDo); got != theme.wontDoFG {
+		t.Fatalf("expected wontdo context row to use wontdo fg, got %q", got)
+	}
+	plainTask := boardIssueRow{Issue: store.Issue{Type: "Task", Status: "Todo"}}
+	if got := boardLaneRowForeground(theme, boardLaneReady, plainTask); got != theme.taskFG {
+		t.Fatalf("expected regular task row to keep task fg, got %q", got)
+	}
+
+	model := newBoardTUIModel(boardSnapshot{
+		LikelyNext: []boardIssueRow{{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Next")}},
+		Active:     []boardIssueRow{{Issue: boardTestIssue("mem-b222222", "Task", "InProgress", "Active")}},
+		Blocked:    []boardIssueRow{{Issue: boardTestIssue("mem-c333333", "Bug", "Blocked", "Blocked")}},
+		Ready:      []boardIssueRow{{Issue: boardTestIssue("mem-d444444", "Task", "Todo", "Ready")}},
+		Done:       []boardIssueRow{{Issue: boardTestIssue("mem-e555555", "Task", "Done", "Done")}},
+		WontDo:     []boardIssueRow{{Issue: boardTestIssue("mem-f666666", "Bug", "WontDo", "No")}},
+	}, 120, 24)
+	model.lane = boardLaneReady
+	model.showHistory = true
+	model = boardNormalizeModel(model)
+
+	if got := formatBoardTabsCompact(model, 28); !strings.Contains(got, "READY 1") {
+		t.Fatalf("expected very narrow tab summary to lead with lane title, got %q", got)
+	}
+	if got := formatBoardTabsCompact(model, 72); !strings.Contains(got, "all") || !strings.Contains(got, "D1") || !strings.Contains(got, "W1") {
+		t.Fatalf("expected wide tab summary to include history counts, got %q", got)
+	}
+}
+
+func TestBoardThemeAndColorHelpersCoverRemainingBranches(t *testing.T) {
+	t.Parallel()
+
+	colorTheme := defaultBoardTheme(true)
+	if got := boardLipGlossColor("255;16;0"); got != "#ff1000" {
+		t.Fatalf("unexpected RGB conversion %q", got)
+	}
+	if got := boardLipGlossColor("not-a-color"); got != "not-a-color" {
+		t.Fatalf("expected invalid color to pass through, got %q", got)
+	}
+	if got := boardLipGlossColor("300;-1;oops"); got != "#ff0000" {
+		t.Fatalf("expected clamped color conversion, got %q", got)
+	}
+
+	style := colorTheme.lineStyle(colorTheme.accentFG, colorTheme.panelAltBG, true, true)
+	rendered := style.Render("chip")
+	if !strings.Contains(rendered, "chip") {
+		t.Fatalf("expected line style render to contain content, got %q", rendered)
+	}
+
+	if got := stripANSI(colorTheme.rule(5)); got != "·····" {
+		t.Fatalf("unexpected rule rendering %q", stripANSI(colorTheme.rule(5)))
+	}
+}
+
 func TestBoardToastLineAndColorModeBranches(t *testing.T) {
 	theme := defaultBoardTheme(false)
 	model := boardTUIModel{}
