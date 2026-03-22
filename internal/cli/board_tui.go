@@ -17,6 +17,10 @@ type boardTUIProgram interface {
 }
 
 type boardRefreshTickMsg struct{}
+type boardSpinnerTickMsg struct{}
+type boardToastExpiredMsg struct {
+	id int
+}
 
 type boardSnapshotLoadedMsg struct {
 	snapshot boardSnapshot
@@ -71,11 +75,10 @@ func runBoardTUI(ctx context.Context, s *store.Store, agent string, interval tim
 	}
 
 	state := newBoardTUIModel(snapshot, width, height)
-	audit, err := boardTUIBuildAudit(ctx, s, state.selectedIssue, agent)
-	if err != nil {
-		return err
+	state.snapshotLoad = boardSucceedAsyncLoad(state.snapshotLoad, boardTUINow())
+	if strings.TrimSpace(state.selectedIssue) != "" {
+		state.auditLoad = boardBeginAsyncLoad(state.auditLoad)
 	}
-	state.audit = audit
 
 	model := boardTeaModel{
 		ctx:      ctx,
@@ -109,7 +112,14 @@ func runBoardTUI(ctx context.Context, s *store.Store, agent string, interval tim
 }
 
 func (model boardTeaModel) Init() tea.Cmd {
-	return boardScheduleRefresh(model.interval)
+	cmds := []tea.Cmd{boardScheduleRefresh(model.interval)}
+	if strings.TrimSpace(model.state.selectedIssue) != "" {
+		cmds = append(cmds,
+			boardLoadAuditCmd(model.ctx, model.store, model.agent, model.state.selectedIssue),
+			boardScheduleSpinner(),
+		)
+	}
+	return tea.Batch(cmds...)
 }
 
 func (model boardTeaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -124,38 +134,91 @@ func (model boardTeaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !ok {
 			return model, nil
 		}
+		previous := model.state
 		nextState, quit := boardHandleInput(model.state, input)
 		model.state = nextState
 		if quit {
 			return model, tea.Quit
 		}
-		return model, boardLoadAuditCmd(model.ctx, model.store, model.agent, model.state.selectedIssue)
+		cmds := make([]tea.Cmd, 0, 3)
+		if previous.selectedIssue != model.state.selectedIssue || input.action == boardActionToggleContinuity {
+			model.state.auditLoad = boardBeginAsyncLoad(model.state.auditLoad)
+			cmds = append(cmds, boardLoadAuditCmd(model.ctx, model.store, model.agent, model.state.selectedIssue))
+		}
+		if !boardAnyLoading(previous) && boardAnyLoading(model.state) {
+			cmds = append(cmds, boardScheduleSpinner())
+		}
+		if model.state.toast.id != 0 && model.state.toast.id != previous.toast.id {
+			cmds = append(cmds, boardExpireToastCmd(model.state.toast.id))
+		}
+		return model, tea.Batch(cmds...)
 	case boardRefreshTickMsg:
-		return model, tea.Batch(
+		wasLoading := boardAnyLoading(model.state)
+		model.state.snapshotLoad = boardBeginAsyncLoad(model.state.snapshotLoad)
+		cmds := []tea.Cmd{
 			boardLoadSnapshotCmd(model.ctx, model.store, model.agent),
 			boardScheduleRefresh(model.interval),
-		)
+		}
+		if !wasLoading {
+			cmds = append(cmds, boardScheduleSpinner())
+		}
+		return model, tea.Batch(cmds...)
 	case boardSnapshotLoadedMsg:
 		if msg.err != nil {
 			if model.ctx.Err() != nil {
 				return model, tea.Quit
 			}
-			model.err = msg.err
-			return model, tea.Quit
+			previousToastID := model.state.toast.id
+			model.state.snapshotLoad = boardFailAsyncLoad(model.state.snapshotLoad, msg.err)
+			model.state = boardSetToast(model.state, boardToastToneWarn, "Board refresh failed: "+msg.err.Error())
+			cmds := make([]tea.Cmd, 0, 1)
+			if model.state.toast.id != 0 && model.state.toast.id != previousToastID {
+				cmds = append(cmds, boardExpireToastCmd(model.state.toast.id))
+			}
+			return model, tea.Batch(cmds...)
 		}
+		wasLoading := boardAnyLoading(model.state)
 		model.state = boardApplySnapshot(model.state, msg.snapshot, model.state.width, model.state.height)
-		return model, boardLoadAuditCmd(model.ctx, model.store, model.agent, model.state.selectedIssue)
+		model.state.snapshotLoad = boardSucceedAsyncLoad(model.state.snapshotLoad, boardTUINow())
+		cmds := make([]tea.Cmd, 0, 2)
+		if strings.TrimSpace(model.state.selectedIssue) != "" {
+			model.state.auditLoad = boardBeginAsyncLoad(model.state.auditLoad)
+			cmds = append(cmds, boardLoadAuditCmd(model.ctx, model.store, model.agent, model.state.selectedIssue))
+		}
+		if !wasLoading && boardAnyLoading(model.state) {
+			cmds = append(cmds, boardScheduleSpinner())
+		}
+		return model, tea.Batch(cmds...)
 	case boardAuditLoadedMsg:
 		if msg.err != nil {
 			if model.ctx.Err() != nil {
 				return model, tea.Quit
 			}
-			model.err = msg.err
-			return model, tea.Quit
+			if strings.TrimSpace(msg.issueID) != strings.TrimSpace(model.state.selectedIssue) {
+				return model, nil
+			}
+			previousToastID := model.state.toast.id
+			model.state.auditLoad = boardFailAsyncLoad(model.state.auditLoad, msg.err)
+			model.state = boardSetToast(model.state, boardToastToneWarn, "Continuity refresh failed for "+msg.issueID)
+			cmds := make([]tea.Cmd, 0, 1)
+			if model.state.toast.id != 0 && model.state.toast.id != previousToastID {
+				cmds = append(cmds, boardExpireToastCmd(model.state.toast.id))
+			}
+			return model, tea.Batch(cmds...)
 		}
 		if strings.TrimSpace(msg.issueID) == strings.TrimSpace(model.state.selectedIssue) {
 			model.state.audit = msg.audit
+			model.state.auditLoad = boardSucceedAsyncLoad(model.state.auditLoad, boardTUINow())
 		}
+		return model, nil
+	case boardSpinnerTickMsg:
+		if !boardAnyLoading(model.state) {
+			return model, nil
+		}
+		model.state.spinnerFrame++
+		return model, boardScheduleSpinner()
+	case boardToastExpiredMsg:
+		model.state = boardClearToast(model.state, msg.id)
 		return model, nil
 	default:
 		return model, nil
@@ -187,6 +250,18 @@ func boardLoadAuditCmd(ctx context.Context, s *store.Store, agent, issueID strin
 		audit, err := boardTUIBuildAudit(ctx, s, issueID, agent)
 		return boardAuditLoadedMsg{issueID: issueID, audit: audit, err: err}
 	}
+}
+
+func boardScheduleSpinner() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg {
+		return boardSpinnerTickMsg{}
+	})
+}
+
+func boardExpireToastCmd(id int) tea.Cmd {
+	return tea.Tick(2800*time.Millisecond, func(time.Time) tea.Msg {
+		return boardToastExpiredMsg{id: id}
+	})
 }
 
 func boardTUIShouldUseColor(out io.Writer) bool {

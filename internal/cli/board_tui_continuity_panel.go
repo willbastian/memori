@@ -8,39 +8,49 @@ import (
 )
 
 func boardContinuityPanel(model boardTUIModel, theme boardTheme, width, height int) []string {
-	lines := make([]string, 0, height)
-	lines = append(lines, boardPanelHeader(theme, "Continuity", "Audit", width))
+	return boardRenderViewportPanel(model, boardContinuityPanelContent(model, theme, width), theme, width, height)
+}
 
+func boardContinuityPanelContent(model boardTUIModel, theme boardTheme, width int) boardPanelContent {
 	row, ok := model.selectedRow()
 	if !ok {
-		lines = append(lines, theme.paintLine(theme.mutedFG, "", false, padRight(" no issue selected", width)))
-		for len(lines) < height {
-			lines = append(lines, padRight("", width))
+		return boardPanelContent{
+			title:    "Continuity",
+			subtitle: "Audit",
+			body: []string{
+				theme.paintLine(theme.mutedFG, "", false, padRight(" no issue selected", width)),
+			},
 		}
-		return lines[:height]
 	}
 
 	audit := model.audit
+	lines := make([]string, 0, 24)
 	lines = append(lines, theme.paintLine(theme.detailFG, theme.panelAltBG, true, padRight(truncateBoardLine(" "+boardDetailHeadline(row, width)+" ", width), width)))
 	lines = append(lines, boardRenderMetaLines(theme, boardContinuityMetaParts(audit, theme), width, 2)...)
 	lines = append(lines, theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(" "+boardContinuityActionSummary(audit)+" ", width), width)))
+	lines = append(lines, boardInspectorLeadLines(model, theme, width)...)
 	lines = append(lines, theme.paintLine(theme.borderFG, "", false, strings.Repeat(".", width)))
 
-	for _, section := range boardContinuitySections(audit, width) {
-		lines = append(lines, boardDetailHeaderLine(theme, section.label, width, section.muted))
-		for _, line := range section.lines {
-			fg := theme.detailFG
-			if section.muted {
-				fg = theme.mutedFG
+	if boardContinuityHasContent(audit) || strings.TrimSpace(model.auditLoad.err) == "" {
+		for _, section := range boardContinuitySections(audit, width) {
+			lines = append(lines, boardDetailHeaderLine(theme, section.label, width, section.muted))
+			for _, line := range section.lines {
+				fg := theme.detailFG
+				if section.muted {
+					fg = theme.mutedFG
+				}
+				lines = append(lines, theme.paintLine(fg, "", false, padRight(truncateBoardLine(line, width), width)))
 			}
-			lines = append(lines, theme.paintLine(fg, "", false, padRight(truncateBoardLine(line, width), width)))
 		}
+	} else {
+		lines = append(lines, theme.paintLine(theme.mutedFG, "", false, padRight("  continuity evidence will repopulate after the next successful refresh", width)))
 	}
 
-	for len(lines) < height {
-		lines = append(lines, padRight("", width))
+	return boardPanelContent{
+		title:    "Continuity",
+		subtitle: "Audit",
+		body:     lines,
 	}
-	return lines[:minInt(len(lines), height)]
 }
 
 func boardContinuityMetaParts(audit store.ContinuityAuditSnapshot, theme boardTheme) []boardMetaPart {
@@ -316,6 +326,18 @@ func boardContinuityStatusLabel(status string) string {
 	default:
 		return "fresh"
 	}
+}
+
+func boardContinuityHasContent(audit store.ContinuityAuditSnapshot) bool {
+	return len(audit.Alerts) > 0 ||
+		len(audit.Sessions) > 0 ||
+		len(audit.IssuePackets) > 0 ||
+		len(audit.SessionPackets) > 0 ||
+		len(audit.RecentWrites) > 0 ||
+		strings.TrimSpace(audit.Resolution.Status) != "" ||
+		strings.TrimSpace(audit.Resolution.Source) != "" ||
+		audit.Issue.HasPacket ||
+		audit.Session.HasSession
 }
 
 func boardContinuityTime(ts string) string {

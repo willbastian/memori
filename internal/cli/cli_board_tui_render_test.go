@@ -663,6 +663,35 @@ func TestRenderBoardTUINarrowShowsSearchPanel(t *testing.T) {
 	}
 }
 
+func TestRenderBoardTUIShowsInspectorStatusAndToast(t *testing.T) {
+	t.Parallel()
+
+	issue := boardTestIssue("mem-a111111", "Task", "Todo", "Ready one")
+	issue.Description = strings.Repeat("Long detail body for scrolling and status visibility. ", 16)
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{{Issue: issue}},
+	}, 120, 20)
+	model.lane = boardLaneReady
+	model.detailOpen = true
+	model.panelMode = boardPanelModeContinuity
+	model.snapshotLoad = boardAsyncLoadState{stale: true, err: "snapshot failed"}
+	model.auditLoad = boardAsyncLoadState{stale: true, err: "audit failed"}
+	model.toast = boardToast{message: "Board refresh failed: snapshot unavailable", tone: boardToastToneWarn}
+	model = boardNormalizeModel(model)
+
+	rendered := renderBoardTUI(model, false)
+	for _, want := range []string{
+		"snapshot stale",
+		"the latest continuity refresh failed",
+		"Board refresh failed: snapshot unavailable",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected inspector status render to contain %q, got:\n%s", want, rendered)
+		}
+	}
+}
+
 func TestRenderBoardTUIVeryNarrowStillShowsTickets(t *testing.T) {
 	t.Parallel()
 

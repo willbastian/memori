@@ -37,6 +37,8 @@ const (
 	boardActionCollapse
 	boardActionExpand
 	boardActionToggleHistory
+	boardActionPanelPageUp
+	boardActionPanelPageDown
 	boardActionQuit
 )
 
@@ -71,17 +73,24 @@ type boardTUIModel struct {
 	searchLane    boardLane
 	showHistory   bool
 	audit         store.ContinuityAuditSnapshot
+	snapshotLoad  boardAsyncLoadState
+	auditLoad     boardAsyncLoadState
+	panelScroll   map[string]int
+	spinnerFrame  int
+	toast         boardToast
+	nextToastID   int
 }
 
 func newBoardTUIModel(snapshot boardSnapshot, width, height int) boardTUIModel {
 	model := boardTUIModel{
-		snapshot:   snapshot,
-		width:      maxInt(width, 24),
-		height:     maxInt(height, 10),
-		lane:       boardLaneNext,
-		detailOpen: false,
-		panelMode:  boardPanelModeDetail,
-		expanded:   make(map[string]bool),
+		snapshot:    snapshot,
+		width:       maxInt(width, 24),
+		height:      maxInt(height, 10),
+		lane:        boardLaneNext,
+		detailOpen:  false,
+		panelMode:   boardPanelModeDetail,
+		expanded:    make(map[string]bool),
+		panelScroll: make(map[string]int),
 	}
 	return boardNormalizeModel(model)
 }
@@ -137,7 +146,8 @@ func boardNormalizeModel(model boardTUIModel) boardTUIModel {
 		model.index = 0
 	}
 
-	return boardClampSelection(model)
+	model = boardClampSelection(model)
+	return boardClampPanelScroll(model)
 }
 
 func boardClampSearchSelection(model boardTUIModel) boardTUIModel {

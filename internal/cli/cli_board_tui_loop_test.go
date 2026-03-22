@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -196,6 +197,63 @@ func TestBoardTeaModelHandlesResizeRefreshAndQuit(t *testing.T) {
 	updatedModel, cmd = updatedModel.(boardTeaModel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	if cmd == nil {
 		t.Fatal("expected quit key to return a quit command")
+	}
+}
+
+func TestBoardTeaModelRefreshFailureBecomesToastInsteadOfFatalError(t *testing.T) {
+	model := boardTeaModel{
+		ctx:      context.Background(),
+		interval: time.Second,
+		state:    newBoardTUIModel(boardTUITestSnapshot("Ready one"), 80, 20),
+	}
+	model.state.snapshotLoad = boardSucceedAsyncLoad(model.state.snapshotLoad, time.Date(2026, time.March, 22, 18, 0, 0, 0, time.UTC))
+
+	updatedModel, cmd := model.Update(boardRefreshTickMsg{})
+	updated := updatedModel.(boardTeaModel)
+	if cmd == nil || !updated.state.snapshotLoad.loading || !updated.state.snapshotLoad.stale {
+		t.Fatalf("expected refresh tick to mark snapshot loading/stale, got %+v", updated.state.snapshotLoad)
+	}
+
+	updatedModel, cmd = updated.Update(boardSnapshotLoadedMsg{err: errors.New("snapshot unavailable")})
+	updated = updatedModel.(boardTeaModel)
+	if cmd == nil {
+		t.Fatal("expected failure toast expiry command")
+	}
+	if updated.err != nil {
+		t.Fatalf("expected refresh error to stay non-fatal, got %v", updated.err)
+	}
+	if updated.state.toast.message == "" || !strings.Contains(updated.state.toast.message, "Board refresh failed") {
+		t.Fatalf("expected refresh failure toast, got %+v", updated.state.toast)
+	}
+	if updated.state.snapshotLoad.loading || updated.state.snapshotLoad.err == "" {
+		t.Fatalf("expected failed snapshot state to stay visible, got %+v", updated.state.snapshotLoad)
+	}
+}
+
+func TestBoardTeaModelAuditFailureBecomesToastInsteadOfFatalError(t *testing.T) {
+	model := boardTeaModel{
+		ctx:      context.Background(),
+		interval: time.Second,
+		state:    newBoardTUIModel(boardTUITestSnapshot("Ready one"), 80, 20),
+	}
+	model.state.auditLoad = boardBeginAsyncLoad(model.state.auditLoad)
+
+	updatedModel, cmd := model.Update(boardAuditLoadedMsg{
+		issueID: model.state.selectedIssue,
+		err:     errors.New("audit unavailable"),
+	})
+	updated := updatedModel.(boardTeaModel)
+	if cmd == nil {
+		t.Fatal("expected audit failure toast expiry command")
+	}
+	if updated.err != nil {
+		t.Fatalf("expected audit error to stay non-fatal, got %v", updated.err)
+	}
+	if updated.state.toast.message == "" || !strings.Contains(updated.state.toast.message, "Continuity refresh failed") {
+		t.Fatalf("expected audit failure toast, got %+v", updated.state.toast)
+	}
+	if updated.state.auditLoad.loading || updated.state.auditLoad.err == "" {
+		t.Fatalf("expected failed audit state to stay visible, got %+v", updated.state.auditLoad)
 	}
 }
 

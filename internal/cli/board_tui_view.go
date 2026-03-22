@@ -112,6 +112,9 @@ func renderBoardTUI(model boardTUIModel, colors bool) string {
 	lines = append(lines, boardTabsLine(model, theme, width))
 
 	bodyHeight := maxInt(height-4, 5)
+	if model.toast.message != "" {
+		bodyHeight = maxInt(bodyHeight-1, 4)
+	}
 	if model.helpOpen {
 		if width >= 100 {
 			panelWidth := minInt(maxInt(width-18, 52), 76)
@@ -152,28 +155,32 @@ func renderBoardTUI(model boardTUIModel, colors bool) string {
 		lines = append(lines, boardFramePanel(theme, boardListPanel(model, theme, maxInt(width-2, 1), maxInt(listHeight-2, 1)), width, listHeight)...)
 	}
 
+	if model.toast.message != "" {
+		lines = append(lines, boardToastLine(model, theme, width))
+	}
 	lines = append(lines, boardFooterLine(model, theme, width))
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
 func boardHeaderLine(model boardTUIModel, theme boardTheme, width int) string {
 	if width < 36 {
-		return theme.paintLine(theme.titleFG, theme.titleBG, true, padRight(truncateBoardLine(" MEMORI BOARD ", width), width))
+		return theme.lineStyle(theme.titleFG, theme.titleBG, true, false).Width(width).MaxWidth(width).Render(truncateBoardLine(" MEMORI BOARD ", width))
 	}
 	title := " MEMORI BOARD "
-	left := theme.paintLine(theme.titleFG, theme.titleBG, true, padRight(title, width))
+	left := theme.lineStyle(theme.titleFG, theme.titleBG, true, false).Render(title)
 	meta := boardHeaderMeta(model, theme, width)
 	if strings.TrimSpace(meta) == "" {
-		return left
+		return theme.lineStyle(theme.titleFG, theme.titleBG, true, false).Width(width).MaxWidth(width).Render(title)
 	}
-	rightStart := maxInt(width-visualWidth(meta), visualWidth(title))
-	return replaceSegment(left, rightStart, meta)
+	spacer := lipgloss.NewStyle().Width(maxInt(width-visualWidth(left)-visualWidth(meta), 0)).Render("")
+	line := lipgloss.JoinHorizontal(lipgloss.Top, left, spacer, meta)
+	return theme.lineStyle(theme.titleFG, theme.titleBG, true, false).Width(width).MaxWidth(width).Render(line)
 }
 
 func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
 	if width < 56 {
 		line := " lanes / " + formatBoardTabsCompact(model, width)
-		return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(line, width), width))
+		return theme.lineStyle(theme.mutedFG, theme.panelAltBG, false, false).Width(width).MaxWidth(width).Render(truncateBoardLine(line, width))
 	}
 	tabs := make([]string, 0, len(model.availableLanes()))
 	for _, lane := range model.availableLanes() {
@@ -205,7 +212,7 @@ func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
 		}
 		tabs = append(tabs, theme.paintLine(fg, bg, bold, label))
 	}
-	return theme.paintLine(theme.mutedFG, theme.panelBG, false, padRight(truncateBoardLine(strings.Join(tabs, " "), width), width))
+	return theme.lineStyle(theme.mutedFG, theme.panelBG, false, false).Width(width).MaxWidth(width).Render(truncateBoardLine(strings.Join(tabs, " "), width))
 }
 
 func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
@@ -214,7 +221,15 @@ func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
 		if model.showHistory {
 			scope = "all"
 		}
-		footer := fmt.Sprintf(" /%s  [enter jump] [j/k results] [backspace edit] [f scope:%s] [esc cancel] ", model.searchQuery, scope)
+		results := boardSearchResults(model)
+		resultLabel := "no matches"
+		if len(results) > 0 {
+			resultLabel = fmt.Sprintf("%d/%d match", minInt(model.searchIndex+1, len(results)), len(results))
+			if len(results) > 1 {
+				resultLabel += "es"
+			}
+		}
+		footer := fmt.Sprintf(" /%s  · %s  [enter jump] [j/k results] [backspace edit] [f scope:%s] [esc cancel] ", model.searchQuery, resultLabel, scope)
 		return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
 	}
 	row, ok := model.selectedRow()
@@ -241,6 +256,23 @@ func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
 	return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
 }
 
+func boardToastLine(model boardTUIModel, theme boardTheme, width int) string {
+	if strings.TrimSpace(model.toast.message) == "" {
+		return padRight("", width)
+	}
+	fg := theme.helpFG
+	bg := theme.panelAltBG
+	switch model.toast.tone {
+	case boardToastToneSuccess:
+		fg = theme.doneFG
+		bg = theme.doneBG
+	case boardToastToneWarn:
+		fg = theme.blockedFG
+		bg = theme.blockedBG
+	}
+	return theme.paintLine(fg, bg, true, padRight(truncateBoardLine(" "+model.toast.message+" ", width), width))
+}
+
 func boardPanelModeTitle(mode boardPanelMode) string {
 	switch mode {
 	case boardPanelModeContinuity:
@@ -253,7 +285,7 @@ func boardPanelModeTitle(mode boardPanelMode) string {
 func boardHeaderMeta(model boardTUIModel, theme boardTheme, width int) string {
 	if model.snapshot.Agent != "" {
 		agent := " AGENT " + strings.ToUpper(model.snapshot.Agent) + " "
-		return theme.paintLine(theme.keyFG, theme.titleAltBG, true, truncateBoardLine(agent, maxInt(width/3, 14)))
+		return theme.lineStyle(theme.keyFG, theme.titleAltBG, true, false).Render(truncateBoardLine(agent, maxInt(width/3, 14)))
 	}
 	return ""
 }
@@ -263,15 +295,17 @@ func boardPanelHeader(theme boardTheme, label, subtitle string, width int) strin
 	if label == "" {
 		return padRight("", width)
 	}
-	base := theme.paintLine(theme.detailFG, theme.panelBG, false, padRight("", width))
-	head := theme.paintLine(theme.panelHeadFG, theme.panelHeadBG, true, " "+label+" ")
-	line := replaceSegment(base, 0, head)
+	head := theme.lineStyle(theme.panelHeadFG, theme.panelHeadBG, true, false).Render(" " + label + " ")
+	parts := []string{head}
 	if subtitle != "" {
-		meta := theme.paintLine(theme.panelMetaFG, theme.panelMetaBG, false, " "+strings.TrimSpace(subtitle)+" ")
-		start := maxInt(width-visualWidth(meta), visualWidth(head))
-		line = replaceSegment(line, start, meta)
+		meta := theme.lineStyle(theme.panelMetaFG, theme.panelMetaBG, false, false).Render(" " + strings.TrimSpace(subtitle) + " ")
+		spacer := lipgloss.NewStyle().Width(maxInt(width-visualWidth(head)-visualWidth(meta), 0)).Render("")
+		parts = append(parts, spacer, meta)
+	} else {
+		parts = append(parts, lipgloss.NewStyle().Width(maxInt(width-visualWidth(head), 0)).Render(""))
 	}
-	return line
+	line := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+	return theme.lineStyle(theme.detailFG, theme.panelBG, false, false).Width(width).MaxWidth(width).Render(line)
 }
 
 func boardFramePanel(theme boardTheme, lines []string, width, height int) []string {
@@ -481,6 +515,23 @@ func (theme boardTheme) paintLineStyled(fg, bg string, bold, dim bool, value str
 		return value
 	}
 	return "\x1b[" + strings.Join(codes, ";") + "m" + value + "\x1b[0m"
+}
+
+func (theme boardTheme) lineStyle(fg, bg string, bold, dim bool) lipgloss.Style {
+	style := lipgloss.NewStyle()
+	if theme.colors && fg != "" {
+		style = style.Foreground(lipgloss.Color(boardLipGlossColor(fg)))
+	}
+	if theme.colors && bg != "" {
+		style = style.Background(lipgloss.Color(boardLipGlossColor(bg)))
+	}
+	if bold {
+		style = style.Bold(true)
+	}
+	if dim {
+		style = style.Faint(true)
+	}
+	return style
 }
 
 func (theme boardTheme) rule(width int) string {

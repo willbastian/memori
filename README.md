@@ -500,6 +500,7 @@ In the interactive TUI:
 - `[` jumps to the parent issue and `]` jumps to the first child
 - `{` collapses children and `}` expands them
 - `/` opens issue-id search and `enter` jumps to the selected result
+- `ctrl+u` / `ctrl+d` and `pgup` / `pgdn` scroll the inspector pane without losing the current issue selection
 - `space` / `enter` open or close the detail pane for the selected issue
 - `c` opens the continuity pane, then toggles between continuity and detail while the pane is open
 - `?` opens help, and `q` exits
@@ -512,7 +513,9 @@ The current terminal visual direction aims for a calmer, title-first board:
 - the default wide layout stays list-first so you can scan work before opening extra context
 - rows lead with titles first, then compact issue/type/status metadata, with an explicit left-edge selection marker so focus does not depend only on color
 - chrome stays quieter than the issue text, with the header carrying only the board title and optional agent context, the lane strip acting like a compact dashboard nav, and the footer carrying just the active hints
-- detail and continuity inspection behave more like an inspector sidebar: identity and next action first, then supporting context
+- detail and continuity inspection behave more like an inspector sidebar: identity and next action first, then supporting context, with preserved scroll position per issue and pane mode
+- snapshot and continuity refreshes surface loading, stale, and failed states in the inspector instead of silently dropping context
+- search behaves more like a lightweight command palette, with match counts, empty-state hints, and clearer result emphasis
 - in narrow layouts, opening detail or continuity gives that pane the body instead of clipping the issue content under a tiny list preview
 
 Example wide-layout mockup:

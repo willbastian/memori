@@ -191,19 +191,9 @@ func boardLaneRowStyle(theme boardTheme, lane boardLane, row boardIssueRow) (fg,
 }
 
 func boardHelpPanel(theme boardTheme, width, height int) []string {
-	lines := []string{
-		boardPanelHeader(theme, "Keyboard", "Quick reference", width),
-		boardHelpLine(theme, "j / k", "move selection", width),
-		boardHelpLine(theme, "h / l", "switch lanes", width),
-		boardHelpLine(theme, "f", "toggle actionable/all work", width),
-		boardHelpLine(theme, "[ / ]", "jump parent / child", width),
-		boardHelpLine(theme, "{ / }", "collapse / expand subtree", width),
-		boardHelpLine(theme, "g / G", "jump top / bottom", width),
-		boardHelpLine(theme, "/", "search visible issue ids", width),
-		boardHelpLine(theme, "c", "toggle detail / continuity", width),
-		boardHelpLine(theme, "enter", "toggle issue detail / confirm search", width),
-		boardHelpLine(theme, "?", "toggle help", width),
-		boardHelpLine(theme, "q", "quit", width),
+	lines := []string{boardPanelHeader(theme, "Keyboard", "Quick reference", width)}
+	for _, binding := range boardHelpBindings() {
+		lines = append(lines, boardHelpLine(theme, binding.label, binding.description, width))
 	}
 	for len(lines) < height {
 		lines = append(lines, padRight("", width))
@@ -213,23 +203,31 @@ func boardHelpPanel(theme boardTheme, width, height int) []string {
 
 func boardSearchPanel(model boardTUIModel, theme boardTheme, width, height int) []string {
 	lines := make([]string, 0, height)
-	lines = append(lines, boardPanelHeader(theme, "Search", "Issue ids", width))
+	results := boardSearchResults(model)
+	subtitle := "Issue ids"
+	if len(results) == 0 {
+		subtitle += " · no matches"
+	} else {
+		subtitle += fmt.Sprintf(" · %d/%d", minInt(model.searchIndex+1, len(results)), len(results))
+	}
+	lines = append(lines, boardPanelHeader(theme, "Search", subtitle, width))
 	prompt := "/"
 	if model.searchQuery != "" {
 		prompt += model.searchQuery
 	}
 	lines = append(lines, theme.paintLine(theme.detailFG, theme.panelAltBG, true, padRight(" "+prompt+" ", width)))
-
-	results := boardSearchResults(model)
+	hint := " short hash, full id, or mem- prefix; press f to include history "
+	lines = append(lines, theme.paintLine(theme.mutedFG, "", false, padRight(truncateBoardLine(hint, width), width)))
 	if len(results) == 0 {
-		lines = append(lines, theme.paintLine(theme.mutedFG, "", false, padRight("  no issue id matches this query", width)))
+		lines = append(lines, theme.paintLine(theme.mutedFG, "", false, padRight("  no issue id matches this query yet", width)))
+		lines = append(lines, theme.paintLine(theme.mutedFG, "", false, padRight("  try a short hash, the mem- prefix, or toggle history with f", width)))
 		for len(lines) < height {
 			lines = append(lines, padRight("", width))
 		}
 		return lines[:height]
 	}
 
-	visible := maxInt(height-2, 1)
+	visible := maxInt(height-3, 1)
 	start := 0
 	if model.searchIndex >= visible {
 		start = model.searchIndex - visible + 1
@@ -240,8 +238,9 @@ func boardSearchPanel(model boardTUIModel, theme boardTheme, width, height int) 
 	end := minInt(start+visible, len(results))
 	for idx := start; idx < end; idx++ {
 		result := results[idx]
+		issueID := boardSearchHighlightedID(result.row.Issue.ID, model.searchQuery, theme)
 		line := truncateBoardLine(
-			fmt.Sprintf(" %-7s %s  · %s", strings.ToUpper(boardLaneTitle(result.lane)), result.row.Issue.Title, boardDisplayIssueID(result.row.Issue.ID, width)),
+			fmt.Sprintf(" %-7s %s  · %s", strings.ToUpper(boardLaneTitle(result.lane)), result.row.Issue.Title, issueID),
 			width,
 		)
 		line = boardApplySelectedLineToken(line, idx == model.searchIndex, theme.colors)
@@ -265,9 +264,24 @@ func boardSearchPanel(model boardTUIModel, theme boardTheme, width, height int) 
 }
 
 func boardHelpLine(theme boardTheme, key, desc string, width int) string {
-	keyText := theme.paintLine(theme.keyFG, "", true, " ["+padRight(key, 7)+"] ")
+	keyText := theme.paintLine(theme.keyFG, "", true, " ["+padRight(key, 14)+"] ")
 	descText := theme.paintLine(theme.helpFG, "", false, desc)
 	return padVisual(keyText+descText, width)
+}
+
+func boardSearchHighlightedID(issueID, query string, theme boardTheme) string {
+	issueID = boardDisplayIssueID(issueID, 80)
+	query = strings.ToLower(strings.TrimSpace(query))
+	if !theme.colors || query == "" {
+		return issueID
+	}
+	lower := strings.ToLower(issueID)
+	start := strings.Index(lower, query)
+	if start < 0 {
+		return issueID
+	}
+	end := minInt(start+len(query), len(issueID))
+	return issueID[:start] + theme.paintLine(theme.accentFG, theme.titleMetaBG, true, issueID[start:end]) + issueID[end:]
 }
 
 func boardApplySelectedLineToken(line string, selected bool, colors bool) string {

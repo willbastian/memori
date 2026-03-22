@@ -8,21 +8,12 @@ import (
 )
 
 func boardKeyInputFromKeyMsg(msg tea.KeyMsg) (boardKeyInput, bool) {
-	switch msg.Type {
-	case tea.KeyUp:
-		return boardKeyInput{action: boardActionUp}, true
-	case tea.KeyDown:
-		return boardKeyInput{action: boardActionDown}, true
-	case tea.KeyLeft:
-		return boardKeyInput{action: boardActionPrevLane}, true
-	case tea.KeyRight:
-		return boardKeyInput{action: boardActionNextLane}, true
-	case tea.KeyEnter, tea.KeySpace:
-		return boardKeyInput{action: boardActionToggleDetail}, true
-	case tea.KeyBackspace, tea.KeyCtrlH:
-		return boardKeyInput{backspace: true}, true
-	case tea.KeyEsc, tea.KeyCtrlC:
-		return boardKeyInput{action: boardActionQuit}, true
+	for _, binding := range boardKeyBindings {
+		for _, keyType := range binding.keyTypes {
+			if msg.Type == keyType {
+				return binding.input, true
+			}
+		}
 	}
 
 	if msg.Type != tea.KeyRunes || len(msg.Runes) == 0 {
@@ -30,37 +21,12 @@ func boardKeyInputFromKeyMsg(msg tea.KeyMsg) (boardKeyInput, bool) {
 	}
 
 	text := string(msg.Runes)
-	switch text {
-	case "/":
-		return boardKeyInput{action: boardActionSearchOpen}, true
-	case "q":
-		return boardKeyInput{action: boardActionQuit}, true
-	case "j":
-		return boardKeyInput{action: boardActionDown}, true
-	case "k":
-		return boardKeyInput{action: boardActionUp}, true
-	case "h":
-		return boardKeyInput{action: boardActionPrevLane}, true
-	case "l":
-		return boardKeyInput{action: boardActionNextLane}, true
-	case "g":
-		return boardKeyInput{action: boardActionTop}, true
-	case "G":
-		return boardKeyInput{action: boardActionBottom}, true
-	case "?":
-		return boardKeyInput{action: boardActionToggleHelp}, true
-	case "c":
-		return boardKeyInput{action: boardActionToggleContinuity}, true
-	case "f":
-		return boardKeyInput{action: boardActionToggleHistory}, true
-	case "[":
-		return boardKeyInput{action: boardActionParent}, true
-	case "]":
-		return boardKeyInput{action: boardActionChild}, true
-	case "{":
-		return boardKeyInput{action: boardActionCollapse}, true
-	case "}":
-		return boardKeyInput{action: boardActionExpand}, true
+	for _, binding := range boardKeyBindings {
+		for _, keyRune := range binding.runes {
+			if text == keyRune {
+				return binding.input, true
+			}
+		}
 	}
 
 	if isPrintableInput(text) {
