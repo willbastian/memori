@@ -176,6 +176,10 @@ func runIssueNext(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	workspace, err := activeWorkspaceForIssue(ctx, s, next.Candidate.Issue.ID)
+	if err != nil {
+		return err
+	}
 
 	if *jsonOut {
 		return printJSON(out, jsonEnvelope{
@@ -183,7 +187,8 @@ func runIssueNext(args []string, out io.Writer) error {
 			DBSchemaVersion:       dbVersion,
 			Command:               "issue next",
 			Data: issueNextData{
-				Next: next,
+				Next:      next,
+				Workspace: workspace,
 			},
 		})
 	}
@@ -192,6 +197,9 @@ func runIssueNext(args []string, out io.Writer) error {
 	ui.heading("Recommended issue")
 	ui.field("Issue", formatIssueLine(next.Candidate.Issue, ui.colors))
 	ui.field("Title", next.Candidate.Issue.Title)
+	if workspace != nil {
+		ui.field("Workspace", formatWorkspaceSummary(workspace))
+	}
 	ui.blank()
 	ui.section("Why This Issue")
 	for _, reason := range next.Candidate.Reasons {
@@ -246,5 +254,6 @@ type issueShowData struct {
 }
 
 type issueNextData struct {
-	Next store.IssueNextResult `json:"next"`
+	Next      store.IssueNextResult `json:"next"`
+	Workspace *workspaceContext     `json:"workspace,omitempty"`
 }

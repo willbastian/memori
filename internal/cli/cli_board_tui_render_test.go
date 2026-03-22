@@ -16,7 +16,12 @@ func TestRenderBoardTUIWideShowsDetailPane(t *testing.T) {
 		Summary: boardSummary{Total: 3, Todo: 1, InProgress: 1, Blocked: 1},
 		LikelyNext: []boardIssueRow{
 			{
-				Issue:   boardTestIssue("mem-a111111", "Task", "Todo", "Next one"),
+				Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Next one"),
+				Workspace: &workspaceContext{
+					WorktreeID: "wt-wide-1",
+					Path:       "/tmp/memori-wide-worktree",
+					Branch:     "feature/wide-worktree",
+				},
 				Score:   220,
 				Reasons: []string{"matches the agent's active focus for resume", "has 1 open loop(s) that need continuity"},
 			},
@@ -32,6 +37,8 @@ func TestRenderBoardTUIWideShowsDetailPane(t *testing.T) {
 		"NEXT 1",
 		"ISSUE DETAIL",
 		"a111111 · Next one",
+		"[ WORKSPACE ]",
+		"feature/wide-worktree",
 		"[ REASONS ]",
 		"active focus",
 	} {

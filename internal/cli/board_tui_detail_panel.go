@@ -67,12 +67,14 @@ func boardDetailSections(row boardIssueRow, width int, compact bool) []boardDeta
 	}
 
 	hierarchyLabel, hierarchy := boardHierarchySection(row, width)
+	workspaceLabel, workspace := boardWorkspaceSection(row, width)
 	descriptionLabel, description := boardWrappedSection("Description", row.Issue.Description, width)
 	acceptanceLabel, acceptance := boardWrappedSection("Acceptance", row.Issue.Acceptance, width)
 	reasonsLabel, reasons := boardWrappedSection("Reasons", strings.Join(orderBoardReasons(row.Reasons), "; "), width)
 	referencesLabel, references := boardReferenceSection(row.Issue.References, width)
 
 	if compact {
+		appendSection(workspaceLabel, workspace, false)
 		appendSection(descriptionLabel, description, false)
 		appendSection(acceptanceLabel, acceptance, false)
 		appendSection(hierarchyLabel, hierarchy, false)
@@ -81,6 +83,7 @@ func boardDetailSections(row boardIssueRow, width int, compact bool) []boardDeta
 		return sections
 	}
 
+	appendSection(workspaceLabel, workspace, false)
 	appendSection(descriptionLabel, description, false)
 	appendSection(acceptanceLabel, acceptance, false)
 	appendSection(hierarchyLabel, hierarchy, false)
@@ -157,6 +160,34 @@ func boardHierarchySection(row boardIssueRow, width int) (string, []string) {
 		return "", nil
 	}
 	return "Hierarchy", lines
+}
+
+func boardWorkspaceSection(row boardIssueRow, width int) (string, []string) {
+	if row.Workspace == nil {
+		return "", nil
+	}
+	lines := make([]string, 0, 4)
+	appendWrapped := func(label, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		for idx, line := range wrapText(value, maxInt(width-2, 20)) {
+			prefix := "  "
+			if idx == 0 {
+				prefix = "  " + label + ": "
+			}
+			lines = append(lines, truncateBoardLine(prefix+line, width))
+		}
+	}
+
+	appendWrapped("path", row.Workspace.Path)
+	appendWrapped("branch", row.Workspace.Branch)
+	appendWrapped("worktree", row.Workspace.WorktreeID)
+	if len(lines) == 0 {
+		return "", nil
+	}
+	return "Workspace", lines
 }
 
 func boardReferenceSection(refs []string, width int) (string, []string) {

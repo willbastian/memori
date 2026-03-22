@@ -13,6 +13,11 @@ import (
 type issueNextEnvelope struct {
 	Command string `json:"command"`
 	Data    struct {
+		Workspace struct {
+			WorktreeID string `json:"worktree_id"`
+			Path       string `json:"path"`
+			Branch     string `json:"branch"`
+		} `json:"workspace"`
 		Next struct {
 			Considered int `json:"considered"`
 			Candidate  struct {
@@ -130,6 +135,24 @@ func TestIssueNextPrefersContinuitySignalsForAgentResume(t *testing.T) {
 	createIssue("mem-a444444", "task", "Baseline active task", "test", "cmd-next-cont-create-1")
 	createIssue("mem-b555555", "task", "Continuity-heavy task", "test", "cmd-next-cont-create-2")
 	updateStatus("mem-a444444", "inprogress", "test", "cmd-next-cont-progress-1")
+	worktree, _, _, err := s.RegisterWorktree(ctx, store.RegisterWorktreeParams{
+		Path:      filepath.Join(t.TempDir(), "issue-next-worktree"),
+		RepoRoot:  t.TempDir(),
+		Branch:    "feature/issue-next-worktree",
+		Actor:     "test",
+		CommandID: "cmd-next-cont-worktree-register-1",
+	})
+	if err != nil {
+		t.Fatalf("register worktree: %v", err)
+	}
+	if _, _, _, err := s.AttachWorktree(ctx, store.AttachWorktreeParams{
+		WorktreeID: worktree.WorktreeID,
+		IssueID:    "mem-b555555",
+		Actor:      "test",
+		CommandID:  "cmd-next-cont-worktree-attach-1",
+	}); err != nil {
+		t.Fatalf("attach worktree: %v", err)
+	}
 
 	definitionJSON := `{"gates":[{"id":"build","kind":"check","required":true,"criteria":{"command":"echo resume-quality"}}]}`
 	if _, _, err := s.CreateGateTemplate(ctx, store.CreateGateTemplateParams{
@@ -214,6 +237,9 @@ func TestIssueNextPrefersContinuitySignalsForAgentResume(t *testing.T) {
 	}
 	if resp.Data.Next.Candidate.Issue.ID != "mem-b555555" {
 		t.Fatalf("expected continuity-rich issue selected first, got %q", resp.Data.Next.Candidate.Issue.ID)
+	}
+	if resp.Data.Workspace.WorktreeID != worktree.WorktreeID || resp.Data.Workspace.Branch != "feature/issue-next-worktree" {
+		t.Fatalf("expected issue next workspace payload, got %+v", resp.Data.Workspace)
 	}
 
 	reasons := strings.Join(resp.Data.Next.Candidate.Reasons, "\n")

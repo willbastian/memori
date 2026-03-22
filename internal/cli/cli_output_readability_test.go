@@ -268,6 +268,24 @@ func TestIssueNextHumanOutputShowsContinuityStateWhenResumeContextExists(t *test
 	}); err != nil {
 		t.Fatalf("use packet: %v", err)
 	}
+	worktree, _, _, err := s.RegisterWorktree(ctx, store.RegisterWorktreeParams{
+		Path:      filepath.Join(t.TempDir(), "readable-next-worktree"),
+		RepoRoot:  t.TempDir(),
+		Branch:    "feature/readable-next-worktree",
+		Actor:     "test",
+		CommandID: "cmd-readable-resume-worktree-register-1",
+	})
+	if err != nil {
+		t.Fatalf("register worktree: %v", err)
+	}
+	if _, _, _, err := s.AttachWorktree(ctx, store.AttachWorktreeParams{
+		WorktreeID: worktree.WorktreeID,
+		IssueID:    "mem-f222222",
+		Actor:      "test",
+		CommandID:  "cmd-readable-resume-worktree-attach-1",
+	}); err != nil {
+		t.Fatalf("attach worktree: %v", err)
+	}
 
 	stdout, stderr, err := runMemoriForTest("issue", "next", "--db", dbPath, "--agent", "agent-readable-resume-1")
 	if err != nil {
@@ -275,6 +293,8 @@ func TestIssueNextHumanOutputShowsContinuityStateWhenResumeContextExists(t *test
 	}
 
 	mustContain(t, stdout, "Continuity State:")
+	mustContain(t, stdout, "Workspace: ")
+	mustContain(t, stdout, "branch=feature/readable-next-worktree")
 	mustContain(t, stdout, "Agent agent-readable-resume-1 focus points to mem-f222222 cycle 1 via packet")
 	mustContain(t, stdout, "Latest open session for this issue sess-readable-next-1 has summary")
 	mustContain(t, stdout, "Latest issue packet")
