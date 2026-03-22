@@ -79,7 +79,7 @@ func newBoardTUIModel(snapshot boardSnapshot, width, height int) boardTUIModel {
 		width:      maxInt(width, 24),
 		height:     maxInt(height, 10),
 		lane:       boardLaneNext,
-		detailOpen: width >= 100,
+		detailOpen: false,
 		panelMode:  boardPanelModeDetail,
 		expanded:   make(map[string]bool),
 	}

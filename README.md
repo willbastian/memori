@@ -499,35 +499,36 @@ In the interactive TUI:
 - `[` jumps to the parent issue and `]` jumps to the first child
 - `{` collapses children and `}` expands them
 - `/` opens issue-id search and `enter` jumps to the selected result
-- `c` toggles the right-hand pane between issue detail and a continuity audit facet for the selected issue
-- `space` / `enter` open or close the lower pane on narrow layouts, `?` opens help, and `q` exits
+- `space` / `enter` open or close the detail pane for the selected issue
+- `c` opens the continuity pane, then toggles between continuity and detail while the pane is open
+- `?` opens help, and `q` exits
 
-The current terminal visual direction is a "signal deck":
+The current terminal visual direction aims for a calmer, title-first board:
 
-- deep midnight panels carry the layout so issue text can stay calm and readable
-- high-contrast lane chips and badges carry status meaning instead of flooding the whole screen with color
-- hierarchy, continuity, and close-state signals are rendered as compact tokens that still survive plain ASCII fallbacks
-- the non-interactive board stays quieter than the full-screen TUI, but now uses the same tag language so both surfaces feel related
+- the default wide layout stays list-first so you can scan work before opening extra context
+- chrome stays quieter than the issue text, with the header carrying summary and the footer carrying just the key hints
+- rows lead with titles and keep supporting metadata compact so hierarchy and context stay legible without marker clutter
+- detail and continuity inspection remain one keystroke away instead of competing for attention all the time
 
 Example wide-layout mockup:
 
 ```text
- MEMORI BOARD  SIGNAL DECK                                 T12 IP2 BLK1 RDY7  ACTIONABLE  AGENT WRITER-1
- > NEXT 1 <   ACTIVE 2   BLOCKED 1   READY 7
- READY                                            ISSUE DETAIL
- .. task/todo  mem-a111111  Refresh stale packet  mem-a111111 · Refresh stale packet
- .. story/todo mem-b222222  Tighten close gates   [ HIERARCHY ] .....
- A  task/ip    mem-c333333  Ship replay fix         parent: mem-fffffff (Gate Ergonomics)
-                                                   [ REASONS ] .......
-                                                     matches the agent's active focus
-                                                     agent already holds the latest recovery packet
+ MEMORI BOARD                                             T12 IP2 BLK1 RDY7  ACTIONABLE  AGENT WRITER-1
+ NEXT 1   ACTIVE 2   BLOCKED 1   READY 7
+ READY
+ Refresh stale packet · task · a111111
+ Tighten close gates · story · b222222
+ Parent epic · in progress · epic · fffffff
+
+ mem-a111111  |  Refresh stale packet  |  enter details  c continuity  |  f history  ? help
 ```
 
 Tradeoffs and constraints behind that direction:
 
-- expressiveness lives mostly in chrome, badges, and headers so dense descriptions and acceptance criteria remain low-friction to scan
+- expressiveness lives mostly in layout, spacing, and restrained badges so dense descriptions and acceptance criteria remain low-friction to scan
 - every visual cue keeps an ASCII/text equivalent; color improves speed but never carries the only meaning
-- the TUI gets the strongest treatment because it owns more screen area, while `board` output stays compatible with terminal history, logs, and copy/paste workflows
+- the TUI keeps detail and continuity panes on demand instead of assuming split-pane mode is always helpful
+- `board` output still stays compatible with terminal history, logs, and copy/paste workflows
 - the palette intentionally avoids subtle low-contrast gradients that look good in screenshots but become muddy across common terminal themes and remoting setups
 
 The board surfaces:

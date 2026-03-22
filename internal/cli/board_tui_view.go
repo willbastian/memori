@@ -125,7 +125,7 @@ func renderBoardTUI(model boardTUIModel, colors bool) string {
 			lines = append(lines, theme.paintLine(theme.borderFG, "", false, strings.Repeat("-", width)))
 			lines = append(lines, boardSearchPanel(model, theme, width, searchHeight)...)
 		}
-	} else if width >= 100 {
+	} else if width >= 100 && model.detailOpen {
 		leftWidth := minInt(maxInt(width/2-2, 34), 44)
 		rightWidth := width - leftWidth - 3
 		left := boardListPanel(model, theme, leftWidth, bodyHeight)
@@ -156,10 +156,8 @@ func boardHeaderLine(model boardTUIModel, theme boardTheme, width int) string {
 	}
 	title := " MEMORI BOARD "
 	left := theme.paintLine(theme.titleFG, theme.titleBG, true, padRight(title, width))
-	accent := theme.paintLine(theme.keyFG, theme.titleAltBG, true, " SIGNAL DECK ")
-	left = replaceSegment(left, visualWidth(title), accent)
 	meta := boardHeaderMeta(model, theme, width)
-	rightStart := maxInt(width-visualWidth(meta), visualWidth(title)+visualWidth(accent))
+	rightStart := maxInt(width-visualWidth(meta), visualWidth(title))
 	return replaceSegment(left, rightStart, meta)
 }
 
@@ -171,42 +169,34 @@ func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
 	tabs := make([]string, 0, len(model.availableLanes()))
 	for _, lane := range model.availableLanes() {
 		label := fmt.Sprintf(" %s %d ", strings.ToUpper(boardLaneTitle(lane)), model.issueCountForLane(lane))
-		fg, bg := theme.mutedFG, theme.panelAltBG
+		fg, bg := theme.mutedFG, theme.panelBG
 		bold := false
-		switch lane {
-		case boardLaneNext:
-			bg = theme.nextBG
-			fg = theme.nextFG
-		case boardLaneActive:
-			bg = theme.activeBG
-			fg = theme.activeFG
-		case boardLaneBlocked:
-			bg = theme.blockedBG
-			fg = theme.blockedFG
-		case boardLaneReady:
-			bg = theme.readyBG
-			fg = theme.readyFG
-		case boardLaneDone:
-			bg = theme.doneBG
-			fg = theme.doneFG
-		case boardLaneWontDo:
-			bg = theme.wontDoBG
-			fg = theme.wontDoFG
-		}
 		if lane == model.lane {
 			bold = true
-			label = ">" + label + "<"
-		} else {
-			label = " " + label + " "
+			switch lane {
+			case boardLaneNext:
+				bg = theme.nextBG
+				fg = theme.nextFG
+			case boardLaneActive:
+				bg = theme.activeBG
+				fg = theme.activeFG
+			case boardLaneBlocked:
+				bg = theme.blockedBG
+				fg = theme.blockedFG
+			case boardLaneReady:
+				bg = theme.readyBG
+				fg = theme.readyFG
+			case boardLaneDone:
+				bg = theme.doneBG
+				fg = theme.doneFG
+			case boardLaneWontDo:
+				bg = theme.wontDoBG
+				fg = theme.wontDoFG
+			}
 		}
 		tabs = append(tabs, theme.paintLine(fg, bg, bold, label))
 	}
-	help := theme.paintLine(theme.mutedFG, "", false, " h/l lanes  j/k move  c panel  f history  / search  enter open  ? help  q quit ")
-	line := strings.Join(tabs, " ")
-	if visualWidth(line)+visualWidth(help)+1 <= width {
-		line += padRight("", width-visualWidth(line)-visualWidth(help)) + help
-	}
-	return padVisual(line, width)
+	return padVisual(strings.Join(tabs, " "), width)
 }
 
 func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
@@ -215,7 +205,7 @@ func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
 		if model.showHistory {
 			scope = "all"
 		}
-		footer := fmt.Sprintf(" Search /%s  |  enter jump  j/k results  backspace edit  f scope:%s  esc cancel ", model.searchQuery, scope)
+		footer := fmt.Sprintf(" Search /%s  |  enter jump  j/k results  backspace edit  f scope:%s  esc cancel  ? help ", model.searchQuery, scope)
 		return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
 	}
 	row, ok := model.selectedRow()
@@ -226,11 +216,15 @@ func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
 		footer := fmt.Sprintf(" %s %s %s ", boardDisplayIssueID(row.Issue.ID, width), boardCompactStatusLabel(row.Issue.Status), row.Issue.Title)
 		return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
 	}
-	scope := "ACTIONABLE"
-	if model.showHistory {
-		scope = "ALL WORK"
+	panelHint := "enter details  c continuity"
+	if model.detailOpen {
+		if model.panelMode == boardPanelModeContinuity {
+			panelHint = "enter close  c details"
+		} else {
+			panelHint = "enter close  c continuity"
+		}
 	}
-	footer := fmt.Sprintf(" Selected %s  |  %s  |  %s  |  panel:%s  |  f:%s ", row.Issue.ID, row.Issue.Status, truncateBoardLine(row.Issue.Title, maxInt(width/3, 18)), strings.ToUpper(boardPanelModeTitle(model.panelMode)), scope)
+	footer := fmt.Sprintf(" %s  |  %s  |  %s  |  f history  ? help ", row.Issue.ID, truncateBoardLine(row.Issue.Title, maxInt(width/3, 18)), panelHint)
 	return theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(footer, width), width))
 }
 

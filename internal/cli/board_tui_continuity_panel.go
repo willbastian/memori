@@ -65,8 +65,8 @@ func boardContinuityMetaParts(audit store.ContinuityAuditSnapshot, theme boardTh
 func boardContinuitySections(audit store.ContinuityAuditSnapshot, width int) []boardDetailSection {
 	sections := make([]boardDetailSection, 0, 4)
 	sections = append(sections, boardDetailSection{label: "Decision", lines: boardContinuityDecisionLines(audit, width)})
-	sections = append(sections, boardDetailSection{label: "Current Session", lines: boardContinuityCurrentSessionLines(audit, width)})
 	sections = append(sections, boardDetailSection{label: "Next Step", lines: boardContinuityNextStepLines(audit, width)})
+	sections = append(sections, boardDetailSection{label: "Current Session", lines: boardContinuityCurrentSessionLines(audit, width)})
 	sections = append(sections, boardDetailSection{label: "Evidence", lines: boardContinuityEvidenceLines(audit, width), muted: true})
 	return sections
 }

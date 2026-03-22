@@ -79,7 +79,7 @@ func TestBoardListRowShowsIssueIDAndScoreOnWideRows(t *testing.T) {
 	}
 
 	got := boardListRow(row, true, 80)
-	for _, want := range []string{">>", "mem-abcd123", "Refactor the giant file", "s7"} {
+	for _, want := range []string{"mem-abcd123", "Refactor the giant file", "s7"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected wide board row to contain %q, got %q", want, got)
 		}

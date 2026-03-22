@@ -59,8 +59,6 @@ func boardListRow(row boardIssueRow, showScore bool, width int) string {
 }
 
 func boardRenderListRow(model boardTUIModel, row boardIssueRow, showScore bool, width int) string {
-	laneMarker := boardLaneMembershipToken(model.lane, row)
-	chip := boardStatusCode(row.Issue.Status)
 	issueID := boardDisplayIssueID(row.Issue.ID, width)
 	prefix := ""
 	if boardLaneSupportsHierarchy(model.lane) {
@@ -78,15 +76,53 @@ func boardRenderListRow(model boardTUIModel, row boardIssueRow, showScore bool, 
 	if compactLead != "" {
 		compactLead += " "
 	}
+
+	title := strings.TrimSpace(row.Issue.Title)
+	if title == "" {
+		title = row.Issue.ID
+	}
+
+	metaParts := make([]string, 0, 4)
+	if boardLaneSupportsHierarchy(model.lane) && !boardRowMatchesLaneStatus(model.lane, row) {
+		metaParts = append(metaParts, boardExpandedStatusLabel(row.Issue.Status))
+	}
+	if kind := strings.TrimSpace(row.Issue.Type); kind != "" && width >= 48 {
+		metaParts = append(metaParts, strings.ToLower(kind))
+	}
+	metaParts = append(metaParts, issueID)
+	if showScore && row.Score > 0 && width >= 64 {
+		metaParts = append(metaParts, fmt.Sprintf("s%d", row.Score))
+	}
+
 	switch {
 	case width < 28:
-		return truncateBoardLine(fmt.Sprintf(" %s %s %s%s %s", laneMarker, chip, compactLead, issueID, row.Issue.Title), width)
+		return truncateBoardLine(fmt.Sprintf(" %s%s %s", compactLead, issueID, title), width)
 	case width < 40:
-		return truncateBoardLine(fmt.Sprintf(" %s %s %s%-8s %s", laneMarker, chip, compactLead, issueID, row.Issue.Title), width)
-	case showScore && row.Score > 0 && width >= 52:
-		return truncateBoardLine(fmt.Sprintf(" %s %-3s %s%-8s %s · s%d", laneMarker, chip, lead, issueID, row.Issue.Title, row.Score), width)
+		return truncateBoardLine(fmt.Sprintf(" %s%-8s %s", compactLead, issueID, title), width)
 	default:
-		return truncateBoardLine(fmt.Sprintf(" %s %-3s %s%-8s %s", laneMarker, chip, lead, issueID, row.Issue.Title), width)
+		body := title
+		if len(metaParts) > 0 {
+			body += " · " + strings.Join(metaParts, " · ")
+		}
+		if lead != "" {
+			body = lead + body
+		}
+		return truncateBoardLine(" "+body, width)
+	}
+}
+
+func boardExpandedStatusLabel(status string) string {
+	switch status {
+	case "InProgress":
+		return "in progress"
+	case "Blocked":
+		return "blocked"
+	case "Done":
+		return "done"
+	case "WontDo":
+		return "won't do"
+	default:
+		return "todo"
 	}
 }
 

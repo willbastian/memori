@@ -64,19 +64,19 @@ func boardDetailSections(row boardIssueRow, width int, compact bool) []boardDeta
 	referencesLabel, references := boardReferenceSection(row.Issue.References, width)
 
 	if compact {
-		appendSection(hierarchyLabel, hierarchy, false)
 		appendSection(descriptionLabel, description, false)
 		appendSection(acceptanceLabel, acceptance, false)
+		appendSection(hierarchyLabel, hierarchy, false)
 		appendSection(referencesLabel, references, true)
 		appendSection(reasonsLabel, reasons, false)
 		return sections
 	}
 
-	appendSection(hierarchyLabel, hierarchy, false)
-	appendSection(reasonsLabel, reasons, false)
 	appendSection(descriptionLabel, description, false)
 	appendSection(acceptanceLabel, acceptance, false)
+	appendSection(hierarchyLabel, hierarchy, false)
 	appendSection(referencesLabel, references, true)
+	appendSection(reasonsLabel, reasons, false)
 	return sections
 }
 
@@ -107,17 +107,22 @@ func boardHierarchySection(row boardIssueRow, width int) (string, []string) {
 		}
 		appendWrapped("parent", parent)
 	}
-	if len(row.Hierarchy.ChildIDs) > 0 {
-		if compact {
-			appendWrapped("children", fmt.Sprintf("%d", row.Hierarchy.ChildCount))
-		} else {
+	if compact {
+		shapeParts := make([]string, 0, 2)
+		if row.Hierarchy.Depth > 0 || row.Hierarchy.DescendantCount > 0 {
+			shapeParts = append(shapeParts, fmt.Sprintf("d%d desc%d", row.Hierarchy.Depth, row.Hierarchy.DescendantCount))
+		}
+		if len(row.Hierarchy.ChildIDs) > 0 {
+			shapeParts = append(shapeParts, fmt.Sprintf("child%d", row.Hierarchy.ChildCount))
+		}
+		if len(shapeParts) > 0 {
+			appendWrapped("shape", strings.Join(shapeParts, " "))
+		}
+	} else {
+		if len(row.Hierarchy.ChildIDs) > 0 {
 			appendWrapped("children", strings.Join(row.Hierarchy.ChildIDs, ", "))
 		}
-	}
-	if row.Hierarchy.Depth > 0 || row.Hierarchy.DescendantCount > 0 {
-		if compact {
-			appendWrapped("shape", fmt.Sprintf("d%d desc%d", row.Hierarchy.Depth, row.Hierarchy.DescendantCount))
-		} else {
+		if row.Hierarchy.Depth > 0 || row.Hierarchy.DescendantCount > 0 {
 			appendWrapped("shape", fmt.Sprintf("depth %d, descendants %d", row.Hierarchy.Depth, row.Hierarchy.DescendantCount))
 		}
 	}

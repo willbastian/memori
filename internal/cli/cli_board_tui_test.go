@@ -24,7 +24,7 @@ func TestBoardTUIReduceNavigationAndDetailToggle(t *testing.T) {
 		},
 	}, 120, 30)
 
-	if model.lane != boardLaneNext || model.index != 0 || !model.detailOpen {
+	if model.lane != boardLaneNext || model.index != 0 || model.detailOpen {
 		t.Fatalf("unexpected initial model: %+v", model)
 	}
 
@@ -48,6 +48,26 @@ func TestBoardTUIReduceNavigationAndDetailToggle(t *testing.T) {
 	model = boardReduce(model, boardActionToggleDetail)
 	if !model.detailOpen {
 		t.Fatalf("expected enter to toggle detail open")
+	}
+}
+
+func TestBoardTUIToggleContinuityOpensPaneAndSelectsContinuityMode(t *testing.T) {
+	t.Parallel()
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{
+			{Issue: boardTestIssue("mem-a111111", "Task", "Todo", "Ready one")},
+		},
+	}, 120, 28)
+
+	model = boardReduce(model, boardActionToggleContinuity)
+	if !model.detailOpen || model.panelMode != boardPanelModeContinuity {
+		t.Fatalf("expected continuity toggle to open pane in continuity mode, got %+v", model)
+	}
+
+	model = boardReduce(model, boardActionToggleContinuity)
+	if !model.detailOpen || model.panelMode != boardPanelModeDetail {
+		t.Fatalf("expected second continuity toggle to keep pane open and switch back to detail, got %+v", model)
 	}
 }
 
