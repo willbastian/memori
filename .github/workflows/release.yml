@@ -44,6 +44,9 @@ jobs:
           fi
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
 
+      - name: Run full test suite and enforce coverage baseline
+        run: ./scripts/check_coverage_baseline.sh
+
       - name: Build release archives
         run: ./scripts/build_release_artifacts.sh "${{ steps.vars.outputs.tag }}" dist
 

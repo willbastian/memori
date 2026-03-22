@@ -207,7 +207,7 @@ Tagged releases build cross-platform archives for:
 - Linux `amd64`
 - Linux `arm64`
 
-The automation lives in [.github/workflows/release.yml](.github/workflows/release.yml) and uses [scripts/build_release_artifacts.sh](scripts/build_release_artifacts.sh) so the same build flow can run locally or in GitHub Actions.
+The automation lives in [.github/workflows/release.yml](.github/workflows/release.yml) and uses [scripts/build_release_artifacts.sh](scripts/build_release_artifacts.sh) so the same build flow can run locally or in GitHub Actions. The release workflow now runs the same [scripts/check_coverage_baseline.sh](scripts/check_coverage_baseline.sh) gate as CI before it uploads artifacts, so a tag cannot publish through a known coverage regression.
 
 The test-and-coverage CI lives in [.github/workflows/ci.yml](.github/workflows/ci.yml) and uses [scripts/check_coverage_baseline.sh](scripts/check_coverage_baseline.sh). It runs on every branch push plus pull requests targeting `main`, executes `go test ./...`, and fails if total Go statement coverage drops materially below the committed baseline. The script includes a small default `0.25` percentage-point tolerance so harmless cross-platform coverage drift does not fail CI.
 
@@ -221,6 +221,7 @@ git push origin v0.1.0
 That workflow builds `tar.gz` archives plus `SHA256SUMS.txt` and attaches them to the matching GitHub release. You can also run the same archive build locally:
 
 ```bash
+./scripts/check_coverage_baseline.sh
 ./scripts/build_release_artifacts.sh v0.1.0 dist
 ```
 
