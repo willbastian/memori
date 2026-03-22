@@ -81,6 +81,20 @@ func boardAnyLoading(model boardTUIModel) bool {
 	return model.snapshotLoad.loading || model.auditLoad.loading
 }
 
+func boardStartSnapshotLoad(model boardTUIModel) (boardTUIModel, int) {
+	model.nextSnapshotRequestID++
+	model.activeSnapshotRequestID = model.nextSnapshotRequestID
+	model.snapshotLoad = boardBeginAsyncLoad(model.snapshotLoad)
+	return model, model.activeSnapshotRequestID
+}
+
+func boardStartAuditLoad(model boardTUIModel) (boardTUIModel, int) {
+	model.nextAuditRequestID++
+	model.activeAuditRequestID = model.nextAuditRequestID
+	model.auditLoad = boardBeginAsyncLoad(model.auditLoad)
+	return model, model.activeAuditRequestID
+}
+
 func boardSpinnerGlyph(frame int) string {
 	frames := []string{"-", "\\", "|", "/"}
 	if len(frames) == 0 {

@@ -23,14 +23,16 @@ type boardToastExpiredMsg struct {
 }
 
 type boardSnapshotLoadedMsg struct {
-	snapshot boardSnapshot
-	err      error
+	requestID int
+	snapshot  boardSnapshot
+	err       error
 }
 
 type boardAuditLoadedMsg struct {
-	issueID string
-	audit   store.ContinuityAuditSnapshot
-	err     error
+	requestID int
+	issueID   string
+	audit     store.ContinuityAuditSnapshot
+	err       error
 }
 
 type boardTeaModel struct {
@@ -77,7 +79,7 @@ func runBoardTUI(ctx context.Context, s *store.Store, agent string, interval tim
 	state := newBoardTUIModel(snapshot, width, height)
 	state.snapshotLoad = boardSucceedAsyncLoad(state.snapshotLoad, boardTUINow())
 	if strings.TrimSpace(state.selectedIssue) != "" {
-		state.auditLoad = boardBeginAsyncLoad(state.auditLoad)
+		state, _ = boardStartAuditLoad(state)
 	}
 
 	model := boardTeaModel{
@@ -114,8 +116,9 @@ func runBoardTUI(ctx context.Context, s *store.Store, agent string, interval tim
 func (model boardTeaModel) Init() tea.Cmd {
 	cmds := []tea.Cmd{boardScheduleRefresh(model.interval)}
 	if strings.TrimSpace(model.state.selectedIssue) != "" {
+		requestID := model.state.activeAuditRequestID
 		cmds = append(cmds,
-			boardLoadAuditCmd(model.ctx, model.store, model.agent, model.state.selectedIssue),
+			boardLoadAuditCmd(model.ctx, model.store, model.agent, model.state.selectedIssue, requestID),
 			boardScheduleSpinner(),
 		)
 	}
@@ -142,8 +145,9 @@ func (model boardTeaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds := make([]tea.Cmd, 0, 3)
 		if previous.selectedIssue != model.state.selectedIssue || input.action == boardActionToggleContinuity {
-			model.state.auditLoad = boardBeginAsyncLoad(model.state.auditLoad)
-			cmds = append(cmds, boardLoadAuditCmd(model.ctx, model.store, model.agent, model.state.selectedIssue))
+			requestID := 0
+			model.state, requestID = boardStartAuditLoad(model.state)
+			cmds = append(cmds, boardLoadAuditCmd(model.ctx, model.store, model.agent, model.state.selectedIssue, requestID))
 		}
 		if !boardAnyLoading(previous) && boardAnyLoading(model.state) {
 			cmds = append(cmds, boardScheduleSpinner())
@@ -154,9 +158,10 @@ func (model boardTeaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return model, tea.Batch(cmds...)
 	case boardRefreshTickMsg:
 		wasLoading := boardAnyLoading(model.state)
-		model.state.snapshotLoad = boardBeginAsyncLoad(model.state.snapshotLoad)
+		requestID := 0
+		model.state, requestID = boardStartSnapshotLoad(model.state)
 		cmds := []tea.Cmd{
-			boardLoadSnapshotCmd(model.ctx, model.store, model.agent),
+			boardLoadSnapshotCmd(model.ctx, model.store, model.agent, requestID),
 			boardScheduleRefresh(model.interval),
 		}
 		if !wasLoading {
@@ -164,6 +169,10 @@ func (model boardTeaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return model, tea.Batch(cmds...)
 	case boardSnapshotLoadedMsg:
+		if msg.requestID != model.state.activeSnapshotRequestID {
+			return model, nil
+		}
+		model.state.activeSnapshotRequestID = 0
 		if msg.err != nil {
 			if model.ctx.Err() != nil {
 				return model, tea.Quit
@@ -182,14 +191,19 @@ func (model boardTeaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		model.state.snapshotLoad = boardSucceedAsyncLoad(model.state.snapshotLoad, boardTUINow())
 		cmds := make([]tea.Cmd, 0, 2)
 		if strings.TrimSpace(model.state.selectedIssue) != "" {
-			model.state.auditLoad = boardBeginAsyncLoad(model.state.auditLoad)
-			cmds = append(cmds, boardLoadAuditCmd(model.ctx, model.store, model.agent, model.state.selectedIssue))
+			requestID := 0
+			model.state, requestID = boardStartAuditLoad(model.state)
+			cmds = append(cmds, boardLoadAuditCmd(model.ctx, model.store, model.agent, model.state.selectedIssue, requestID))
 		}
 		if !wasLoading && boardAnyLoading(model.state) {
 			cmds = append(cmds, boardScheduleSpinner())
 		}
 		return model, tea.Batch(cmds...)
 	case boardAuditLoadedMsg:
+		if msg.requestID != model.state.activeAuditRequestID {
+			return model, nil
+		}
+		model.state.activeAuditRequestID = 0
 		if msg.err != nil {
 			if model.ctx.Err() != nil {
 				return model, tea.Quit
@@ -238,17 +252,17 @@ func boardScheduleRefresh(interval time.Duration) tea.Cmd {
 	})
 }
 
-func boardLoadSnapshotCmd(ctx context.Context, s *store.Store, agent string) tea.Cmd {
+func boardLoadSnapshotCmd(ctx context.Context, s *store.Store, agent string, requestID int) tea.Cmd {
 	return func() tea.Msg {
 		snapshot, err := boardTUIBuildSnapshot(ctx, s, agent, boardTUINow())
-		return boardSnapshotLoadedMsg{snapshot: snapshot, err: err}
+		return boardSnapshotLoadedMsg{requestID: requestID, snapshot: snapshot, err: err}
 	}
 }
 
-func boardLoadAuditCmd(ctx context.Context, s *store.Store, agent, issueID string) tea.Cmd {
+func boardLoadAuditCmd(ctx context.Context, s *store.Store, agent, issueID string, requestID int) tea.Cmd {
 	return func() tea.Msg {
 		audit, err := boardTUIBuildAudit(ctx, s, issueID, agent)
-		return boardAuditLoadedMsg{issueID: issueID, audit: audit, err: err}
+		return boardAuditLoadedMsg{requestID: requestID, issueID: issueID, audit: audit, err: err}
 	}
 }
 

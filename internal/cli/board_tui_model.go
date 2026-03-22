@@ -56,29 +56,33 @@ const (
 )
 
 type boardTUIModel struct {
-	snapshot      boardSnapshot
-	width         int
-	height        int
-	lane          boardLane
-	index         int
-	detailOpen    bool
-	helpOpen      bool
-	panelMode     boardPanelMode
-	selectedIssue string
-	expanded      map[string]bool
-	searchOpen    bool
-	searchQuery   string
-	searchIndex   int
-	searchOrigin  string
-	searchLane    boardLane
-	showHistory   bool
-	audit         store.ContinuityAuditSnapshot
-	snapshotLoad  boardAsyncLoadState
-	auditLoad     boardAsyncLoadState
-	panelScroll   map[string]int
-	spinnerFrame  int
-	toast         boardToast
-	nextToastID   int
+	snapshot                boardSnapshot
+	width                   int
+	height                  int
+	lane                    boardLane
+	index                   int
+	detailOpen              bool
+	helpOpen                bool
+	panelMode               boardPanelMode
+	selectedIssue           string
+	expanded                map[string]bool
+	searchOpen              bool
+	searchQuery             string
+	searchIndex             int
+	searchOrigin            string
+	searchLane              boardLane
+	showHistory             bool
+	audit                   store.ContinuityAuditSnapshot
+	snapshotLoad            boardAsyncLoadState
+	auditLoad               boardAsyncLoadState
+	activeSnapshotRequestID int
+	nextSnapshotRequestID   int
+	activeAuditRequestID    int
+	nextAuditRequestID      int
+	panelScroll             map[string]int
+	spinnerFrame            int
+	toast                   boardToast
+	nextToastID             int
 }
 
 func newBoardTUIModel(snapshot boardSnapshot, width, height int) boardTUIModel {

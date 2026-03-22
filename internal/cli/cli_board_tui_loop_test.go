@@ -237,15 +237,15 @@ func TestBoardLoadCommandsReturnExpectedMessages(t *testing.T) {
 		}, nil
 	}
 
-	snapshotMsg := boardLoadSnapshotCmd(context.Background(), nil, "agent-board")()
+	snapshotMsg := boardLoadSnapshotCmd(context.Background(), nil, "agent-board", 7)()
 	loadedSnapshot, ok := snapshotMsg.(boardSnapshotLoadedMsg)
-	if !ok || loadedSnapshot.err != nil || loadedSnapshot.snapshot.Ready[0].Issue.Title != "Loaded snapshot" {
+	if !ok || loadedSnapshot.err != nil || loadedSnapshot.requestID != 7 || loadedSnapshot.snapshot.Ready[0].Issue.Title != "Loaded snapshot" {
 		t.Fatalf("unexpected snapshot msg %#v", snapshotMsg)
 	}
 
-	auditMsg := boardLoadAuditCmd(context.Background(), nil, "agent-board", "mem-a111111")()
+	auditMsg := boardLoadAuditCmd(context.Background(), nil, "agent-board", "mem-a111111", 9)()
 	loadedAudit, ok := auditMsg.(boardAuditLoadedMsg)
-	if !ok || loadedAudit.err != nil || loadedAudit.issueID != "mem-a111111" || loadedAudit.audit.Resolution.Status != "fresh" {
+	if !ok || loadedAudit.err != nil || loadedAudit.requestID != 9 || loadedAudit.issueID != "mem-a111111" || loadedAudit.audit.Resolution.Status != "fresh" {
 		t.Fatalf("unexpected audit msg %#v", auditMsg)
 	}
 
@@ -276,8 +276,9 @@ func TestBoardTeaModelRefreshFailureBecomesToastInsteadOfFatalError(t *testing.T
 	if cmd == nil || !updated.state.snapshotLoad.loading || !updated.state.snapshotLoad.stale {
 		t.Fatalf("expected refresh tick to mark snapshot loading/stale, got %+v", updated.state.snapshotLoad)
 	}
+	requestID := updated.state.activeSnapshotRequestID
 
-	updatedModel, cmd = updated.Update(boardSnapshotLoadedMsg{err: errors.New("snapshot unavailable")})
+	updatedModel, cmd = updated.Update(boardSnapshotLoadedMsg{requestID: requestID, err: errors.New("snapshot unavailable")})
 	updated = updatedModel.(boardTeaModel)
 	if cmd == nil {
 		t.Fatal("expected failure toast expiry command")
@@ -299,11 +300,12 @@ func TestBoardTeaModelAuditFailureBecomesToastInsteadOfFatalError(t *testing.T) 
 		interval: time.Second,
 		state:    newBoardTUIModel(boardTUITestSnapshot("Ready one"), 80, 20),
 	}
-	model.state.auditLoad = boardBeginAsyncLoad(model.state.auditLoad)
+	model.state, _ = boardStartAuditLoad(model.state)
 
 	updatedModel, cmd := model.Update(boardAuditLoadedMsg{
-		issueID: model.state.selectedIssue,
-		err:     errors.New("audit unavailable"),
+		requestID: model.state.activeAuditRequestID,
+		issueID:   model.state.selectedIssue,
+		err:       errors.New("audit unavailable"),
 	})
 	updated := updatedModel.(boardTeaModel)
 	if cmd == nil {
@@ -326,9 +328,10 @@ func TestBoardTeaModelUpdateHandlesSuccessSpinnerAndToastLifecycle(t *testing.T)
 		interval: time.Second,
 		state:    newBoardTUIModel(boardTUITestSnapshot("Ready one"), 80, 20),
 	}
-	model.state.snapshotLoad = boardBeginAsyncLoad(model.state.snapshotLoad)
+	model.state, _ = boardStartSnapshotLoad(model.state)
 
 	updatedModel, cmd := model.Update(boardSnapshotLoadedMsg{
+		requestID: model.state.activeSnapshotRequestID,
 		snapshot: boardSnapshot{
 			Ready: []boardIssueRow{
 				{Issue: boardTestIssue("mem-b222222", "Task", "Todo", "Ready two")},
@@ -347,8 +350,9 @@ func TestBoardTeaModelUpdateHandlesSuccessSpinnerAndToastLifecycle(t *testing.T)
 	}
 
 	updatedModel, cmd = updated.Update(boardAuditLoadedMsg{
-		issueID: "mem-b222222",
-		audit:   store.ContinuityAuditSnapshot{Resolution: store.ContinuityResolution{Status: "fresh"}},
+		requestID: updated.state.activeAuditRequestID,
+		issueID:   "mem-b222222",
+		audit:     store.ContinuityAuditSnapshot{Resolution: store.ContinuityResolution{Status: "fresh"}},
 	})
 	updated = updatedModel.(boardTeaModel)
 	if cmd != nil {
@@ -385,8 +389,9 @@ func TestBoardTeaModelUpdateHandlesIgnoredAuditAndCanceledErrors(t *testing.T) {
 	}
 
 	updatedModel, cmd := model.Update(boardAuditLoadedMsg{
-		issueID: "mem-other",
-		audit:   store.ContinuityAuditSnapshot{Resolution: store.ContinuityResolution{Status: "stale"}},
+		requestID: 99,
+		issueID:   "mem-other",
+		audit:     store.ContinuityAuditSnapshot{Resolution: store.ContinuityResolution{Status: "stale"}},
 	})
 	updated := updatedModel.(boardTeaModel)
 	if cmd != nil {
@@ -397,7 +402,8 @@ func TestBoardTeaModelUpdateHandlesIgnoredAuditAndCanceledErrors(t *testing.T) {
 	}
 
 	cancel()
-	updatedModel, cmd = updated.Update(boardSnapshotLoadedMsg{err: errors.New("boom")})
+	updated.state, _ = boardStartSnapshotLoad(updated.state)
+	updatedModel, cmd = updated.Update(boardSnapshotLoadedMsg{requestID: updated.state.activeSnapshotRequestID, err: errors.New("boom")})
 	updated = updatedModel.(boardTeaModel)
 	if cmd == nil {
 		t.Fatal("expected canceled snapshot error to quit")
@@ -453,6 +459,91 @@ func TestBoardTeaModelUpdateCoversResizeInputRefreshAndDefaultMessages(t *testin
 	updated = updatedModel.(boardTeaModel)
 	if cmd != nil {
 		t.Fatalf("expected unmapped key to return nil cmd, got %#v", cmd)
+	}
+}
+
+func TestBoardTeaModelIgnoresStaleSnapshotReplies(t *testing.T) {
+	model := boardTeaModel{
+		ctx:      context.Background(),
+		interval: time.Second,
+		state:    newBoardTUIModel(boardTUITestSnapshot("Ready one"), 80, 20),
+	}
+	model.state.snapshotLoad = boardSucceedAsyncLoad(model.state.snapshotLoad, time.Date(2026, time.March, 22, 18, 0, 0, 0, time.UTC))
+	model.state, _ = boardStartSnapshotLoad(model.state)
+	staleRequestID := model.state.activeSnapshotRequestID
+	model.state, _ = boardStartSnapshotLoad(model.state)
+	currentRequestID := model.state.activeSnapshotRequestID
+
+	updatedModel, cmd := model.Update(boardSnapshotLoadedMsg{
+		requestID: staleRequestID,
+		snapshot: boardSnapshot{
+			Ready: []boardIssueRow{
+				{Issue: boardTestIssue("mem-stale", "Task", "Todo", "Stale snapshot")},
+			},
+		},
+	})
+	updated := updatedModel.(boardTeaModel)
+	if cmd != nil {
+		t.Fatalf("expected stale snapshot reply to be ignored, got %#v", cmd)
+	}
+	if updated.state.selectedIssue != model.state.selectedIssue {
+		t.Fatalf("expected stale snapshot reply to leave selection unchanged, got %+v", updated.state)
+	}
+	if updated.state.activeSnapshotRequestID != currentRequestID {
+		t.Fatalf("expected current snapshot request %d to stay active, got %d", currentRequestID, updated.state.activeSnapshotRequestID)
+	}
+
+	updatedModel, cmd = updated.Update(boardSnapshotLoadedMsg{
+		requestID: staleRequestID,
+		err:       errors.New("stale failure"),
+	})
+	updated = updatedModel.(boardTeaModel)
+	if cmd != nil {
+		t.Fatalf("expected stale snapshot failure to be ignored, got %#v", cmd)
+	}
+	if updated.state.toast.message != "" {
+		t.Fatalf("expected stale snapshot failure to avoid toast, got %+v", updated.state.toast)
+	}
+}
+
+func TestBoardTeaModelIgnoresStaleAuditReplies(t *testing.T) {
+	model := boardTeaModel{
+		ctx:      context.Background(),
+		interval: time.Second,
+		state:    newBoardTUIModel(boardTUITestSnapshot("Ready one"), 80, 20),
+	}
+	model.state, _ = boardStartAuditLoad(model.state)
+	staleRequestID := model.state.activeAuditRequestID
+	model.state, _ = boardStartAuditLoad(model.state)
+	currentRequestID := model.state.activeAuditRequestID
+
+	updatedModel, cmd := model.Update(boardAuditLoadedMsg{
+		requestID: staleRequestID,
+		issueID:   model.state.selectedIssue,
+		audit:     store.ContinuityAuditSnapshot{Resolution: store.ContinuityResolution{Status: "stale"}},
+	})
+	updated := updatedModel.(boardTeaModel)
+	if cmd != nil {
+		t.Fatalf("expected stale audit reply to be ignored, got %#v", cmd)
+	}
+	if updated.state.audit.Resolution.Status != "" {
+		t.Fatalf("expected stale audit reply to leave audit unchanged, got %+v", updated.state.audit)
+	}
+	if updated.state.activeAuditRequestID != currentRequestID {
+		t.Fatalf("expected current audit request %d to stay active, got %d", currentRequestID, updated.state.activeAuditRequestID)
+	}
+
+	updatedModel, cmd = updated.Update(boardAuditLoadedMsg{
+		requestID: staleRequestID,
+		issueID:   model.state.selectedIssue,
+		err:       errors.New("stale audit failure"),
+	})
+	updated = updatedModel.(boardTeaModel)
+	if cmd != nil {
+		t.Fatalf("expected stale audit failure to be ignored, got %#v", cmd)
+	}
+	if updated.state.toast.message != "" {
+		t.Fatalf("expected stale audit failure to avoid toast, got %+v", updated.state.toast)
 	}
 }
 
