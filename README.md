@@ -482,7 +482,7 @@ After approval, that template version disappears from the pending queue and beco
 
 ### 3. Live board view for terminal splits
 
-Use `board` when you want a continuously refreshing terminal snapshot instead of rerunning multiple inspection commands by hand. When stdout is attached to a terminal and `--watch` is not set, `memori board` opens the interactive TUI automatically.
+Use `board` when you want a continuously refreshing terminal snapshot instead of rerunning multiple inspection commands by hand. When stdout is attached to a terminal and `--watch` is not set, `memori board` opens the interactive Bubble Tea TUI automatically, with Lip Gloss layout and styling for the live board surfaces.
 
 ```bash
 go run ./cmd/memori board
@@ -495,32 +495,40 @@ In the interactive TUI:
 
 - `j` / `k` move through issues
 - `h` / `l` switch lanes
+- arrow keys mirror the same navigation when that feels more natural in your terminal
 - `f` toggles between the fast actionable view and an all-work history view that includes `Done` and `WontDo`
 - `[` jumps to the parent issue and `]` jumps to the first child
 - `{` collapses children and `}` expands them
 - `/` opens issue-id search and `enter` jumps to the selected result
+- `ctrl+u` / `ctrl+d` and `pgup` / `pgdn` scroll the inspector pane without losing the current issue selection
 - `space` / `enter` open or close the detail pane for the selected issue
 - `c` opens the continuity pane, then toggles between continuity and detail while the pane is open
 - `?` opens help, and `q` exits
 
 The current terminal visual direction aims for a calmer, title-first board:
 
+- Bubble Tea owns refresh, key handling, quit behavior, and terminal resize updates so the interactive path stays responsive without a hand-rolled raw-terminal loop
+- Lip Gloss owns the layout and styling for the header, tabs, issue list, search, detail, continuity, and footer surfaces
+- the main board surfaces use a calmer shell, with the list staying primary and temporary modes like help and search rendering as centered overlay-style panels on wide terminals
 - the default wide layout stays list-first so you can scan work before opening extra context
-- chrome stays quieter than the issue text, with the header carrying summary and the footer carrying just the key hints
-- rows lead with titles and keep supporting metadata compact so hierarchy and context stay legible without marker clutter
-- detail and continuity inspection remain one keystroke away instead of competing for attention all the time
+- rows lead with titles first, then compact issue/type/status metadata, with an explicit left-edge selection marker so focus does not depend only on color
+- chrome stays quieter than the issue text, with the header carrying only the board title and optional agent context, the lane strip acting like a compact dashboard nav, and the footer carrying just the active hints
+- detail and continuity inspection behave more like an inspector sidebar: identity and next action first, then supporting context, with preserved scroll position per issue and pane mode
+- snapshot and continuity refreshes surface loading, stale, and failed states in the inspector instead of silently dropping context
+- search behaves more like a lightweight command palette, with match counts, empty-state hints, and clearer result emphasis
+- in narrow layouts, opening detail or continuity gives that pane the body instead of clipping the issue content under a tiny list preview
 
 Example wide-layout mockup:
 
 ```text
- MEMORI BOARD                                             T12 IP2 BLK1 RDY7  ACTIONABLE  AGENT WRITER-1
+ MEMORI BOARD                                                                          AGENT WRITER-1
  NEXT 1   ACTIVE 2   BLOCKED 1   READY 7
  READY
- Refresh stale packet · task · a111111
- Tighten close gates · story · b222222
- Parent epic · in progress · epic · fffffff
+ > Refresh stale packet  · mem-a111111 · task
+   Tighten close gates   · mem-b222222 · story
+   Parent epic           · mem-fffffff · epic · in progress
 
- mem-a111111  |  Refresh stale packet  |  enter details  c continuity  |  f history  ? help
+ mem-a111111  · task · Refresh stale packet  ·  enter detail  c continuity  f history  ? help
 ```
 
 Tradeoffs and constraints behind that direction:

@@ -1,44 +1,43 @@
 package cli
 
 import (
-	"bufio"
-	"io"
-	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
-func TestReadBoardInputParsesAdditionalNavigationKeys(t *testing.T) {
+func TestBoardKeyInputFromKeyMsgParsesNavigationAndPanelKeys(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
 		name      string
-		input     string
+		msg       tea.KeyMsg
 		want      boardAction
 		backspace bool
 	}{
-		{name: "quit", input: "q", want: boardActionQuit},
-		{name: "down", input: "j", want: boardActionDown},
-		{name: "up", input: "k", want: boardActionUp},
-		{name: "previous lane", input: "h", want: boardActionPrevLane},
-		{name: "next lane", input: "l", want: boardActionNextLane},
-		{name: "top", input: "g", want: boardActionTop},
-		{name: "bottom", input: "G", want: boardActionBottom},
-		{name: "toggle help", input: "?", want: boardActionToggleHelp},
-		{name: "toggle continuity", input: "c", want: boardActionToggleContinuity},
-		{name: "toggle history", input: "f", want: boardActionToggleHistory},
-		{name: "parent", input: "[", want: boardActionParent},
-		{name: "child", input: "]", want: boardActionChild},
-		{name: "collapse", input: "{", want: boardActionCollapse},
-		{name: "expand", input: "}", want: boardActionExpand},
-		{name: "enter toggles detail", input: "\r", want: boardActionToggleDetail},
-		{name: "newline toggles detail", input: "\n", want: boardActionToggleDetail},
-		{name: "space toggles detail", input: " ", want: boardActionToggleDetail},
-		{name: "ctrl h backspace", input: "\b", backspace: true},
-		{name: "delete backspace", input: "\x7f", backspace: true},
-		{name: "arrow up", input: "\x1b[A", want: boardActionUp},
-		{name: "arrow down", input: "\x1b[B", want: boardActionDown},
-		{name: "arrow right", input: "\x1b[C", want: boardActionNextLane},
-		{name: "arrow left", input: "\x1b[D", want: boardActionPrevLane},
+		{name: "quit rune", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}}, want: boardActionQuit},
+		{name: "ctrl c", msg: tea.KeyMsg{Type: tea.KeyCtrlC}, want: boardActionQuit},
+		{name: "down rune", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}}, want: boardActionDown},
+		{name: "up rune", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}}, want: boardActionUp},
+		{name: "previous lane rune", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}}, want: boardActionPrevLane},
+		{name: "next lane rune", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}}, want: boardActionNextLane},
+		{name: "top", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}}, want: boardActionTop},
+		{name: "bottom", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}}, want: boardActionBottom},
+		{name: "toggle help", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}}, want: boardActionToggleHelp},
+		{name: "toggle continuity", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}}, want: boardActionToggleContinuity},
+		{name: "toggle history", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}}, want: boardActionToggleHistory},
+		{name: "parent", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}}, want: boardActionParent},
+		{name: "child", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}}, want: boardActionChild},
+		{name: "collapse", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'{'}}, want: boardActionCollapse},
+		{name: "expand", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'}'}}, want: boardActionExpand},
+		{name: "enter toggles detail", msg: tea.KeyMsg{Type: tea.KeyEnter}, want: boardActionToggleDetail},
+		{name: "space toggles detail", msg: tea.KeyMsg{Type: tea.KeySpace}, want: boardActionToggleDetail},
+		{name: "backspace", msg: tea.KeyMsg{Type: tea.KeyBackspace}, backspace: true},
+		{name: "ctrl h backspace", msg: tea.KeyMsg{Type: tea.KeyCtrlH}, backspace: true},
+		{name: "arrow up", msg: tea.KeyMsg{Type: tea.KeyUp}, want: boardActionUp},
+		{name: "arrow down", msg: tea.KeyMsg{Type: tea.KeyDown}, want: boardActionDown},
+		{name: "arrow right", msg: tea.KeyMsg{Type: tea.KeyRight}, want: boardActionNextLane},
+		{name: "arrow left", msg: tea.KeyMsg{Type: tea.KeyLeft}, want: boardActionPrevLane},
 	}
 
 	for _, tc := range cases {
@@ -46,9 +45,9 @@ func TestReadBoardInputParsesAdditionalNavigationKeys(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := readBoardInput(bufio.NewReader(strings.NewReader(tc.input)))
-			if err != nil {
-				t.Fatalf("read board input: %v", err)
+			got, ok := boardKeyInputFromKeyMsg(tc.msg)
+			if !ok {
+				t.Fatal("expected key message to be handled")
 			}
 			if got.action != tc.want || got.backspace != tc.backspace {
 				t.Fatalf("expected action=%v backspace=%v, got %+v", tc.want, tc.backspace, got)
@@ -57,98 +56,32 @@ func TestReadBoardInputParsesAdditionalNavigationKeys(t *testing.T) {
 	}
 }
 
-func TestReadBoardInputHandlesFallbacksAndErrors(t *testing.T) {
+func TestBoardKeyInputFromKeyMsgParsesSearchKeysAndPrintableText(t *testing.T) {
 	t.Parallel()
 
-	if _, err := readBoardInput(bufio.NewReader(strings.NewReader(""))); err != io.EOF {
-		t.Fatalf("expected EOF for empty reader, got %v", err)
+	searchOpen, ok := boardKeyInputFromKeyMsg(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if !ok || searchOpen.action != boardActionSearchOpen {
+		t.Fatalf("expected / to open search, got %+v ok=%v", searchOpen, ok)
 	}
 
-	unknownEscape, err := readBoardInput(bufio.NewReader(strings.NewReader("\x1bx")))
-	if err != nil {
-		t.Fatalf("read unknown escape: %v", err)
-	}
-	if unknownEscape.action != boardActionQuit {
-		t.Fatalf("expected non-CSI escape to quit, got %+v", unknownEscape)
+	text, ok := boardKeyInputFromKeyMsg(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if !ok || text.text != "a" {
+		t.Fatalf("expected printable input to become text, got %+v ok=%v", text, ok)
 	}
 
-	if _, err := readBoardInput(bufio.NewReader(strings.NewReader("\x1b["))); err != io.EOF {
-		t.Fatalf("expected EOF for truncated escape sequence, got %v", err)
-	}
-
-	unknownArrow, err := readBoardInput(bufio.NewReader(strings.NewReader("\x1b[Z")))
-	if err != nil {
-		t.Fatalf("read unknown arrow: %v", err)
-	}
-	if unknownArrow != (boardKeyInput{}) {
-		t.Fatalf("expected unknown arrow to produce zero-value input, got %+v", unknownArrow)
-	}
-
-	nonPrintable, err := readBoardInput(bufio.NewReader(strings.NewReader("\x01")))
-	if err != nil {
-		t.Fatalf("read non-printable input: %v", err)
-	}
-	if nonPrintable != (boardKeyInput{}) {
-		t.Fatalf("expected non-printable input to be ignored, got %+v", nonPrintable)
+	paste, ok := boardKeyInputFromKeyMsg(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("abc123")})
+	if !ok || paste.text != "abc123" {
+		t.Fatalf("expected multi-rune printable input to become text, got %+v ok=%v", paste, ok)
 	}
 }
 
-func TestReadBoardInputsSkipsEmptyEventsAndStopsOnEOF(t *testing.T) {
+func TestBoardKeyInputFromKeyMsgIgnoresUnhandledInput(t *testing.T) {
 	t.Parallel()
 
-	actions := make(chan boardKeyInput, 2)
-	errCh := make(chan error, 1)
-
-	go readBoardInputs(bufio.NewReader(strings.NewReader("\x00j")), actions, errCh)
-
-	action := <-actions
-	if action.action != boardActionDown {
-		t.Fatalf("expected only the non-empty input to be emitted, got %+v", action)
+	if _, ok := boardKeyInputFromKeyMsg(tea.KeyMsg{Type: tea.KeyTab}); ok {
+		t.Fatal("expected tab to be ignored")
 	}
-
-	if err := <-errCh; err != io.EOF {
-		t.Fatalf("expected EOF after inputs drained, got %v", err)
-	}
-
-	select {
-	case extra := <-actions:
-		t.Fatalf("expected no extra actions, got %+v", extra)
-	default:
-	}
-}
-
-func TestReadBoardInputParsesSearchKeysAndEscape(t *testing.T) {
-	t.Parallel()
-
-	searchOpen, err := readBoardInput(bufio.NewReader(strings.NewReader("/")))
-	if err != nil {
-		t.Fatalf("read search open: %v", err)
-	}
-	if searchOpen.action != boardActionSearchOpen {
-		t.Fatalf("expected / to open search, got %+v", searchOpen)
-	}
-
-	text, err := readBoardInput(bufio.NewReader(strings.NewReader("a")))
-	if err != nil {
-		t.Fatalf("read text: %v", err)
-	}
-	if text.text != "a" {
-		t.Fatalf("expected printable key to become search text, got %+v", text)
-	}
-
-	backspace, err := readBoardInput(bufio.NewReader(strings.NewReader("\x7f")))
-	if err != nil {
-		t.Fatalf("read backspace: %v", err)
-	}
-	if !backspace.backspace {
-		t.Fatalf("expected delete to map to backspace, got %+v", backspace)
-	}
-
-	escape, err := readBoardInput(bufio.NewReader(strings.NewReader("\x1b")))
-	if err != nil {
-		t.Fatalf("read escape: %v", err)
-	}
-	if escape.action != boardActionQuit {
-		t.Fatalf("expected bare escape to map to quit/cancel, got %+v", escape)
+	if _, ok := boardKeyInputFromKeyMsg(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'\x01'}}); ok {
+		t.Fatal("expected control rune to be ignored")
 	}
 }

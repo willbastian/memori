@@ -6,29 +6,37 @@ import (
 )
 
 func boardDetailPanel(model boardTUIModel, theme boardTheme, width, height int) []string {
-	lines := make([]string, 0, height)
+	return boardRenderViewportPanel(model, boardDetailPanelContent(model, theme, width), theme, width, height)
+}
+
+func boardDetailPanelContent(model boardTUIModel, theme boardTheme, width int) boardPanelContent {
 	if !model.detailOpen {
-		lines = append(lines, boardPanelHeader(theme, "Issue Detail", "Context", width))
-		lines = append(lines, theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(" press <enter> to expand the selected issue ", width)))
-		for len(lines) < height {
-			lines = append(lines, padRight("", width))
+		return boardPanelContent{
+			title:    "Issue Detail",
+			subtitle: "Context",
+			body: []string{
+				theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(" press <enter> to expand the selected issue ", width)),
+			},
 		}
-		return lines
 	}
 
 	row, ok := model.selectedRow()
 	if !ok {
-		lines = append(lines, theme.paintLine(theme.mutedFG, "", false, padRight(" no issue selected", width)))
-		for len(lines) < height {
-			lines = append(lines, padRight("", width))
+		return boardPanelContent{
+			title:    "Issue Detail",
+			subtitle: "Context",
+			body: []string{
+				theme.paintLine(theme.mutedFG, "", false, padRight(" no issue selected", width)),
+			},
 		}
-		return lines
 	}
 
-	lines = append(lines, boardPanelHeader(theme, "Issue Detail", "Context", width))
+	lines := make([]string, 0, 24)
 	for _, line := range boardDetailIntroLines(row, theme, width) {
 		lines = append(lines, line)
 	}
+	lines = append(lines, theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(" "+boardDetailActionLine(row, width)+" ", width), width)))
+	lines = append(lines, boardInspectorLeadLines(model, theme, width)...)
 	lines = append(lines, theme.paintLine(theme.borderFG, "", false, strings.Repeat(".", width)))
 
 	sections := boardDetailSections(row, width, width < 100)
@@ -42,10 +50,11 @@ func boardDetailPanel(model boardTUIModel, theme boardTheme, width, height int) 
 			lines = append(lines, theme.paintLine(fg, "", false, padRight(line, width)))
 		}
 	}
-	for len(lines) < height {
-		lines = append(lines, padRight("", width))
+	return boardPanelContent{
+		title:    "Issue Detail",
+		subtitle: "Context",
+		body:     lines,
 	}
-	return lines[:minInt(len(lines), height)]
 }
 
 func boardDetailSections(row boardIssueRow, width int, compact bool) []boardDetailSection {
@@ -78,6 +87,24 @@ func boardDetailSections(row boardIssueRow, width int, compact bool) []boardDeta
 	appendSection(referencesLabel, references, true)
 	appendSection(reasonsLabel, reasons, false)
 	return sections
+}
+
+func boardDetailActionLine(row boardIssueRow, width int) string {
+	if len(row.Reasons) > 0 {
+		return "next: " + truncateBoardLine(orderBoardReasons(row.Reasons)[0], maxInt(width-8, 12))
+	}
+	switch row.Issue.Status {
+	case "InProgress":
+		return "next: keep continuity current while this work is active"
+	case "Blocked":
+		return "next: inspect the blocker and the required follow-up"
+	case "Done":
+		return "status: done and kept here for historical context"
+	case "WontDo":
+		return "status: won't do and kept here for historical context"
+	default:
+		return "next: review the scope and acceptance before starting"
+	}
 }
 
 func boardHierarchySection(row boardIssueRow, width int) (string, []string) {
@@ -285,4 +312,47 @@ func boardCompactHierarchyPath(path []string, width int, compact bool) string {
 		return rootLeaf
 	}
 	return "... > " + path[len(path)-1]
+}
+
+func boardInspectorLeadLines(model boardTUIModel, theme boardTheme, width int) []string {
+	lines := make([]string, 0, 2)
+	if message := boardSnapshotStatusLine(model.snapshotLoad); message != "" {
+		lines = append(lines, theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(" "+message+" ", width), width)))
+	}
+	if model.panelMode == boardPanelModeContinuity {
+		if message := boardAuditStatusLine(model.auditLoad); message != "" {
+			lines = append(lines, theme.paintLine(theme.mutedFG, theme.panelAltBG, false, padRight(truncateBoardLine(" "+message+" ", width), width)))
+		}
+	}
+	return lines
+}
+
+func boardSnapshotStatusLine(state boardAsyncLoadState) string {
+	switch {
+	case state.loading && state.stale:
+		return "board refresh is in progress; inspector is showing the last successful snapshot"
+	case state.loading:
+		return "board refresh is in progress"
+	case strings.TrimSpace(state.err) != "" && state.stale:
+		return "the latest board refresh failed; inspector is showing the last successful snapshot"
+	case strings.TrimSpace(state.err) != "":
+		return "the latest board refresh failed; a new retry will happen automatically"
+	default:
+		return ""
+	}
+}
+
+func boardAuditStatusLine(state boardAsyncLoadState) string {
+	switch {
+	case state.loading && state.stale:
+		return "continuity refresh is in progress; showing the last successful audit"
+	case state.loading:
+		return "loading continuity evidence for the selected issue"
+	case strings.TrimSpace(state.err) != "" && state.stale:
+		return "the latest continuity refresh failed; showing the last successful audit"
+	case strings.TrimSpace(state.err) != "":
+		return "the latest continuity refresh failed; continuity evidence is unavailable right now"
+	default:
+		return ""
+	}
 }

@@ -1,5 +1,7 @@
 package cli
 
+import "strings"
+
 func boardReduce(model boardTUIModel, action boardAction) boardTUIModel {
 	switch action {
 	case boardActionUp:
@@ -59,6 +61,14 @@ func boardReduce(model boardTUIModel, action boardAction) boardTUIModel {
 		}
 	case boardActionToggleHistory:
 		model.showHistory = !model.showHistory
+	case boardActionPanelPageUp:
+		if model.detailOpen {
+			model = boardAdjustPanelScroll(model, -maxInt(boardCurrentPanelBodyHeight(model)-2, 1))
+		}
+	case boardActionPanelPageDown:
+		if model.detailOpen {
+			model = boardAdjustPanelScroll(model, maxInt(boardCurrentPanelBodyHeight(model)-2, 1))
+		}
 	case boardActionQuit:
 		return model
 	}
@@ -102,6 +112,7 @@ func boardHandleSearchInput(model boardTUIModel, input boardKeyInput) (boardTUIM
 		model.searchQuery = ""
 		selected := results[minInt(model.searchIndex, len(results)-1)]
 		model = boardFocusIssuePreferred(model, selected.row.Issue.ID, boardLanePreference(selected.lane, model.navigationLanes()))
+		model = boardSetToast(model, boardToastToneSuccess, "Jumped to "+selected.row.Issue.ID+" in "+strings.ToLower(boardLaneTitle(selected.lane)))
 		return model, false
 	case input.action == boardActionToggleHistory:
 		model.showHistory = !model.showHistory

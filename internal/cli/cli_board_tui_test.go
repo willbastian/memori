@@ -627,6 +627,52 @@ func TestBoardTUISearchIncludesHistoryOnlyWhenVisible(t *testing.T) {
 	}
 }
 
+func TestBoardTUIInspectorScrollPersistsPerIssue(t *testing.T) {
+	t.Parallel()
+
+	first := boardTestIssue("mem-a111111", "Task", "Todo", "First detail")
+	first.Description = strings.Repeat("first detail scroll content ", 20)
+	second := boardTestIssue("mem-b222222", "Task", "Todo", "Second detail")
+	second.Description = strings.Repeat("second detail scroll content ", 20)
+
+	model := newBoardTUIModel(boardSnapshot{
+		Ready: []boardIssueRow{
+			{Issue: first},
+			{Issue: second},
+		},
+	}, 120, 18)
+	model.lane = boardLaneReady
+	model.detailOpen = true
+	model = boardNormalizeModel(model)
+
+	model = boardReduce(model, boardActionPanelPageDown)
+	firstScroll := boardCurrentPanelScroll(model)
+	if firstScroll == 0 {
+		t.Fatalf("expected first issue to scroll, got %+v", model.panelScroll)
+	}
+
+	model = boardReduce(model, boardActionDown)
+	if got := boardCurrentPanelScroll(model); got != 0 {
+		t.Fatalf("expected second issue to start at top, got %d", got)
+	}
+
+	model = boardReduce(model, boardActionPanelPageDown)
+	secondScroll := boardCurrentPanelScroll(model)
+	if secondScroll == 0 {
+		t.Fatalf("expected second issue to scroll independently, got %+v", model.panelScroll)
+	}
+
+	model = boardReduce(model, boardActionUp)
+	if got := boardCurrentPanelScroll(model); got != firstScroll {
+		t.Fatalf("expected first issue scroll to be restored, want %d got %d", firstScroll, got)
+	}
+
+	model = boardReduce(model, boardActionDown)
+	if got := boardCurrentPanelScroll(model); got != secondScroll {
+		t.Fatalf("expected second issue scroll to be restored, want %d got %d", secondScroll, got)
+	}
+}
+
 func boardTestIssue(id, issueType, status, title string) store.Issue {
 	return store.Issue{ID: id, Type: issueType, Status: status, Title: title}
 }
