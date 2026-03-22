@@ -2,7 +2,10 @@ package cli
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 type boardTheme struct {
@@ -122,7 +125,7 @@ func renderBoardTUI(model boardTUIModel, colors bool) string {
 			listHeight := maxInt(bodyHeight/2, 6)
 			searchHeight := maxInt(bodyHeight-listHeight-1, 6)
 			lines = append(lines, boardListPanel(model, theme, width, listHeight)...)
-			lines = append(lines, theme.paintLine(theme.borderFG, "", false, strings.Repeat("-", width)))
+			lines = append(lines, theme.rule(width))
 			lines = append(lines, boardSearchPanel(model, theme, width, searchHeight)...)
 		}
 	} else if width >= 100 && model.detailOpen {
@@ -141,13 +144,13 @@ func renderBoardTUI(model boardTUIModel, colors bool) string {
 		}
 		lines = append(lines, boardListPanel(model, theme, width, listHeight)...)
 		if model.detailOpen {
-			lines = append(lines, theme.paintLine(theme.borderFG, "", false, strings.Repeat("-", width)))
+			lines = append(lines, theme.rule(width))
 			lines = append(lines, boardSidePanel(model, theme, width, bodyHeight-listHeight-1)...)
 		}
 	}
 
 	lines = append(lines, boardFooterLine(model, theme, width))
-	return "\x1b[H" + strings.Join(lines, "\n") + "\x1b[J"
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
 func boardHeaderLine(model boardTUIModel, theme boardTheme, width int) string {
@@ -196,7 +199,7 @@ func boardTabsLine(model boardTUIModel, theme boardTheme, width int) string {
 		}
 		tabs = append(tabs, theme.paintLine(fg, bg, bold, label))
 	}
-	return padVisual(strings.Join(tabs, " "), width)
+	return lipgloss.NewStyle().Width(width).MaxWidth(width).Render(strings.Join(tabs, " "))
 }
 
 func boardFooterLine(model boardTUIModel, theme boardTheme, width int) string {
@@ -286,20 +289,15 @@ func boardPanelHeader(theme boardTheme, label, subtitle string, width int) strin
 }
 
 func boardJoinColumns(left, right []string, leftWidth, rightWidth int) []string {
-	height := maxInt(len(left), len(right))
-	lines := make([]string, 0, height)
-	for i := 0; i < height; i++ {
-		l := padRight("", leftWidth)
-		r := padRight("", rightWidth)
-		if i < len(left) {
-			l = left[i]
-		}
-		if i < len(right) {
-			r = right[i]
-		}
-		lines = append(lines, padVisual(l, leftWidth)+" | "+padVisual(r, rightWidth))
-	}
-	return lines
+	leftBlock := lipgloss.JoinVertical(lipgloss.Left, left...)
+	rightBlock := lipgloss.JoinVertical(lipgloss.Left, right...)
+	joined := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		lipgloss.NewStyle().Width(leftWidth).MaxWidth(leftWidth).Render(leftBlock),
+		" | ",
+		lipgloss.NewStyle().Width(rightWidth).MaxWidth(rightWidth).Render(rightBlock),
+	)
+	return strings.Split(joined, "\n")
 }
 
 func boardLaneTitle(lane boardLane) string {
@@ -423,4 +421,30 @@ func (theme boardTheme) paintLine(fg, bg string, bold bool, value string) string
 		return value
 	}
 	return "\x1b[" + strings.Join(codes, ";") + "m" + value + "\x1b[0m"
+}
+
+func (theme boardTheme) rule(width int) string {
+	style := lipgloss.NewStyle().Width(width).MaxWidth(width)
+	if theme.colors && theme.borderFG != "" {
+		style = style.Foreground(lipgloss.Color(boardLipGlossColor(theme.borderFG)))
+	}
+	return style.Render(strings.Repeat("-", maxInt(width, 0)))
+}
+
+func boardLipGlossColor(value string) string {
+	parts := strings.Split(strings.TrimSpace(value), ";")
+	if len(parts) != 3 {
+		return value
+	}
+	component := func(raw string) string {
+		n, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil || n < 0 {
+			return "00"
+		}
+		if n > 255 {
+			n = 255
+		}
+		return fmt.Sprintf("%02x", n)
+	}
+	return "#" + component(parts[0]) + component(parts[1]) + component(parts[2])
 }

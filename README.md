@@ -482,7 +482,7 @@ After approval, that template version disappears from the pending queue and beco
 
 ### 3. Live board view for terminal splits
 
-Use `board` when you want a continuously refreshing terminal snapshot instead of rerunning multiple inspection commands by hand. When stdout is attached to a terminal and `--watch` is not set, `memori board` opens the interactive TUI automatically.
+Use `board` when you want a continuously refreshing terminal snapshot instead of rerunning multiple inspection commands by hand. When stdout is attached to a terminal and `--watch` is not set, `memori board` opens the interactive Bubble Tea TUI automatically, with Lip Gloss layout and styling for the live board surfaces.
 
 ```bash
 go run ./cmd/memori board
@@ -495,6 +495,7 @@ In the interactive TUI:
 
 - `j` / `k` move through issues
 - `h` / `l` switch lanes
+- arrow keys mirror the same navigation when that feels more natural in your terminal
 - `f` toggles between the fast actionable view and an all-work history view that includes `Done` and `WontDo`
 - `[` jumps to the parent issue and `]` jumps to the first child
 - `{` collapses children and `}` expands them
@@ -505,6 +506,8 @@ In the interactive TUI:
 
 The current terminal visual direction aims for a calmer, title-first board:
 
+- Bubble Tea owns refresh, key handling, quit behavior, and terminal resize updates so the interactive path stays responsive without a hand-rolled raw-terminal loop
+- Lip Gloss owns the layout and styling for the header, tabs, issue list, search, detail, continuity, and footer surfaces
 - the default wide layout stays list-first so you can scan work before opening extra context
 - chrome stays quieter than the issue text, with the header carrying summary and the footer carrying just the key hints
 - rows lead with titles and keep supporting metadata compact so hierarchy and context stay legible without marker clutter

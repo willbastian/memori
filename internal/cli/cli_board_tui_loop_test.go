@@ -5,24 +5,19 @@ import (
 	"context"
 	"errors"
 	"io"
-	"strings"
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/willbastian/memori/internal/store"
 )
 
-type stubBoardTicker struct {
-	c       chan time.Time
-	stopped bool
+type stubBoardProgram struct {
+	run func() (tea.Model, error)
 }
 
-func (ticker *stubBoardTicker) channel() <-chan time.Time {
-	return ticker.c
-}
-
-func (ticker *stubBoardTicker) stop() {
-	ticker.stopped = true
+func (program stubBoardProgram) Run() (tea.Model, error) {
+	return program.run()
 }
 
 func boardTUITestSnapshot(title string) boardSnapshot {
@@ -33,204 +28,168 @@ func boardTUITestSnapshot(title string) boardSnapshot {
 	}
 }
 
-func withStubbedBoardTUIRuntime(t *testing.T, ticker *stubBoardTicker) {
+func withStubbedBoardTUIRuntime(t *testing.T, buildSnapshot func(context.Context, *store.Store, string, time.Time) (boardSnapshot, error), buildAudit func(context.Context, *store.Store, string, string) (store.ContinuityAuditSnapshot, error), newProgram func(tea.Model, ...tea.ProgramOption) boardTUIProgram) {
 	t.Helper()
 
-	originalEnterRawMode := boardTUIEnterRawMode
 	originalTerminalSize := boardTUITerminalSize
 	originalBuildSnapshot := boardTUIBuildSnapshot
-	originalReadInputs := boardTUIReadInputs
+	originalBuildAudit := boardTUIBuildAudit
+	originalNewProgram := boardTUINewProgram
+	originalInput := boardTUIInput
 	originalNow := boardTUINow
-	originalNewTicker := boardTUINewTicker
 
 	t.Cleanup(func() {
-		boardTUIEnterRawMode = originalEnterRawMode
 		boardTUITerminalSize = originalTerminalSize
 		boardTUIBuildSnapshot = originalBuildSnapshot
-		boardTUIReadInputs = originalReadInputs
+		boardTUIBuildAudit = originalBuildAudit
+		boardTUINewProgram = originalNewProgram
+		boardTUIInput = originalInput
 		boardTUINow = originalNow
-		boardTUINewTicker = originalNewTicker
 	})
 
 	boardTUITerminalSize = func(io.Writer) (int, int) {
 		return 120, 28
 	}
+	boardTUIInput = func() io.Reader {
+		return bytes.NewBufferString("")
+	}
 	boardTUINow = func() time.Time {
-		return time.Date(2026, time.March, 14, 12, 0, 0, 0, time.UTC)
+		return time.Date(2026, time.March, 22, 17, 0, 0, 0, time.UTC)
 	}
-	boardTUINewTicker = func(time.Duration) boardTUITicker {
-		return ticker
-	}
+	boardTUIBuildSnapshot = buildSnapshot
+	boardTUIBuildAudit = buildAudit
+	boardTUINewProgram = newProgram
 }
 
-func TestRunBoardTUIPropagatesRawModeErrors(t *testing.T) {
-	ticker := &stubBoardTicker{c: make(chan time.Time, 1)}
-	withStubbedBoardTUIRuntime(t, ticker)
-
-	wantErr := errors.New("raw mode unavailable")
-	boardTUIEnterRawMode = func() (func(), error) {
-		return nil, wantErr
-	}
+func TestRunBoardTUIPropagatesInitialSnapshotErrors(t *testing.T) {
+	wantErr := errors.New("snapshot unavailable")
+	withStubbedBoardTUIRuntime(
+		t,
+		func(context.Context, *store.Store, string, time.Time) (boardSnapshot, error) {
+			return boardSnapshot{}, wantErr
+		},
+		func(context.Context, *store.Store, string, string) (store.ContinuityAuditSnapshot, error) {
+			return store.ContinuityAuditSnapshot{}, nil
+		},
+		func(tea.Model, ...tea.ProgramOption) boardTUIProgram {
+			t.Fatal("did not expect program creation when initial snapshot fails")
+			return nil
+		},
+	)
 
 	err := runBoardTUI(context.Background(), nil, "agent-board", time.Second, &bytes.Buffer{})
 	if !errors.Is(err, wantErr) {
-		t.Fatalf("expected raw mode error %v, got %v", wantErr, err)
-	}
-	if ticker.stopped {
-		t.Fatal("did not expect ticker to start when raw mode setup fails")
+		t.Fatalf("expected snapshot error %v, got %v", wantErr, err)
 	}
 }
 
-func TestRunBoardTUIRendersInitialFrameAndQuitsOnInput(t *testing.T) {
-	ticker := &stubBoardTicker{c: make(chan time.Time, 1)}
-	withStubbedBoardTUIRuntime(t, ticker)
+func TestRunBoardTUIConstructsBubbleTeaModel(t *testing.T) {
+	var captured tea.Model
+	withStubbedBoardTUIRuntime(
+		t,
+		func(context.Context, *store.Store, string, time.Time) (boardSnapshot, error) {
+			return boardTUITestSnapshot("Ready one"), nil
+		},
+		func(context.Context, *store.Store, string, string) (store.ContinuityAuditSnapshot, error) {
+			return store.ContinuityAuditSnapshot{}, nil
+		},
+		func(model tea.Model, _ ...tea.ProgramOption) boardTUIProgram {
+			captured = model
+			return stubBoardProgram{
+				run: func() (tea.Model, error) {
+					return model, nil
+				},
+			}
+		},
+	)
 
-	restoreCalls := 0
-	buildCalls := 0
-	boardTUIEnterRawMode = func() (func(), error) {
-		return func() {
-			restoreCalls++
-		}, nil
-	}
-	boardTUIBuildSnapshot = func(context.Context, *store.Store, string, time.Time) (boardSnapshot, error) {
-		buildCalls++
-		return boardTUITestSnapshot("Ready one"), nil
-	}
-	boardTUIReadInputs = func(keyCh chan<- boardKeyInput, errCh chan<- error) {
-		keyCh <- boardKeyInput{action: boardActionQuit}
-	}
-
-	var out bytes.Buffer
-	err := runBoardTUI(context.Background(), nil, "agent-board", time.Second, &out)
-	if err != nil {
+	if err := runBoardTUI(context.Background(), nil, "agent-board", time.Second, &bytes.Buffer{}); err != nil {
 		t.Fatalf("run board TUI: %v", err)
 	}
-	if restoreCalls != 1 {
-		t.Fatalf("expected restore to run once, got %d", restoreCalls)
-	}
-	if buildCalls != 1 {
-		t.Fatalf("expected one initial snapshot build, got %d", buildCalls)
-	}
-	if !ticker.stopped {
-		t.Fatal("expected ticker to stop when loop exits")
-	}
 
-	rendered := out.String()
-	for _, want := range []string{
-		"\x1b[?1049h\x1b[?25l",
-		"MEMORI BOARD",
-		"Ready one",
-		"\x1b[?25h\x1b[?1049l",
-	} {
-		if !strings.Contains(rendered, want) {
-			t.Fatalf("expected output to contain %q, got:\n%s", want, rendered)
-		}
+	model, ok := captured.(boardTeaModel)
+	if !ok {
+		t.Fatalf("expected Bubble Tea model, got %T", captured)
+	}
+	if model.state.selectedIssue != "mem-a111111" {
+		t.Fatalf("expected initial selection to target first issue, got %+v", model.state)
+	}
+	if view := model.View(); !bytes.Contains([]byte(view), []byte("MEMORI BOARD")) || !bytes.Contains([]byte(view), []byte("Ready one")) {
+		t.Fatalf("expected initial view to render board content, got:\n%s", view)
 	}
 }
 
-func TestRunBoardTUIRefreshesSnapshotOnTick(t *testing.T) {
-	ticker := &stubBoardTicker{c: make(chan time.Time, 1)}
-	withStubbedBoardTUIRuntime(t, ticker)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	buildCalls := 0
-	boardTUIEnterRawMode = func() (func(), error) {
-		return func() {}, nil
-	}
-	boardTUIBuildSnapshot = func(context.Context, *store.Store, string, time.Time) (boardSnapshot, error) {
-		buildCalls++
-		if buildCalls == 1 {
+func TestRunBoardTUIReturnsFinalModelError(t *testing.T) {
+	wantErr := errors.New("audit failed")
+	withStubbedBoardTUIRuntime(
+		t,
+		func(context.Context, *store.Store, string, time.Time) (boardSnapshot, error) {
 			return boardTUITestSnapshot("Ready one"), nil
-		}
-		cancel()
-		return boardTUITestSnapshot("Ready two"), nil
-	}
-	boardTUIReadInputs = func(chan<- boardKeyInput, chan<- error) {}
-
-	done := make(chan error, 1)
-	var out bytes.Buffer
-	go func() {
-		done <- runBoardTUI(ctx, nil, "agent-board", time.Second, &out)
-	}()
-
-	ticker.c <- time.Date(2026, time.March, 14, 12, 0, 1, 0, time.UTC)
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("run board TUI: %v", err)
-		}
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("timed out waiting for board TUI refresh")
-	}
-
-	if buildCalls != 2 {
-		t.Fatalf("expected initial and refresh snapshot builds, got %d", buildCalls)
-	}
-	if got := strings.Count(out.String(), "MEMORI BOARD"); got != 2 {
-		t.Fatalf("expected two rendered frames, got %d in output:\n%s", got, out.String())
-	}
-	if !strings.Contains(out.String(), "Ready two") {
-		t.Fatalf("expected refreshed frame to contain updated issue title, got:\n%s", out.String())
-	}
-}
-
-func TestRunBoardTUIStopsCleanlyOnEOF(t *testing.T) {
-	ticker := &stubBoardTicker{c: make(chan time.Time, 1)}
-	withStubbedBoardTUIRuntime(t, ticker)
-
-	boardTUIEnterRawMode = func() (func(), error) {
-		return func() {}, nil
-	}
-	boardTUIBuildSnapshot = func(context.Context, *store.Store, string, time.Time) (boardSnapshot, error) {
-		return boardTUITestSnapshot("Ready one"), nil
-	}
-	boardTUIReadInputs = func(keyCh chan<- boardKeyInput, errCh chan<- error) {
-		errCh <- io.EOF
-	}
+		},
+		func(context.Context, *store.Store, string, string) (store.ContinuityAuditSnapshot, error) {
+			return store.ContinuityAuditSnapshot{}, nil
+		},
+		func(tea.Model, ...tea.ProgramOption) boardTUIProgram {
+			return stubBoardProgram{
+				run: func() (tea.Model, error) {
+					return boardTeaModel{err: wantErr}, nil
+				},
+			}
+		},
+	)
 
 	err := runBoardTUI(context.Background(), nil, "agent-board", time.Second, &bytes.Buffer{})
-	if err != nil {
-		t.Fatalf("expected EOF to exit cleanly, got %v", err)
-	}
-	if !ticker.stopped {
-		t.Fatal("expected ticker to stop on EOF exit")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected final model error %v, got %v", wantErr, err)
 	}
 }
 
-func TestRunBoardTUIPropagatesRefreshErrors(t *testing.T) {
-	ticker := &stubBoardTicker{c: make(chan time.Time, 1)}
-	withStubbedBoardTUIRuntime(t, ticker)
+func TestRunBoardTUITreatsContextCancellationAsCleanExit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 
-	wantErr := errors.New("refresh failed")
-	buildCalls := 0
-	boardTUIEnterRawMode = func() (func(), error) {
-		return func() {}, nil
-	}
-	boardTUIBuildSnapshot = func(context.Context, *store.Store, string, time.Time) (boardSnapshot, error) {
-		buildCalls++
-		if buildCalls == 1 {
+	withStubbedBoardTUIRuntime(
+		t,
+		func(context.Context, *store.Store, string, time.Time) (boardSnapshot, error) {
 			return boardTUITestSnapshot("Ready one"), nil
-		}
-		return boardSnapshot{}, wantErr
+		},
+		func(context.Context, *store.Store, string, string) (store.ContinuityAuditSnapshot, error) {
+			return store.ContinuityAuditSnapshot{}, nil
+		},
+		func(tea.Model, ...tea.ProgramOption) boardTUIProgram {
+			return stubBoardProgram{
+				run: func() (tea.Model, error) {
+					return nil, tea.ErrProgramKilled
+				},
+			}
+		},
+	)
+
+	if err := runBoardTUI(ctx, nil, "agent-board", time.Second, &bytes.Buffer{}); err != nil {
+		t.Fatalf("expected canceled context to exit cleanly, got %v", err)
 	}
-	boardTUIReadInputs = func(chan<- boardKeyInput, chan<- error) {}
+}
 
-	done := make(chan error, 1)
-	go func() {
-		done <- runBoardTUI(context.Background(), nil, "agent-board", time.Second, &bytes.Buffer{})
-	}()
+func TestBoardTeaModelHandlesResizeRefreshAndQuit(t *testing.T) {
+	model := boardTeaModel{
+		ctx:      context.Background(),
+		interval: time.Second,
+		state:    newBoardTUIModel(boardTUITestSnapshot("Ready one"), 80, 20),
+	}
 
-	ticker.c <- time.Date(2026, time.March, 14, 12, 0, 1, 0, time.UTC)
+	updatedModel, cmd := model.Update(tea.WindowSizeMsg{Width: 132, Height: 33})
+	updated := updatedModel.(boardTeaModel)
+	if updated.state.width != 132 || updated.state.height != 33 {
+		t.Fatalf("expected resize to update dimensions, got %+v", updated.state)
+	}
 
-	select {
-	case err := <-done:
-		if !errors.Is(err, wantErr) {
-			t.Fatalf("expected refresh error %v, got %v", wantErr, err)
-		}
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("timed out waiting for board TUI refresh failure")
+	updatedModel, cmd = updated.Update(boardRefreshTickMsg{})
+	if cmd == nil {
+		t.Fatal("expected refresh tick to schedule commands")
+	}
+
+	updatedModel, cmd = updatedModel.(boardTeaModel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd == nil {
+		t.Fatal("expected quit key to return a quit command")
 	}
 }

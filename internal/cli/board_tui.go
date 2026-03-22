@@ -2,32 +2,43 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/willbastian/memori/internal/store"
 )
 
-type boardTUITicker interface {
-	channel() <-chan time.Time
-	stop()
+type boardTUIProgram interface {
+	Run() (tea.Model, error)
 }
 
-type boardTimeTicker struct {
-	*time.Ticker
+type boardRefreshTickMsg struct{}
+
+type boardSnapshotLoadedMsg struct {
+	snapshot boardSnapshot
+	err      error
 }
 
-func (ticker boardTimeTicker) channel() <-chan time.Time {
-	return ticker.C
+type boardAuditLoadedMsg struct {
+	issueID string
+	audit   store.ContinuityAuditSnapshot
+	err     error
 }
 
-func (ticker boardTimeTicker) stop() {
-	ticker.Ticker.Stop()
+type boardTeaModel struct {
+	ctx      context.Context
+	store    *store.Store
+	agent    string
+	interval time.Duration
+	colors   bool
+	state    boardTUIModel
+	err      error
 }
 
 var (
-	boardTUIEnterRawMode  = boardEnterRawMode
 	boardTUITerminalSize  = boardTerminalSize
 	boardTUIBuildSnapshot = buildBoardSnapshot
 	boardTUIBuildAudit    = func(ctx context.Context, s *store.Store, issueID, agent string) (store.ContinuityAuditSnapshot, error) {
@@ -42,104 +53,138 @@ var (
 	boardTUINow = func() time.Time {
 		return time.Now().UTC()
 	}
-	boardTUINewTicker = func(interval time.Duration) boardTUITicker {
-		return boardTimeTicker{Ticker: time.NewTicker(interval)}
+	boardTUIInput = func() io.Reader {
+		return boardInput()
+	}
+	boardTUINewProgram = func(model tea.Model, opts ...tea.ProgramOption) boardTUIProgram {
+		return tea.NewProgram(model, opts...)
 	}
 )
 
-// TODO(mem-5ece68e): split terminal control, input wiring, and render-loop setup
-// behind injectable adapters so the Darwin interactive loop can be covered
-// without PTY-driven tests before board_tui.go is decomposed.
 func runBoardTUI(ctx context.Context, s *store.Store, agent string, interval time.Duration, out io.Writer) error {
-	restore, err := boardTUIEnterRawMode()
-	if err != nil {
-		return err
-	}
-	defer restore()
-
-	_, _ = io.WriteString(out, "\x1b[?1049h\x1b[?25l")
-	defer func() {
-		_, _ = io.WriteString(out, "\x1b[?25h\x1b[?1049l")
-	}()
-
 	width, height := boardTUITerminalSize(out)
 	snapshot, err := boardTUIBuildSnapshot(ctx, s, agent, boardTUINow())
 	if err != nil {
 		return err
 	}
-	model := newBoardTUIModel(snapshot, width, height)
-	model, err = boardApplyContinuityAudit(ctx, s, agent, model)
+
+	state := newBoardTUIModel(snapshot, width, height)
+	audit, err := boardTUIBuildAudit(ctx, s, state.selectedIssue, agent)
 	if err != nil {
 		return err
 	}
+	state.audit = audit
 
-	renderFrame := func() error {
-		frame := renderBoardTUI(model, shouldUseColor(out))
-		_, _ = io.WriteString(out, frame)
+	model := boardTeaModel{
+		ctx:      ctx,
+		store:    s,
+		agent:    agent,
+		interval: interval,
+		colors:   shouldUseColor(out),
+		state:    state,
+	}
+
+	program := boardTUINewProgram(model,
+		tea.WithContext(ctx),
+		tea.WithInput(boardTUIInput()),
+		tea.WithOutput(out),
+		tea.WithAltScreen(),
+		tea.WithoutSignals(),
+	)
+
+	finalModel, err := program.Run()
+	if errors.Is(err, tea.ErrProgramKilled) && ctx.Err() != nil {
 		return nil
 	}
-	if err := renderFrame(); err != nil {
+	if err != nil {
 		return err
 	}
+	final, ok := finalModel.(boardTeaModel)
+	if ok && final.err != nil {
+		return final.err
+	}
+	return nil
+}
 
-	keyCh := make(chan boardKeyInput, 8)
-	errCh := make(chan error, 1)
-	boardTUIReadInputs(keyCh, errCh)
+func (model boardTeaModel) Init() tea.Cmd {
+	return boardScheduleRefresh(model.interval)
+}
 
-	ticker := boardTUINewTicker(interval)
-	defer ticker.stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case err := <-errCh:
-			if err == io.EOF {
-				return nil
-			}
-			return err
-		case input := <-keyCh:
-			quit := false
-			model, quit = boardHandleInput(model, input)
-			if quit {
-				return nil
-			}
-			model, err = boardApplyContinuityAudit(ctx, s, agent, model)
-			if err != nil {
-				return err
-			}
-			if err := renderFrame(); err != nil {
-				return err
-			}
-		case <-ticker.channel():
-			width, height = boardTUITerminalSize(out)
-			snapshot, err = boardTUIBuildSnapshot(ctx, s, agent, boardTUINow())
-			if err != nil {
-				return err
-			}
-			model = boardApplySnapshot(model, snapshot, width, height)
-			model, err = boardApplyContinuityAudit(ctx, s, agent, model)
-			if err != nil {
-				return err
-			}
-			if err := renderFrame(); err != nil {
-				return err
-			}
+func (model boardTeaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		model.state.width = maxInt(msg.Width, 24)
+		model.state.height = maxInt(msg.Height, 10)
+		model.state = boardNormalizeModel(model.state)
+		return model, nil
+	case tea.KeyMsg:
+		input, ok := boardKeyInputFromKeyMsg(msg)
+		if !ok {
+			return model, nil
 		}
+		nextState, quit := boardHandleInput(model.state, input)
+		model.state = nextState
+		if quit {
+			return model, tea.Quit
+		}
+		return model, boardLoadAuditCmd(model.ctx, model.store, model.agent, model.state.selectedIssue)
+	case boardRefreshTickMsg:
+		return model, tea.Batch(
+			boardLoadSnapshotCmd(model.ctx, model.store, model.agent),
+			boardScheduleRefresh(model.interval),
+		)
+	case boardSnapshotLoadedMsg:
+		if msg.err != nil {
+			if model.ctx.Err() != nil {
+				return model, tea.Quit
+			}
+			model.err = msg.err
+			return model, tea.Quit
+		}
+		model.state = boardApplySnapshot(model.state, msg.snapshot, model.state.width, model.state.height)
+		return model, boardLoadAuditCmd(model.ctx, model.store, model.agent, model.state.selectedIssue)
+	case boardAuditLoadedMsg:
+		if msg.err != nil {
+			if model.ctx.Err() != nil {
+				return model, tea.Quit
+			}
+			model.err = msg.err
+			return model, tea.Quit
+		}
+		if strings.TrimSpace(msg.issueID) == strings.TrimSpace(model.state.selectedIssue) {
+			model.state.audit = msg.audit
+		}
+		return model, nil
+	default:
+		return model, nil
 	}
 }
 
-func boardApplyContinuityAudit(ctx context.Context, s *store.Store, agent string, model boardTUIModel) (boardTUIModel, error) {
-	if s == nil || strings.TrimSpace(model.selectedIssue) == "" {
-		model.audit = store.ContinuityAuditSnapshot{}
-		return model, nil
+func (model boardTeaModel) View() string {
+	return renderBoardTUI(model.state, model.colors)
+}
+
+func boardScheduleRefresh(interval time.Duration) tea.Cmd {
+	if interval <= 0 {
+		return nil
 	}
-	audit, err := boardTUIBuildAudit(ctx, s, model.selectedIssue, agent)
-	if err != nil {
-		return model, err
+	return tea.Tick(interval, func(time.Time) tea.Msg {
+		return boardRefreshTickMsg{}
+	})
+}
+
+func boardLoadSnapshotCmd(ctx context.Context, s *store.Store, agent string) tea.Cmd {
+	return func() tea.Msg {
+		snapshot, err := boardTUIBuildSnapshot(ctx, s, agent, boardTUINow())
+		return boardSnapshotLoadedMsg{snapshot: snapshot, err: err}
 	}
-	model.audit = audit
-	return model, nil
+}
+
+func boardLoadAuditCmd(ctx context.Context, s *store.Store, agent, issueID string) tea.Cmd {
+	return func() tea.Msg {
+		audit, err := boardTUIBuildAudit(ctx, s, issueID, agent)
+		return boardAuditLoadedMsg{issueID: issueID, audit: audit, err: err}
+	}
 }
 
 func maxInt(a, b int) int {
