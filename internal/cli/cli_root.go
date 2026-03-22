@@ -26,6 +26,8 @@ type initData struct {
 	DBPath         string `json:"db_path"`
 	Status         string `json:"status"`
 	IssueKeyPrefix string `json:"issue_key_prefix"`
+	AgentsMDPath   string `json:"agents_md_path,omitempty"`
+	AgentsMDStatus string `json:"agents_md_status,omitempty"`
 }
 
 type versionData struct {
@@ -85,7 +87,7 @@ func runHelp(args []string, out io.Writer) error {
 			"memori auth status [--db <path>] [--json]",
 			"memori help [--json]",
 			"memori version [--json]",
-			"memori init [--db <path>] [--issue-prefix <prefix>] [--json]",
+			"memori init [--db <path>] [--issue-prefix <prefix>] [--append-agents-md] [--json]",
 			"memori issue create --type epic|story|task|bug --title <title> [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] [--command-id <id>] [--json]",
 			"memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] [--command-id <id>] [--json]",
 			"memori issue update --key <prefix-shortSHA> [--title <title>] [--status todo|inprogress|blocked|done|wontdo] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--agent <id>] [--session <id>] [--continuity manual|assist|auto] [--note <text>] [--reason <text>] [--skip-continuity] [--actor <actor>] [--command-id <id>] [--json]",
@@ -175,6 +177,7 @@ func runInit(args []string, out io.Writer) error {
 	fs.SetOutput(io.Discard)
 	dbPath := fs.String("db", defaultDBPath(), "sqlite database path")
 	issuePrefix := fs.String("issue-prefix", store.DefaultIssueKeyPrefix, "project-wide issue key prefix for new issues")
+	appendAgentsMD := fs.Bool("append-agents-md", false, "append the memori closeout checklist to AGENTS.md in the current directory")
 	jsonOut := fs.Bool("json", false, "machine-readable output")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -193,6 +196,17 @@ func runInit(args []string, out io.Writer) error {
 		return err
 	}
 
+	agentsPath := ""
+	agentsStatus := ""
+	if *appendAgentsMD {
+		status, err := appendInitAgentsLandThePlane(defaultAgentsMDPath)
+		if err != nil {
+			return err
+		}
+		agentsPath = defaultAgentsMDPath
+		agentsStatus = status
+	}
+
 	dbVersion, err := s.SchemaVersion(ctx)
 	if err != nil {
 		return err
@@ -207,6 +221,8 @@ func runInit(args []string, out io.Writer) error {
 				DBPath:         *dbPath,
 				Status:         "initialized",
 				IssueKeyPrefix: *issuePrefix,
+				AgentsMDPath:   agentsPath,
+				AgentsMDStatus: agentsStatus,
 			},
 		})
 	}
@@ -216,6 +232,9 @@ func runInit(args []string, out io.Writer) error {
 	ui.field("DB Path", *dbPath)
 	ui.field("Schema", fmt.Sprintf("v%d", dbVersion))
 	ui.field("Issue Prefix", *issuePrefix)
+	if agentsPath != "" {
+		ui.field("AGENTS.md", fmt.Sprintf("%s (%s)", agentsPath, agentsStatus))
+	}
 	ui.nextSteps(
 		fmt.Sprintf("memori auth set-password --db %s", *dbPath),
 		`memori issue create --type task --title "First ticket"`,
@@ -260,7 +279,7 @@ func printHelp(out io.Writer) {
 	ui.bullet("memori help [--json]")
 	ui.bullet("memori version [--json]")
 	ui.bullet("memori auth set-password [--db <path>] [--json]")
-	ui.bullet("memori init [--db <path>] [--issue-prefix <prefix>] [--json]")
+	ui.bullet("memori init [--db <path>] [--issue-prefix <prefix>] [--append-agents-md] [--json]")
 	ui.bullet("memori issue create --type epic|story|task|bug --title <title> [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--parent <key>] [--key <prefix-shortSHA>] [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori issue link --child <prefix-shortSHA> --parent <prefix-shortSHA> [--actor <actor>] [--command-id <id>] [--json]")
 	ui.bullet("memori issue update --key <prefix-shortSHA> [--title <title>] [--status todo|inprogress|blocked|done|wontdo] [--priority <value>] [--label <label>]... [--description <text>] [--acceptance-criteria <text>] [--reference <ref>]... [--agent <id>] [--session <id>] [--continuity manual|assist|auto] [--note <text>] [--reason <text>] [--skip-continuity] [--actor <actor>] [--command-id <id>] [--json]")

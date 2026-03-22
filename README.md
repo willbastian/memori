@@ -307,12 +307,14 @@ Choose a mode per command with `--continuity manual|assist|auto`, or set `MEMORI
 From the root of the repository you want to track:
 
 ```bash
-memori init --issue-prefix acme
+memori init --issue-prefix acme --append-agents-md
 memori db status
 memori backlog
 ```
 
 The default database path is `.memori/memori.db` inside that repository. Issue keys will use the prefix you choose, for example `acme-a1b2c3d`.
+
+If the repository uses `AGENTS.md` for collaborator guidance, add `--append-agents-md` during init to append Memori's standard "Land The Plane" closeout checklist in the current repo. The managed block is idempotent, so rerunning the command updates that block instead of duplicating it.
 
 ### 2. Set up human writes
 

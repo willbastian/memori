@@ -42,6 +42,74 @@ func TestRunInitTextOutputIncludesNextSteps(t *testing.T) {
 	}
 }
 
+func TestRunInitAppendAgentsMDCreatesManagedSection(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "memori-cli-init-agents.db")
+
+	var out bytes.Buffer
+	if err := runInit([]string{"--db", dbPath, "--issue-prefix", "wrk", "--append-agents-md"}, &out); err != nil {
+		t.Fatalf("run init with agents append: %v", err)
+	}
+
+	agentsContent, err := os.ReadFile(filepath.Join(tmpDir, defaultAgentsMDPath))
+	if err != nil {
+		t.Fatalf("read generated AGENTS.md: %v", err)
+	}
+	rendered := string(agentsContent)
+	for _, want := range []string{
+		agentsLandThePlaneStartTag,
+		"## Land The Plane",
+		"`git push origin <branch>`",
+		"`memori gate set lock --issue <issue_key> --command-id \"<unique-id>\" --json`",
+		"`memori issue update --key <issue_key> --status done --command-id \"<unique-id>\" --json`",
+		agentsLandThePlaneEndTag,
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected AGENTS.md to contain %q, got:\n%s", want, rendered)
+		}
+	}
+	if !strings.Contains(out.String(), "AGENTS.md: AGENTS.md (created)") {
+		t.Fatalf("expected init output to report AGENTS.md creation, got:\n%s", out.String())
+	}
+}
+
+func TestRunInitAppendAgentsMDIsIdempotentAndPreservesExistingContent(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	initial := "# Repo Notes\n\nKeep local conventions here.\n"
+	if err := os.WriteFile(defaultAgentsMDPath, []byte(initial), 0o644); err != nil {
+		t.Fatalf("seed AGENTS.md: %v", err)
+	}
+	dbPath := filepath.Join(tmpDir, "memori-cli-init-agents-idempotent.db")
+
+	if err := runInit([]string{"--db", dbPath, "--issue-prefix", "wrk", "--append-agents-md"}, io.Discard); err != nil {
+		t.Fatalf("first init with agents append: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := runInit([]string{"--db", dbPath, "--issue-prefix", "wrk", "--append-agents-md"}, &out); err != nil {
+		t.Fatalf("second init with agents append: %v", err)
+	}
+
+	agentsContent, err := os.ReadFile(filepath.Join(tmpDir, defaultAgentsMDPath))
+	if err != nil {
+		t.Fatalf("read AGENTS.md after second run: %v", err)
+	}
+	rendered := string(agentsContent)
+	if !strings.HasPrefix(rendered, strings.TrimRight(initial, "\n")) {
+		t.Fatalf("expected existing AGENTS.md content to be preserved, got:\n%s", rendered)
+	}
+	if got := strings.Count(rendered, agentsLandThePlaneStartTag); got != 1 {
+		t.Fatalf("expected one managed Land The Plane block, got %d in:\n%s", got, rendered)
+	}
+	if !strings.Contains(out.String(), "AGENTS.md: AGENTS.md (up_to_date)") {
+		t.Fatalf("expected second init output to report up_to_date AGENTS.md, got:\n%s", out.String())
+	}
+}
+
 func TestRunAuthDispatchesStatusAndRejectsInvalidSubcommands(t *testing.T) {
 	t.Parallel()
 
@@ -97,6 +165,7 @@ func TestRunHelpJSONListsMachineReadableCommands(t *testing.T) {
 	}
 	for _, want := range []string{
 		"memori auth status [--db <path>] [--json]",
+		"memori init [--db <path>] [--issue-prefix <prefix>] [--append-agents-md] [--json]",
 		"memori gate template create --id <template-id> --version <n> --applies-to epic|story|task|bug [--applies-to ...] --file <path> [--actor <actor>] [--command-id <id>] [--json]",
 		"memori db replay [--json]",
 	} {
