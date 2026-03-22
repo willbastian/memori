@@ -52,6 +52,17 @@ func truncateBoardLine(value string, width int) string {
 	return trimVisual(value, width-3) + "..."
 }
 
+func truncateBoardRowLine(value string, width int) string {
+	value = strings.TrimRight(value, " ")
+	if width <= 0 || visualWidth(value) <= width {
+		return value
+	}
+	if width <= 3 {
+		return trimVisual(value, width)
+	}
+	return trimVisual(value, width-3) + "..."
+}
+
 func boardSnapshotSignature(snapshot boardSnapshot) string {
 	normalized := snapshot
 	normalized.GeneratedAt = ""

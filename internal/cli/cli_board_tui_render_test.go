@@ -397,8 +397,8 @@ func TestRenderBoardTUIShowsHierarchyCuesInListAndDetail(t *testing.T) {
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
-		"[-] Parent story · a111111",
-		"`- Child task · b222222",
+		"[-] a111111  Parent story",
+		"`- b222222  Child task",
 		"[ HIERARCHY ]",
 		"path: mem-a111111 > mem-b222222",
 		"parent: mem-a111111 (Parent story)",
@@ -466,10 +466,10 @@ func TestRenderBoardTUIShowsConsistentNestedHierarchyPrefixes(t *testing.T) {
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
-		"[-] Root epic · epic · mem-a111111",
-		"[-] Nested story · story · mem-b222222",
-		"`- Grandchild task · task · mem-d444444",
-		"`- Sibling story · story · mem-c333333",
+		"[-] mem-a111111  Root epic",
+		"   [-] mem-b222222  Nested story",
+		"      `- mem-d444444  Grandchild task",
+		"   `- mem-c333333  Sibling story",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected nested hierarchy render to contain %q, got:\n%s", want, rendered)
@@ -531,9 +531,9 @@ func TestRenderBoardTUIUsesLaneSiblingOrderForLeafBranches(t *testing.T) {
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
-		"|- First child · story · mem-b222222",
-		"|- Second child · story · mem-c333333",
-		"`- Third child · story · mem-d444444",
+		"|- mem-b222222  First child",
+		"|- mem-c333333  Second child",
+		"`- mem-d444444  Third child",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected lane-order branches to contain %q, got:\n%s", want, rendered)
@@ -820,9 +820,9 @@ func TestRenderBoardTUIReadyLaneMarksReadyRowsWithinContextTree(t *testing.T) {
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
-		"[-] Parent story · in progress · story · mem-a111111",
-		"|- Ready child · task · mem-b222222",
-		"`- Active sibling · in progress · bug · mem-c333333",
+		"[-] mem-a111111  Parent story · in progress · story",
+		"|- mem-b222222  Ready child · task",
+		"`- mem-c333333  Active sibling · in progress · bug",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected ready context render to contain %q, got:\n%s", want, rendered)
@@ -875,9 +875,9 @@ func TestRenderBoardTUIActiveLaneMarksActiveRowsWithinContextTree(t *testing.T) 
 
 	rendered := renderBoardTUI(model, false)
 	for _, want := range []string{
-		"[-] Parent story · todo · story · mem-a111111",
-		"|- Active child · task · mem-b222222",
-		"`- Ready sibling · todo · task · mem-c333333",
+		"[-] mem-a111111  Parent story · todo · story",
+		"|- mem-b222222  Active child · task",
+		"`- mem-c333333  Ready sibling · todo · task",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected active context render to contain %q, got:\n%s", want, rendered)

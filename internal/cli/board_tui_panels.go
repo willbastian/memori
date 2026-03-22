@@ -89,25 +89,31 @@ func boardRenderListRow(model boardTUIModel, row boardIssueRow, showScore bool, 
 	if kind := strings.TrimSpace(row.Issue.Type); kind != "" && width >= 48 {
 		metaParts = append(metaParts, strings.ToLower(kind))
 	}
-	metaParts = append(metaParts, issueID)
+	if !boardLaneSupportsHierarchy(model.lane) {
+		metaParts = append(metaParts, issueID)
+	}
 	if showScore && row.Score > 0 && width >= 64 {
 		metaParts = append(metaParts, fmt.Sprintf("s%d", row.Score))
 	}
 
 	switch {
 	case width < 28:
-		return truncateBoardLine(fmt.Sprintf(" %s%s %s", compactLead, issueID, title), width)
+		return truncateBoardRowLine(fmt.Sprintf(" %s%s %s", compactLead, issueID, title), width)
 	case width < 40:
-		return truncateBoardLine(fmt.Sprintf(" %s%-8s %s", compactLead, issueID, title), width)
+		return truncateBoardRowLine(fmt.Sprintf(" %s%-8s %s", compactLead, issueID, title), width)
 	default:
 		body := title
-		if len(metaParts) > 0 {
-			body += " · " + strings.Join(metaParts, " · ")
+		if boardLaneSupportsHierarchy(model.lane) {
+			body = lead + issueID + "  " + title
+			if len(metaParts) > 0 {
+				body += " · " + strings.Join(metaParts, " · ")
+			}
+		} else {
+			if len(metaParts) > 0 {
+				body += " · " + strings.Join(metaParts, " · ")
+			}
 		}
-		if lead != "" {
-			body = lead + body
-		}
-		return truncateBoardLine(" "+body, width)
+		return truncateBoardRowLine(" "+body, width)
 	}
 }
 
